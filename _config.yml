@@ -1,0 +1,8 @@
+title: Elijah Matthew — Wealth Management Portfolio
+description: Projects, scripts, and notes for wealth management.
+theme: minima
+header_pages:
+  - projects.md
+  - scripts.md
+  - notes.md
+  - about.md

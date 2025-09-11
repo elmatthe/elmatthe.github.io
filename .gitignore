@@ -1,0 +1,5 @@
+# macOS & Jekyll build output
+.DS_Store
+_site/
+.sass-cache/
+.jekyll-cache/
