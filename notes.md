@@ -3,6 +3,13 @@ layout: page
 title: Notes
 ---
 
-Short explanations and Q&A style write-ups on investing topics (TFSA vs RRSP, asset allocation, taxes, rebalancing, etc.).
+Below are all notes in `/notes`.
 
-- Add new notes by duplicating `/notes/_template.md`.
+<ul>
+{%- assign pages = site.pages | where_exp: "p", "p.path contains 'notes/'" -%}
+{%- for p in pages %}
+  {%- unless p.name == '_template.md' -%}
+  <li><a href="{{ p.url | relative_url }}">{{ p.title }}</a>{% if p.summary %} — {{ p.summary }}{% endif %}</li>
+  {%- endunless -%}
+{%- endfor -%}
+</ul>
