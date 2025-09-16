@@ -25,9 +25,7 @@ tags: [etfs, beginner]
 | MER             | Management Expense Ratio      | A management expense ratio (MER) is the total annual cost of running an investment fund, expressed as a percentage of the fund's average net assets.<ul><li>Management fees</li><li>Operating Expenses</li><li>Taxes 
 Is deducted from the fund's performance before any returns are reported to investors. A higher MER means more of your investment's growth goes toward fund costs rather than being paid out as investor returns.
     
-## Glossary Definition Table (Test)
-
-### Glossary Table (Elijah’s)
+## Glossary Definition Table - Test
 
 | Short-Term | Full-Term | Definition |
 |---|---|---|
