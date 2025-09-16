@@ -30,7 +30,7 @@ Is deducted from the fund's performance before any returns are reported to inves
 | Short-Term | Full-Term | Definition |
 |---|---|---|
 | AUM | Assets Under Management | Assets under management (AUM) is the current value of all the investments entrusted to a mutual fund, an exchange-traded fund (ETF), or an investment company. |
-| MER | Management Expense Ratio | The total annual cost of running an investment fund, as a % of average net assets. Includes:<br>• Management fees<br>• Operating expenses<br>• Taxes<br>Deducted before returns are reported to investors. |
+| MER | Management Expense Ratio | The total annual cost of running an investment fund, as a % of average net assets. Includes:<br>• Management fees<br>• Operating expenses<br>• Taxes<br>Deducted before returns are reported to investors. A higher MER means more of your investment's growth goes toward fund costs rather than being paid out as investor returns. |
 
  
 <details>
