@@ -5,12 +5,12 @@ title: Home
 
 
 ## Latest Notes
-{% assign note_pages = site.pages 
-   | where_exp: "p", "p.url contains '/notes/' and p.url != '/notes/'" 
-   | sort: "title" %}
+{% assign note_pages = site.pages | where_exp:"p","p.url contains '/notes/'" %}
 <ul>
-  {% for p in note_pages limit:5 %}
-    <li><a href="{{ p.url }}">{{ p.title }}</a></li>
+  {% for p in note_pages %}
+    {% unless p.url == "/notes/" %}
+      <li><a href="{{ p.url }}">{{ p.title }}</a></li>
+    {% endunless %}
   {% endfor %}
 </ul>
 
