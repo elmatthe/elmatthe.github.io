@@ -1,13 +1,15 @@
----
-layout: page
-title: Home
-permalink: /
----
+## Latest Notes
+{% assign note_pages = site.pages 
+   | where_exp: "p", "p.url contains '/notes/' and p.url != '/notes/'" 
+   | sort: "title" %}
+<ul>
+  {% for p in note_pages limit:5 %}
+    <li><a href="{{ p.url }}">{{ p.title }}</a></li>
+  {% endfor %}
+</ul>
 
-# Welcome
+## Featured Projects
+- [1m Plan](/projects/1m-plan/)
 
-This is my **Wealth Management Portfolio** — a living collection of projects, scripts, and notes I’m building as I learn.
-
-**Quick links:** [Projects](/projects/) · [Scripts](/scripts/) · [Notes](/notes/) · [About](/about/)
-
-> I’m using this site to show my work to employers and to track what I learn along the way.
+## Scripts
+- [Portfolio Rebalance Tool](/scripts/portfolio-rebalance-tool/)
