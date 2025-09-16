@@ -1,3 +1,9 @@
+---
+layout: page
+title: Home
+---
+
+
 ## Latest Notes
 {% assign note_pages = site.pages 
    | where_exp: "p", "p.url contains '/notes/' and p.url != '/notes/'" 
