@@ -4,5 +4,5 @@ theme: minima
 header_pages:
   - projects.md
   - scripts.md
-  - notes.md
+  - notes/index.md
   - about.md
