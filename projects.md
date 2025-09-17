@@ -1,15 +1,18 @@
 ---
-layout: page
 title: Projects
+layout: page
+permalink: /projects/
 ---
+
+# Projects
 
 Case studies and client-style writeups.
 
 <ul>
-{%- assign pages = site.pages | where_exp: "p", "p.path contains 'projects/'" -%}
-{%- for p in pages %}
-  {%- unless p.name == '_template.md' -%}
-  <li><a href="{{ p.url | relative_url }}">{{ p.title }}</a>{% if p.summary %} — {{ p.summary }}{% endif %}</li>
-  {%- endunless -%}
-{%- endfor -%}
+{% assign projects = site.pages | sort: "title" %}
+{% for p in projects %}
+  {% if p.path contains 'projects/' and p.name != 'index.md' %}
+    <li><a href="{{ p.url | relative_url }}">{{ p.title | escape }}</a></li>
+  {% endif %}
+{% endfor %}
 </ul>

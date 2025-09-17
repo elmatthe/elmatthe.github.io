@@ -1,11 +1,18 @@
 ---
-layout: page
 title: Notes
+layout: page
 permalink: /notes/
+nav_order: 9
+has_children: true
 ---
 
-Welcome to my notes. Recent items:
+# Notes
 
-- [ETF Basics](/notes/etf-basics/)
-- [TFSA vs RRSP](/notes/tfsa-vs-rrsp/)
-- [Tax-Loss Harvesting](/notes/tax-loss-harvesting/)
+<ul>
+{% assign notes = site.pages | sort: "title" %}
+{% for p in notes %}
+  {% if p.path contains 'notes/' and p.name != 'index.md' %}
+    <li><a href="{{ p.url | relative_url }}">{{ p.title | escape }}</a></li>
+  {% endif %}
+{% endfor %}
+</ul>

@@ -3,17 +3,34 @@ layout: page
 title: Home
 ---
 
+# Home
 
 ## Latest Notes
-{% assign note_pages = site.pages | where_exp:"p","p.url contains '/notes/'" | sort:"title" %}
-{% for p in note_pages %}
-{% unless p.url == "/notes/" %}
-- [{{ p.title | escape }}]({{ p.url }})
-{% endunless %}
+<ul>
+{% assign all = site.pages | sort: "last_updated" | reverse %}
+{% for p in all %}
+  {% if p.path contains 'notes/' and p.name != 'index.md' %}
+    <li><a href="{{ p.url | relative_url }}">{{ p.title | escape }}</a></li>
+  {% endif %}
 {% endfor %}
+</ul>
 
 ## Featured Projects
-- [1m Plan](/projects/1m-plan/)
+<ul>
+{% assign projects = site.pages | sort: "title" %}
+{% for p in projects %}
+  {% if p.path contains 'projects/' and p.name != 'index.md' %}
+    <li><a href="{{ p.url | relative_url }}">{{ p.title | escape }}</a></li>
+  {% endif %}
+{% endfor %}
+</ul>
 
 ## Scripts
-- [Portfolio Rebalance Tool](/scripts/portfolio-rebalance-tool/)
+<ul>
+{% assign tools = site.pages | sort: "title" %}
+{% for p in tools %}
+  {% if p.path contains 'scripts/' and p.name != 'index.md' %}
+    <li><a href="{{ p.url | relative_url }}">{{ p.title | escape }}</a></li>
+  {% endif %}
+{% endfor %}
+</ul>
