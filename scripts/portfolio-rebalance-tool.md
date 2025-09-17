@@ -1,7 +1,7 @@
 ---
 layout: page
-title: <Replace with script/tool name>
-summary: <what the script does>
+title: Portfolio Rebalancing Tool
+summary: Allows the user to upload their portfolio and rebalance it to a set of their choosing
 tags: [script, python]
 ---
 

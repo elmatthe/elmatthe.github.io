@@ -1,6 +1,6 @@
 ---
 layout: page
-title: <Replace with project title>
+title: How to Save a Million Dollars - Guide
 summary: <one-line summary>
 tags: [project, case-study]
 ---
