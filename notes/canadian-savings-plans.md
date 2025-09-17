@@ -1,6 +1,6 @@
 ---
 layout: page
-title: TFSA vs RRSP — Quick Rule of Thumb
+title: A Breakdown of Canadian Savings Plan Account Types
 summary: When to contribute to each account in Canada.
 tags: [note, canada, taxes]
 ---
