@@ -3,8 +3,6 @@ layout: page
 title: Home
 ---
 
-# Home
-
 ## Latest Notes
 <ul>
 {% assign all = site.pages | sort: "last_updated" | reverse %}
