@@ -49,17 +49,8 @@ title: Home
 
 ## Featured Projects
 <ul class="link-list">
-{% assign projects = site.pages | sort: "title" %}
-{% assign project_count = 0 %}
-{% for p in projects %}
-  {% if p.path contains 'projects/' and p.name != 'index.md' %}
-    {% assign project_count = project_count | plus: 1 %}
-    <li><a href="{{ p.url | relative_url }}">{{ p.title | escape }}</a></li>
-  {% endif %}
-{% endfor %}
-{% if project_count == 0 %}
-  <li>No projects published yet.</li>
-{% endif %}
+  <li><a href="{{ '/projects/cpi-dashboard-automation/' | relative_url }}">CPI Dashboard Automation</a></li>
+  <li><a href="{{ '/projects/portfolio-rebalancer/' | relative_url }}">Portfolio Rebalancer Tool</a></li>
 </ul>
 
 ## Scripts

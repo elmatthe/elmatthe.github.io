@@ -13,9 +13,13 @@ This project supports a practical inflation-monitoring workflow for research and
   <a class="btn" href="{{ '/projects/CPI_Automation/CPI.xlsx' | relative_url }}" download>Download CPI Template (.xlsx)</a>
 </div>
 
+## Guides
+- [Open CPI Setup Guide (Web Page)]({{ '/projects/cpi-downloader-user-guide/' | relative_url }})
+- [Download CPI Setup Guide (.md)]({{ '/projects/CPI_Automation/CPI_Downloader_User_Guide.md' | relative_url }})
+
 ## Project Files
 - [CPI Dashboard Downloader (Python v7)](/projects/CPI_Automation/cpi_dashboard_downloader-v7.py)
-- [CPI Downloader User Guide (Rendered)](/projects/cpi-downloader-user-guide/)
+- [CPI Data Workbook Template (.xlsx)](/projects/CPI_Automation/CPI.xlsx)
 
 ## How this connects to your advisory workflow
 1. Automate monthly CPI data pulls with Python.
