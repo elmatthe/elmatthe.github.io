@@ -10,23 +10,15 @@ Applied finance and advisor workflow projects designed for real-world planning c
   <p><strong>How to read this section:</strong> each project includes objective, method, and practical implementation notes to reflect advisory-quality communication.</p>
 </section>
 
-## CPI Automation Downloads
-<section class="tool-card">
-  <p><strong>Need the CPI workbook starter file?</strong> Download the CPI dashboard template below.</p>
-  <div class="btn-row">
-    <a class="btn" href="{{ '/projects/CPI_Automation/CPI.xlsx' | relative_url }}" download>Download CPI .xlsx</a>
-    <a class="btn btn-secondary" href="{{ '/projects/cpi-dashboard-automation/' | relative_url }}">Open CPI Project Details</a>
-  </div>
-</section>
+## Project Directory
 
 <ul class="project-list">
-{% assign projects = site.pages | sort: "title" %}
-{% for p in projects %}
-  {% if p.path contains 'projects/' and p.name != 'index.md' %}
-    <li>
-      <a href="{{ p.url | relative_url }}">{{ p.title | escape }}</a>
-      {% if p.summary %}<div class="muted">{{ p.summary }}</div>{% endif %}
-    </li>
-  {% endif %}
-{% endfor %}
+  <li>
+    <a href="{{ '/projects/cpi-dashboard-automation/' | relative_url }}">CPI Dashboard Automation</a>
+    <div class="muted">CPI downloader workflow, setup guide, and workbook template files.</div>
+  </li>
+  <li>
+    <a href="{{ '/projects/portfolio-rebalancer/' | relative_url }}">Portfolio Rebalancer Tool</a>
+    <div class="muted">Interactive portfolio rebalance calculator with implementation guide.</div>
+  </li>
 </ul>
