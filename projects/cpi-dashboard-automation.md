@@ -12,12 +12,12 @@ This project supports a practical inflation-monitoring workflow for research and
 
 ## Downloads
 <div class="btn-row">
-  <a class="btn" href="{{ '/assets/downloads/cpi_dashboard_template.xlsx' | relative_url }}" download>Download CPI Template (.xlsx)</a>
-  <a class="btn btn-secondary" href="{{ '/assets/downloads/cpi_dashboard_template.xlsm' | relative_url }}" download>Download CPI Template (.xlsm)</a>
+  <a class="btn" href="{{ '/projects/CPI_Automation/CPI.xlsx' | relative_url }}" download>Download CPI Template (.xlsx)</a>
+  <a class="btn btn-secondary" href="{{ '/projects/CPI_Automation/CPI.xlsm' | relative_url }}" download>Download CPI Template (.xlsm)</a>
 </div>
 
 ## Project Files
-- [CPI Dashboard Downloader (Python v7)](/Projects/CPI_Automation/cpi_dashboard_downloader-v7.py)
+- [CPI Dashboard Downloader (Python v7)](/projects/CPI_Automation/cpi_dashboard_downloader-v7.py)
 - [CPI Downloader User Guide (Rendered)](/projects/cpi-downloader-user-guide/)
 
 ## How this connects to your advisory workflow

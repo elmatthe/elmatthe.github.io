@@ -10,4 +10,4 @@ last_updated: 2026-03-13
 
 This is the rendered web version of the CPI guide so it displays properly on the site (instead of raw markdown text).
 
-{% include_relative ../Projects/CPI_Automation/CPI_Downloader_User_Guide.md %}
+{% include_relative ../projects/CPI_Automation/CPI_Downloader_User_Guide.md %}
