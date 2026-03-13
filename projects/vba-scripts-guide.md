@@ -10,4 +10,14 @@ last_updated: 2026-03-13
 
 This is the rendered web version of the VBA guide so it displays as a normal project page.
 
-{% include_relative ../projects/VBA_Macros&Functions/VBA_Scripts_Guide.md %}
+## Quick Use
+
+1. Open Excel VBA editor with `Alt + F11`.
+2. Import the `.bas` modules you need from this repository.
+3. Save your workbook as macro-enabled if you intend to run VBA macros.
+4. Assign macros to buttons where useful for repeat workflows.
+
+## Files
+
+- [VBA Scripts Guide (raw markdown)](/projects/VBA_Macros%26Functions/VBA_Scripts_Guide.md)
+- [VBA Macros & Functions Folder](/scripts/)
