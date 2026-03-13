@@ -14,10 +14,10 @@ Applied finance and advisor workflow projects designed for real-world planning c
 
 ## CPI Automation Downloads
 <section class="tool-card">
-  <p><strong>Need a spreadsheet starter pack?</strong> Download the CPI portfolio/rebalancing templates directly below.</p>
+  <p><strong>Need the CPI workbook starter files?</strong> Download the CPI dashboard templates directly below.</p>
   <div class="btn-row">
-    <a class="btn" href="{{ '/assets/downloads/cpi_portfolio_rebalance_template.xlsx' | relative_url }}" download>Download .xlsx</a>
-    <a class="btn btn-secondary" href="{{ '/assets/downloads/cpi_portfolio_rebalance_template.xlsm' | relative_url }}" download>Download .xlsm</a>
+    <a class="btn" href="{{ '/assets/downloads/cpi_dashboard_template.xlsx' | relative_url }}" download>Download CPI .xlsx</a>
+    <a class="btn btn-secondary" href="{{ '/assets/downloads/cpi_dashboard_template.xlsm' | relative_url }}" download>Download CPI .xlsm</a>
     <a class="btn btn-secondary" href="{{ '/projects/cpi-dashboard-automation/' | relative_url }}">Open CPI Project Details</a>
   </div>
 </section>
