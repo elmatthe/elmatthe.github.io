@@ -6,8 +6,6 @@ summary: CPI data download and spreadsheet workflow project with downloadable te
 last_updated: 2026-03-13
 ---
 
-# CPI Dashboard Automation
-
 This project supports a practical inflation-monitoring workflow for research and advisory prep, combining Python automation with downloadable spreadsheet templates.
 
 ## Downloads

@@ -22,4 +22,3 @@ This is the rendered web version of the CPI guide so it displays properly on the
 
 - [CPI Dashboard Downloader (Python)](/projects/CPI_Automation/cpi_dashboard_downloader-v7.py)
 - [CPI Workbook Template (.xlsx)](/projects/CPI_Automation/CPI.xlsx)
-- [Original Full Guide (raw markdown)](/projects/CPI_Automation/CPI_Downloader_User_Guide.md)
