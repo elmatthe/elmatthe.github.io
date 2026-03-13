@@ -19,5 +19,4 @@ This is the rendered web version of the VBA guide so it displays as a normal pro
 
 ## Files
 
-- [VBA Scripts Guide (raw markdown)](/projects/VBA_Macros%26Functions/VBA_Scripts_Guide.md)
 - [VBA Macros & Functions Folder](/scripts/)
