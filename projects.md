@@ -4,8 +4,6 @@ layout: page
 permalink: /Projects/
 ---
 
-# Projects
-
 Applied finance and advisor workflow projects designed for real-world planning conversations.
 
 <section class="callout">
