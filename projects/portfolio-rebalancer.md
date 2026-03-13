@@ -13,7 +13,11 @@ Use this calculator to rebalance a portfolio back to its intended strategic weig
 <section class="callout">
   <p><strong>Input format:</strong> one position per line using <code>Asset, Current Value, Target Weight %</code>.</p>
   <p>Example: <code>US Equity,45000,50</code></p>
+  <p><a href="{{ '/projects/portfolio-rebalancer-guide/' | relative_url }}">Open Setup Guide (Web Page)</a> | <a href="{{ '/projects/Portfolio_Rebalancer/Portfolio_Rebalancer_Setup_Guide.md' | relative_url }}" download>Download Setup Guide (.md)</a></p>
 </section>
+
+## Project Files
+- [Portfolio Rebalancer Setup Guide (.md)](/projects/Portfolio_Rebalancer/Portfolio_Rebalancer_Setup_Guide.md)
 
 <div class="tool-grid">
   <section class="tool-card">
