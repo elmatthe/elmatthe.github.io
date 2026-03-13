@@ -10,4 +10,4 @@ last_updated: 2026-03-13
 
 This is the rendered web version of the VBA guide so it displays as a normal project page.
 
-{% include_relative ../Projects/VBA_Macros&Functions/VBA_Scripts_Guide.md %}
+{% include_relative ../projects/VBA_Macros&Functions/VBA_Scripts_Guide.md %}
