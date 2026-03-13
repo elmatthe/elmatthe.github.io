@@ -1,20 +1,25 @@
-# Elijah's Wealth Management GitHub Pages (Starter)
+# Elijah Matthew | Wealth Management Portfolio Site
 
-This is a minimal skeleton you can upload to your `USERNAME.github.io` repo.
+Professional GitHub Pages portfolio for wealth management projects, advisory notes, and practical finance tools.
 
-## What it gives you
-- A clean landing page + top navigation (Projects, Scripts, Notes, About)
-- Folders you can drop content into
-- Simple templates for adding new notes, projects, and scripts
+## Site Structure
+- `index.md` - Homepage with advisory focus and quick navigation
+- `projects.md` - Project landing page
+- `projects/` - Individual project pages (includes Portfolio Rebalancer)
+- `scripts.md` - Script and automation catalog
+- `notes/` - Ongoing learning and reference notes
+- `about.md` - Professional profile
+- `assets/main.scss` - Global visual styling
 
-## How to use
-1) Upload everything in this folder to the root of your `USERNAME.github.io` repository.
-2) Commit and push. GitHub Pages will build automatically.
-3) Visit `https://USERNAME.github.io` to see it live.
+## Featured Tool
+- `projects/portfolio-rebalancer.md` - Browser-based portfolio rebalancer that calculates buy/sell trades to return holdings to target weights.
 
-## Add new content (quick recipe)
-- Notes (Q&A style): duplicate `notes/_template.md`, rename it, edit front matter and content.
-- Projects (case studies): duplicate `projects/_template.md`, rename, edit.
-- Scripts (code): duplicate `scripts/_template.md`, rename, paste code blocks.
+## Run Locally (optional)
+If you use Jekyll locally:
+1. Install Ruby and Bundler.
+2. Install dependencies: `bundle install`
+3. Start server: `bundle exec jekyll serve`
+4. Visit: `http://127.0.0.1:4000`
 
-Tip: Keep file names lowercase-with-dashes. Images can go in `assets/uploads/` and be linked like `![alt text](/assets/uploads/your-image.png)`.
+## Publishing
+Push this repository to your GitHub Pages repository and GitHub will build/deploy automatically.
