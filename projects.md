@@ -14,10 +14,9 @@ Applied finance and advisor workflow projects designed for real-world planning c
 
 ## CPI Automation Downloads
 <section class="tool-card">
-  <p><strong>Need the CPI workbook starter files?</strong> Download the CPI dashboard templates directly below.</p>
+  <p><strong>Need the CPI workbook starter file?</strong> Download the CPI dashboard template below.</p>
   <div class="btn-row">
     <a class="btn" href="{{ '/projects/CPI_Automation/CPI.xlsx' | relative_url }}" download>Download CPI .xlsx</a>
-    <a class="btn btn-secondary" href="{{ '/projects/CPI_Automation/CPI.xlsm' | relative_url }}" download>Download CPI .xlsm</a>
     <a class="btn btn-secondary" href="{{ '/projects/cpi-dashboard-automation/' | relative_url }}">Open CPI Project Details</a>
   </div>
 </section>

@@ -13,7 +13,6 @@ This project supports a practical inflation-monitoring workflow for research and
 ## Downloads
 <div class="btn-row">
   <a class="btn" href="{{ '/projects/CPI_Automation/CPI.xlsx' | relative_url }}" download>Download CPI Template (.xlsx)</a>
-  <a class="btn btn-secondary" href="{{ '/projects/CPI_Automation/CPI.xlsm' | relative_url }}" download>Download CPI Template (.xlsm)</a>
 </div>
 
 ## Project Files

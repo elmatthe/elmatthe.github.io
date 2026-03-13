@@ -97,7 +97,7 @@ Click the circle next to whichever you need.
 
 > **Month numbers:** January = 1, February = 2 … December = 12
 
-> 📋 **For the full historical dataset** (`CPI.xlsm`), always use **Start: `1913 / 1`** and **End: the most recent available month**. The script automatically splits this large request into smaller chunks behind the scenes to stay within Statistics Canada's data limits — this is normal and expected.
+> 📋 **For the full historical dataset** (`CPI.xlsx`), always use **Start: `1913 / 1`** and **End: the most recent available month**. The script automatically splits this large request into smaller chunks behind the scenes to stay within Statistics Canada's data limits — this is normal and expected.
 
 ---
 
