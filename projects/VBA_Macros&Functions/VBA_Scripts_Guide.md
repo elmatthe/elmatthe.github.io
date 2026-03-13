@@ -1,3 +1,11 @@
+---
+layout: page
+title: VBA Scripts Guide
+permalink: /projects/vba-scripts-guide/
+summary: Full guide for importing and using VBA macros and custom functions.
+last_updated: 2026-03-13
+---
+
 # VBA Scripts & Custom Functions — User Guide
 
 > A reference guide for all included macros and custom worksheet functions.

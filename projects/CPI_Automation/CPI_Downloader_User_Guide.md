@@ -1,3 +1,11 @@
+---
+layout: page
+title: CPI Downloader User Guide
+permalink: /projects/cpi-downloader-user-guide/
+summary: Full setup and operating guide for the CPI dashboard downloader workflow.
+last_updated: 2026-03-13
+---
+
 # CPI Dashboard Downloader — User Guide
 
 > **This guide walks you through everything step by step.**
