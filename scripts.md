@@ -10,10 +10,10 @@ Reference scripts and utilities used for data handling, spreadsheet automation, 
 
 ## Python
 - [CPI Dashboard Downloader (v7)](/Projects/CPI_Automation/cpi_dashboard_downloader-v7.py)
-- [CPI Automation User Guide](/Projects/CPI_Automation/CPI_Downloader_User_Guide.md)
+- [CPI Automation User Guide (Rendered)](/projects/cpi-downloader-user-guide/)
 
 ## VBA
-- [VBA Scripts Guide](/Projects/VBA_Macros%26Functions/VBA_Scripts_Guide.md)
+- [VBA Scripts Guide (Rendered)](/projects/vba-scripts-guide/)
 - [BUBBLESORT.bas](/Projects/VBA_Macros%26Functions/BUBBLESORT.bas)
 - [BUBBLESORTUNIQUE.bas](/Projects/VBA_Macros%26Functions/BUBBLESORTUNIQUE.bas)
 - [SIMILAR_ID.bas](/Projects/VBA_Macros%26Functions/SIMILAR_ID.bas)
