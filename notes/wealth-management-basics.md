@@ -5,7 +5,7 @@ permalink: /notes/wealth-management-basics/
 nav_order: 10
 summary: A continually updated catalogue of fundamentals, checklists, and templates for practicing wealth managers in Canada.
 tags: [notes, wealth-management, canada, basics, compliance, portfolio, planning]
-last_updated: 2025-09-16
+last_updated: 2026-03-13
 toc: true
 ---
 
@@ -30,6 +30,7 @@ toc: true
 - [Cash Flow & Safety Net](#cash-flow--safety-net)
 - [Investing Essentials](#investing-essentials)
 - [Portfolio Construction & Tax Awareness](#portfolio-construction--tax-awareness)
+- [Project Application Map](#project-application-map)
 - [Registered Accounts (Canada Primer)](#registered-accounts-canada-primer)
 - [Retirement Planning & Decumulation](#retirement-planning--decumulation)
 - [Insurance & Risk Management](#insurance--risk-management)
@@ -155,6 +156,41 @@ toc: true
 
 ---
 
+## Project Application Map
+
+Use this section to turn theory into publishable work products on your site.
+
+### 1) Portfolio Rebalancing Workflow
+- **Project link:** [Portfolio Rebalancer Tool](/projects/portfolio-rebalancer/)
+- **Use case:** convert current holdings and policy weights into advisor-ready trade instructions.
+- **Client deliverables you can attach:**
+  - Drift snapshot (current vs target)
+  - Proposed buy/sell list
+  - Rebalancing rationale memo (policy-based, non-emotional)
+
+### 2) CPI Monitoring & Inflation Commentary
+- **Project link:** [CPI Dashboard Automation](/projects/cpi-dashboard-automation/)
+- **Use case:** automate CPI updates, then incorporate inflation context into planning assumptions.
+- **Client deliverables you can attach:**
+  - Monthly inflation briefing (1-page summary)
+  - Inflation sensitivity note for retirement cash flow
+  - Assumption-change log (old vs new planning inputs)
+
+### 3) Spreadsheet Operations & Data Hygiene
+- **Resource link:** [Scripts & Automation](/scripts/)
+- **Use case:** reduce manual spreadsheet cleanup and reporting errors.
+- **Client deliverables you can attach:**
+  - Data prep checklist
+  - QA signoff notes before portfolio review meetings
+  - Standard operating procedures for recurring reports
+
+### Suggested cadence for applying these projects
+- **Monthly:** CPI refresh + commentary
+- **Quarterly/Semi-Annual:** portfolio drift check + rebalance recommendation
+- **Annually:** IPS refresh, assumptions review, compliance note archive
+
+---
+
 ## Registered Accounts (Canada Primer)
 
 > Keep detailed **limits/phase-outs** on a separate “202X Limits” page and update annually.
@@ -247,3 +283,61 @@ toc: true
 ## Appendix: Re-usable Templates
 
 ### IPS Skeleton (copy/paste into client file)
+
+**Client name:**  
+**Date:**  
+**Advisor:**  
+
+**1. Objectives**
+- Primary goals:
+- Time horizon:
+- Required return range:
+
+**2. Risk Profile**
+- Risk tolerance:
+- Risk capacity:
+- Liquidity constraints:
+
+**3. Strategic Allocation**
+- Equity: ___%
+- Fixed income: ___%
+- Cash: ___%
+- Alternatives: ___%
+
+**4. Rebalancing Policy**
+- Frequency:
+- Drift threshold:
+- Exceptions/escalation rules:
+
+**5. Monitoring & Review**
+- Reporting cadence:
+- Trigger events:
+- Documentation standard:
+
+### Rebalancing Memo Template
+
+**Purpose:** Document why the recommended trades are suitable and policy-aligned.
+
+1. **Current vs target allocation**
+2. **Observed drift**
+3. **Recommended trades (buy/sell amounts)**
+4. **Tax, liquidity, and account-location considerations**
+5. **Client communication summary**
+6. **Approval and implementation date**
+
+### CPI Commentary Template (Monthly)
+
+**Month/Date:**  
+**Headline CPI direction:**  
+**Core inflation trend (high level):**  
+**Portfolio/planning implications:**  
+**Action items:**  
+
+---
+
+## Changelog
+
+- **2026-03-13**
+  - Added project-linked application map tying this note to live tools/pages.
+  - Added reusable advisor templates (IPS, rebalance memo, CPI commentary).
+  - Updated cadence guidance and implementation examples.
