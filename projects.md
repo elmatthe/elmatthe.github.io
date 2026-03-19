@@ -6,8 +6,8 @@ permalink: /Projects/
 
 <ul class="project-list">
   <li>
-    <a href="{{ '/projects/cpi-dashboard-automation/' | relative_url }}">CPI Project</a>
-    <div class="muted">Downloader workflow, setup guide, and workbook file.</div>
+    <a href="{{ '/projects/cpi-webscraper/' | relative_url }}">CPI Webscraper Project</a>
+    <div class="muted">Python CPI webscraper workflow, setup guide, and workbook template downloads.</div>
   </li>
   <li>
     <a href="{{ '/projects/portfolio-rebalancer/' | relative_url }}">Portfolio Rebalancer Project</a>
