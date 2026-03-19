@@ -1,20 +1,30 @@
 ---
 layout: page
-title: Portfolio Rebalancer Tool
+title: Portfolio Rebalancer Project
 permalink: /projects/portfolio-rebalancer/
-summary: Interactive tool to rebalance holdings back to a target strategic allocation.
-last_updated: 2026-03-13
+summary: Portfolio rebalancer workflow with interactive web tool, downloadable desktop script, and setup guide.
+last_updated: 2026-03-19
 ---
 
-# Portfolio Rebalancer Tool
-
-Use this calculator to rebalance holdings back to strategic target weights with a spreadsheet-style input table.
-
-<section class="callout">
-  <p><strong>How it works:</strong> choose how many securities you hold, then fill in <strong>ticker</strong>, <strong>shares</strong>, <strong>price</strong>, <strong>row currency</strong>, and <strong>target weight</strong> for each row.</p>
-  <p>The tool calculates each current value, target value, and the buy/sell strategy required to rebalance.</p>
-  <p><a href="{{ '/projects/portfolio-rebalancer-guide/' | relative_url }}">Open Setup Guide (Web Page)</a></p>
+<section class="hero-panel">
+  <div class="eyebrow">Portfolio Analytics Tool</div>
+  <h1>Portfolio Rebalancer Project</h1>
+  <p class="lede">This project supports a practical portfolio rebalancing workflow for advisory research and client review prep, with both an interactive web version and a downloadable Python desktop script.</p>
 </section>
+
+## Downloads
+<div class="btn-row">
+  <a class="btn" href="{{ '/projects/Portfolio_Rebalancer/portfolio_rebalancer_desktop.py' | relative_url }}" download>Download Portfolio Rebalancer (.py)</a>
+</div>
+
+## Guides
+<ul class="link-list">
+  <li><a href="{{ '/projects/Portfolio_Rebalancer/Portfolio_Rebalancer_Setup_Guide.md' | relative_url }}" download="Portfolio_Rebalancer_Setup_Guide.md">Download Portfolio Rebalancer Setup Guide (.md)</a></li>
+  <li><a href="{{ '/projects/portfolio-rebalancer-guide/' | relative_url }}">Open Portfolio Rebalancer Setup Guide (Web Page)</a></li>
+</ul>
+
+## Interactive Web Tool
+Use the browser version below to run the same rebalancing workflow directly on this site.
 
 <div class="tool-grid rebalancer-theme">
   <section class="tool-card rebalancer-input-card">

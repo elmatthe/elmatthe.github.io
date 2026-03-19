@@ -1,55 +1,108 @@
-# Portfolio Rebalancer Tool — Setup Guide
+# Portfolio Rebalancer Project - Setup Guide
 
-## Purpose
+## What this project includes
 
-This guide explains how to use the Portfolio Rebalancer project page to calculate buy/sell trades that return holdings to target weights.
+The Portfolio Rebalancer project has two ways to run the same rebalancing workflow:
 
-## Inputs
+1. **Interactive web tool** on the project page.
+2. **Desktop Python script** (`portfolio_rebalancer_desktop.py`) that opens its own window and performs the same calculations.
 
-Use the input table on the page:
+Both versions support:
 
-- **Ticker** (example: `AAPL`, `VTI`)
-- **Shares / Units held**
-- **Price (local currency)** per share/unit
-- **Row Currency** (`CAD`, `USD`, `JPN`, `EUR`, `GBP`, `CHY/CNH`)
-- **Target Weight %**
-- **Reporting Currency** for model-level totals/output
+- Multi-row position inputs
+- Per-row currency selection with built-in FX conversion
+- Reporting currency totals
+- Net contribution/withdrawal input
+- Buy/Sell/Hold trade instructions with post-trade share counts
 
-Choose the number of securities using **Number of securities** and click **Apply Rows**.
+---
 
-## Steps
+## Download files
 
-1. Open the Portfolio Rebalancer Tool page.
-2. Set the number of securities held.
-3. Fill the table rows (ticker, shares, price, row currency, target weight).
-4. Select a reporting currency for portfolio-level results.
-5. Enter net contribution/withdrawal:
-   - Positive = contribution
-   - Negative = withdrawal
-6. Click **Run Rebalance**.
-7. Review the generated output table and strategy:
-   - Current value vs target value by ticker
-   - Buy/sell value in reporting currency and local row currency
-   - Shares/units to buy or sell
-   - Post-trade shares/units
+From the Portfolio Rebalancer project page:
 
-## Validation Rules
+- Download **Portfolio Rebalancer (.py)** to run the desktop app.
+- Download **Portfolio Rebalancer Setup Guide (.md)** for offline instructions.
+- Open **Portfolio Rebalancer Setup Guide (Web Page)** for a rendered browser view.
+
+---
+
+## Run the desktop Python script
+
+### 1) Prerequisites
+
+- Python **3.9+** recommended
+- `tkinter` available (included with most Python installs)
+
+### 2) Run command
+
+Open terminal in the folder containing the downloaded script and run:
+
+```bash
+python3 portfolio_rebalancer_desktop.py
+```
+
+If `python3` is not available, try:
+
+```bash
+python portfolio_rebalancer_desktop.py
+```
+
+### 3) Desktop window behavior
+
+When launched, the script opens a window with:
+
+- Row controls: **Apply Rows**, **Add Row**, **Remove Last Row**
+- Inputs per row: ticker, shares, price, row currency, target weight
+- Live FX and current value columns
+- **Run Rebalance** button for final trade output
+- **Load Sample Portfolio** button for quick testing
+
+---
+
+## How to use (web or desktop)
+
+1. Set **Number of securities**.
+2. Fill each row:
+   - **Ticker** (example: `VTI`, `AAPL`)
+   - **Shares / Units**
+   - **Price (local)**
+   - **Row Currency** (`USD`, `CAD`, `JPN`, `EUR`, `GBP`, `CHY/CNH`)
+   - **Target Weight %**
+3. Set **Reporting currency**.
+4. Enter **Net contribution / withdrawal**:
+   - Positive value = contribution
+   - Negative value = withdrawal
+5. Click **Run Rebalance**.
+6. Review summary totals and trade instructions.
+
+---
+
+## Validation rules
 
 - Ticker is required in every row.
 - Shares/units must be numeric and non-negative.
 - Price must be numeric and greater than 0.
-- Row currency is required for each row.
 - Target weight must be numeric and 0 or greater.
-- At least one row must have a target weight greater than 0.
-- Ending portfolio value must remain above 0.
+- At least one target weight must be greater than 0.
+- Ending portfolio value must remain greater than 0.
 
-## Output
+---
 
-The tool returns:
+## Output fields
 
-- Total current value
+The results include:
+
+- Total current portfolio value
 - Net flow
 - Target ending value
-- Total buy and sell value
-- Trade-by-ticker instructions (buy/sell)
-- Shares/units to trade and post-trade holdings
+- Total buy value
+- Total sell value
+- Per-ticker trade plan:
+  - Current value
+  - Target value
+  - Trade value (reporting currency)
+  - Trade value (local row currency)
+  - Trade shares/units
+  - Action (Buy / Sell / Hold)
+  - Post-trade shares/units
