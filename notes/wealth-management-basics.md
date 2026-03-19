@@ -169,7 +169,7 @@ Use this section to turn theory into publishable work products on your site.
   - Rebalancing rationale memo (policy-based, non-emotional)
 
 ### 2) CPI Monitoring & Inflation Commentary
-- **Project link:** [CPI Dashboard Automation](/projects/cpi-dashboard-automation/)
+- **Project link:** [CPI Webscraper Project](/projects/cpi-webscraper/)
 - **Use case:** automate CPI updates, then incorporate inflation context into planning assumptions.
 - **Client deliverables you can attach:**
   - Monthly inflation briefing (1-page summary)

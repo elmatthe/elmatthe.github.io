@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
+  <title id="title">CPI workflow overview</title>
+  <desc id="desc">Diagram showing CPI data pulled by Python, transformed in a workbook, and used for advisory commentary.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#0f2241" />
+      <stop offset="100%" stop-color="#17355f" />
+    </linearGradient>
+    <linearGradient id="card" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0%" stop-color="#f9fbff" />
+      <stop offset="100%" stop-color="#e8f0ff" />
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="560" fill="url(#bg)" rx="20" />
+  <text x="72" y="92" fill="#dce9ff" font-family="Arial, sans-serif" font-size="20" letter-spacing="1.8">CPI DASHBOARD AUTOMATION</text>
+  <text x="72" y="136" fill="#ffffff" font-family="Arial, sans-serif" font-size="40" font-weight="700">Inflation data workflow at a glance</text>
+  <text x="72" y="170" fill="#bed3f7" font-family="Arial, sans-serif" font-size="21">From monthly data pull to advisor-ready notes and portfolio commentary.</text>
+
+  <rect x="72" y="220" width="310" height="250" rx="16" fill="url(#card)" />
+  <rect x="445" y="220" width="310" height="250" rx="16" fill="url(#card)" />
+  <rect x="818" y="220" width="310" height="250" rx="16" fill="url(#card)" />
+
+  <rect x="102" y="258" width="64" height="64" rx="12" fill="#2c6bc0" />
+  <path d="M120 305h30m-30-15h30m-30-15h30" stroke="#ffffff" stroke-width="4" stroke-linecap="round" />
+  <text x="184" y="280" fill="#0d2240" font-family="Arial, sans-serif" font-size="23" font-weight="700">1) Python Pull</text>
+  <text x="102" y="350" fill="#324d78" font-family="Arial, sans-serif" font-size="18">Collect latest CPI series with</text>
+  <text x="102" y="378" fill="#324d78" font-family="Arial, sans-serif" font-size="18">the downloadable script.</text>
+
+  <rect x="475" y="258" width="64" height="64" rx="12" fill="#2c6bc0" />
+  <rect x="493" y="276" width="28" height="28" fill="#ffffff" />
+  <path d="M493 286h28M507 276v28" stroke="#2c6bc0" stroke-width="2" />
+  <text x="557" y="280" fill="#0d2240" font-family="Arial, sans-serif" font-size="23" font-weight="700">2) Workbook Model</text>
+  <text x="475" y="350" fill="#324d78" font-family="Arial, sans-serif" font-size="18">Organize trend data, assumptions,</text>
+  <text x="475" y="378" fill="#324d78" font-family="Arial, sans-serif" font-size="18">and monitoring notes in Excel.</text>
+
+  <rect x="848" y="258" width="64" height="64" rx="12" fill="#2c6bc0" />
+  <path d="M870 292l12 12 20-24" stroke="#ffffff" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+  <text x="930" y="280" fill="#0d2240" font-family="Arial, sans-serif" font-size="23" font-weight="700">3) Advisory Output</text>
+  <text x="848" y="350" fill="#324d78" font-family="Arial, sans-serif" font-size="18">Use insights in planning meetings,</text>
+  <text x="848" y="378" fill="#324d78" font-family="Arial, sans-serif" font-size="18">stress tests, and client reviews.</text>
+
+  <path d="M392 344h42m-10-10 10 10-10 10" stroke="#9ec2f7" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+  <path d="M765 344h42m-10-10 10 10-10 10" stroke="#9ec2f7" stroke-width="4" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

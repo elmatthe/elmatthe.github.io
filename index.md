@@ -49,7 +49,7 @@ title: Home
 
 ## Featured Projects
 <ul class="link-list">
-  <li><a href="{{ '/projects/cpi-dashboard-automation/' | relative_url }}">CPI Dashboard Automation</a></li>
+  <li><a href="{{ '/projects/cpi-webscraper/' | relative_url }}">CPI Webscraper Project</a></li>
   <li><a href="{{ '/projects/portfolio-rebalancer/' | relative_url }}">Portfolio Rebalancer Tool</a></li>
 </ul>
 
