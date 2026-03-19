@@ -1,13 +1,13 @@
 # Elijah Matthew | Wealth Management Portfolio Site
 
-Professional GitHub Pages portfolio for wealth management projects, advisory notes, and practical finance tools.
+Professional GitHub Pages portfolio for wealth management projects, a finance knowledge hub, and practical finance tools.
 
 ## Site Structure
 - `index.md` - Homepage with advisory focus and quick navigation
 - `projects.md` - Project landing page
 - `projects/` - Individual project pages (includes Portfolio Rebalancer)
 - `scripts.md` - Script and automation catalog
-- `notes/` - Ongoing learning and reference notes
+- `notes/` - Finance knowledge hub with topic-based sections for market updates, knowledge, and advisor resources
 - `about.md` - Professional profile
 - `assets/main.scss` - Global visual styling
 
