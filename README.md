@@ -12,8 +12,8 @@ Professional GitHub Pages portfolio for wealth management projects, a finance kn
 - `assets/main.scss` - Global visual styling
 
 ## Featured Tool
-- `projects/monte-carlo-simulator.md` - Monte Carlo retirement simulator page with browser scenario tool, starter desktop script, and setup guide links.
-- `projects/Monte_Carlo_Simulator/monte_carlo_simulator.py` - Starter desktop GUI scaffold for the Monte Carlo project.
+- `projects/monte-carlo-simulator.md` - Monte Carlo retirement simulator page with browser scenario tool, downloadable desktop app, and setup guide links.
+- `projects/Monte_Carlo_Simulator/monte_carlo_simulator.py` - Desktop GUI simulator with threaded runs, Excel report writing, and chart embedding.
 - `projects/portfolio-rebalancer.md` - Portfolio rebalancer project page with browser tool, downloadable desktop script, and setup guide links.
 - `projects/Portfolio_Rebalancer/portfolio_rebalancer_desktop.py` - Standalone desktop GUI script that mirrors the website rebalancer workflow.
 
