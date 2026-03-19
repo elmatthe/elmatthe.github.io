@@ -107,6 +107,86 @@ h3 {
   margin-top: 0;
 }
 
+.hub-hero {
+  border: 1px solid var(--border-soft);
+  background: linear-gradient(145deg, #f4f8ff 0%, #edf3fc 100%);
+  border-radius: 12px;
+  padding: 1.1rem 1.2rem;
+  margin-bottom: 1.2rem;
+}
+
+.hub-hero h2 {
+  margin-top: 0;
+  margin-bottom: 0.5rem;
+  font-size: 1.35rem;
+  line-height: 1.3;
+}
+
+.hub-hero p {
+  margin-bottom: 0;
+}
+
+.hub-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin-bottom: 1rem;
+}
+
+.hub-pill {
+  display: inline-block;
+  text-decoration: none;
+  border: 1px solid #bfd1e8;
+  background: #f7faff;
+  color: #27466d;
+  border-radius: 999px;
+  padding: 0.34rem 0.8rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.hub-pill:hover {
+  text-decoration: none;
+  background: #ecf3fc;
+}
+
+.hub-section {
+  margin-bottom: 1.15rem;
+}
+
+.hub-section h3 {
+  margin-bottom: 0.35rem;
+}
+
+.hub-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.8rem;
+}
+
+.hub-card {
+  border: 1px solid var(--border-soft);
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 0.9rem;
+  box-shadow: 0 3px 10px rgba(20, 40, 80, 0.06);
+}
+
+.hub-card h3,
+.hub-card h4 {
+  margin-top: 0;
+  margin-bottom: 0.45rem;
+}
+
+.hub-card p {
+  margin-bottom: 0.5rem;
+}
+
+.hub-card ul,
+.hub-card ol {
+  margin-bottom: 0;
+}
+
 .link-list li,
 .project-list li {
   margin-bottom: 0.45rem;
@@ -503,6 +583,18 @@ table.input-sheet td:nth-child(8) {
 }
 
 @media (max-width: 900px) {
+  .hub-hero h2 {
+    font-size: 1.2rem;
+  }
+
+  .hub-pill {
+    font-size: 0.86rem;
+  }
+
+  .hub-card {
+    padding: 0.8rem;
+  }
+
   table.sheet-table {
     min-width: 980px;
   }
