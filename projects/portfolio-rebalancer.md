@@ -8,117 +8,252 @@ last_updated: 2026-03-13
 
 # Portfolio Rebalancer Tool
 
-Use this calculator to rebalance a portfolio back to its intended strategic weights.
+Use this calculator to rebalance holdings back to strategic target weights with a spreadsheet-style input table.
 
 <section class="callout">
-  <p><strong>Input format:</strong> one position per line using <code>Asset, Current Value, Target Weight %</code>.</p>
-  <p>Example: <code>US Equity,45000,50</code></p>
+  <p><strong>How it works:</strong> choose how many securities you hold, then fill in <strong>ticker</strong>, <strong>shares</strong>, <strong>price</strong>, and <strong>target weight</strong> for each row.</p>
+  <p>The tool calculates each current value, target value, and the buy/sell strategy required to rebalance.</p>
   <p><a href="{{ '/projects/portfolio-rebalancer-guide/' | relative_url }}">Open Setup Guide (Web Page)</a> | <a href="{{ '/projects/Portfolio_Rebalancer/Portfolio_Rebalancer_Setup_Guide.md' | relative_url }}" download>Download Setup Guide (.md)</a></p>
 </section>
 
 ## Project Files
 - [Portfolio Rebalancer Setup Guide (.md)](/projects/Portfolio_Rebalancer/Portfolio_Rebalancer_Setup_Guide.md)
 
-<div class="tool-grid">
-  <section class="tool-card">
+<div class="tool-grid rebalancer-theme">
+  <section class="tool-card rebalancer-input-card">
     <h3>Portfolio Inputs</h3>
-    <div class="field">
-      <label for="holdingsInput">Positions</label>
-      <textarea id="holdingsInput">US Equity,45000,50
-International Equity,25000,25
-Fixed Income,15000,20
-Cash,5000,5</textarea>
+    <div class="input-controls">
+      <div class="field inline-field">
+        <label for="rowCountInput">Number of securities</label>
+        <input id="rowCountInput" type="number" min="1" max="50" step="1" value="4" />
+      </div>
+      <div class="btn-row compact">
+        <button class="btn btn-secondary" id="applyRowCountBtn" type="button">Apply Rows</button>
+        <button class="btn btn-secondary" id="addRowBtn" type="button">Add Row</button>
+        <button class="btn btn-secondary" id="removeRowBtn" type="button">Remove Last Row</button>
+      </div>
     </div>
+
+    <div class="table-wrap">
+      <table class="sheet-table input-sheet" id="inputSheet">
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>Ticker</th>
+            <th>Shares / Units</th>
+            <th>Price (USD)</th>
+            <th>Current Value (auto)</th>
+            <th>Target Weight %</th>
+          </tr>
+        </thead>
+        <tbody id="inputRows"></tbody>
+      </table>
+    </div>
+
+    <div class="table-footnote">
+      <span id="liveCurrentTotal">Current total: $0.00</span>
+      <span id="liveWeightTotal">Target weight total: 0.00%</span>
+    </div>
+
     <div class="field">
       <label for="netFlowInput">Net contribution / withdrawal</label>
       <input id="netFlowInput" type="number" value="0" step="0.01" />
       <div class="muted">Use a positive value for contribution and negative for withdrawal.</div>
     </div>
     <div class="btn-row">
-      <button class="btn" id="rebalanceBtn" type="button">Calculate Rebalance</button>
-      <button class="btn btn-secondary" id="sampleBtn" type="button">Reset Sample Data</button>
+      <button class="btn" id="rebalanceBtn" type="button">Run Rebalance</button>
+      <button class="btn btn-secondary" id="sampleBtn" type="button">Load Sample Portfolio</button>
     </div>
     <div id="validationMessage" class="muted"></div>
   </section>
 
-  <section class="tool-card">
+  <section class="tool-card rebalancer-output-card">
     <h3>Rebalance Output</h3>
-    <div id="rebalanceResults" class="result-box">Results will appear here after calculation.</div>
+    <div id="rebalanceResults" class="result-box">Output will appear here after you run rebalancing.</div>
   </section>
 </div>
 
 <script>
   (function () {
-    function parseInputRows(rawText) {
-      return rawText
-        .split(/\r?\n/)
-        .map(function (line) { return line.trim(); })
-        .filter(function (line) { return line.length > 0; });
-    }
+    var samplePortfolio = [
+      { ticker: "VTI", shares: 120, price: 250, targetWeight: 45 },
+      { ticker: "VXUS", shares: 95, price: 58, targetWeight: 25 },
+      { ticker: "BND", shares: 180, price: 72, targetWeight: 20 },
+      { ticker: "VNQ", shares: 40, price: 84, targetWeight: 10 }
+    ];
 
-    function parsePositions(rows) {
-      return rows.map(function (row, idx) {
-        var parts = row.split(",").map(function (p) { return p.trim(); });
-        if (parts.length !== 3) {
-          throw new Error("Line " + (idx + 1) + " must have 3 comma-separated values.");
-        }
-
-        var name = parts[0];
-        var currentValue = Number(parts[1]);
-        var targetWeight = Number(parts[2]);
-
-        if (!name) {
-          throw new Error("Line " + (idx + 1) + ": asset name is required.");
-        }
-        if (!Number.isFinite(currentValue) || currentValue < 0) {
-          throw new Error("Line " + (idx + 1) + ": current value must be a non-negative number.");
-        }
-        if (!Number.isFinite(targetWeight) || targetWeight <= 0) {
-          throw new Error("Line " + (idx + 1) + ": target weight must be greater than 0.");
-        }
-
-        return {
-          name: name,
-          currentValue: currentValue,
-          targetWeight: targetWeight
-        };
-      });
-    }
+    var rowCountInput = document.getElementById("rowCountInput");
+    var inputRowsNode = document.getElementById("inputRows");
+    var validationNode = document.getElementById("validationMessage");
+    var resultsNode = document.getElementById("rebalanceResults");
 
     function formatCurrency(num) {
       return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(num);
     }
 
     function formatPct(num) {
-      return (num * 100).toFixed(2) + "%";
+      return num.toFixed(2) + "%";
     }
 
-    function buildTable(rows) {
-      var tableHead = "<table class='rebalance-table'><thead><tr>" +
-        "<th>Asset</th><th>Current</th><th>Target Weight</th><th>Target Value</th>" +
-        "<th>Trade</th><th>Post-Trade Value</th></tr></thead><tbody>";
+    function formatShares(num) {
+      return new Intl.NumberFormat("en-US", {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 4
+      }).format(num);
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function rowHtml(index, data) {
+      var rowData = data || {};
+      var shares = Number.isFinite(Number(rowData.shares)) ? Number(rowData.shares) : "";
+      var price = Number.isFinite(Number(rowData.price)) ? Number(rowData.price) : "";
+      var targetWeight = Number.isFinite(Number(rowData.targetWeight)) ? Number(rowData.targetWeight) : "";
+      var ticker = rowData.ticker ? String(rowData.ticker).toUpperCase() : "";
+      var currentValue = Number(shares) * Number(price);
+      var currentValueText = Number.isFinite(currentValue) && currentValue >= 0 ? formatCurrency(currentValue) : "$0.00";
+
+      return "<tr>" +
+        "<td class='row-index'>" + (index + 1) + "</td>" +
+        "<td><input class='sheet-input ticker-input' type='text' maxlength='12' placeholder='e.g. AAPL' value='" + escapeHtml(ticker) + "' /></td>" +
+        "<td><input class='sheet-input shares-input' type='number' min='0' step='0.0001' value='" + shares + "' /></td>" +
+        "<td><input class='sheet-input price-input' type='number' min='0.0001' step='0.0001' value='" + price + "' /></td>" +
+        "<td class='current-value-cell'>" + currentValueText + "</td>" +
+        "<td><input class='sheet-input target-weight-input' type='number' min='0' step='0.01' value='" + targetWeight + "' /></td>" +
+        "</tr>";
+    }
+
+    function setRows(count, seedData) {
+      var rowCount = Math.max(1, Math.min(50, Math.floor(Number(count) || 1)));
+      rowCountInput.value = String(rowCount);
+
+      var rowsHtml = [];
+      for (var i = 0; i < rowCount; i += 1) {
+        rowsHtml.push(rowHtml(i, seedData && seedData[i] ? seedData[i] : null));
+      }
+      inputRowsNode.innerHTML = rowsHtml.join("");
+      updateLiveTotals();
+    }
+
+    function readNumberInput(inputNode) {
+      var value = Number(inputNode.value);
+      return Number.isFinite(value) ? value : NaN;
+    }
+
+    function updateLiveTotals() {
+      var currentTotal = 0;
+      var weightTotal = 0;
+      var rows = inputRowsNode.querySelectorAll("tr");
+
+      rows.forEach(function (row) {
+        var shares = readNumberInput(row.querySelector(".shares-input"));
+        var price = readNumberInput(row.querySelector(".price-input"));
+        var targetWeight = readNumberInput(row.querySelector(".target-weight-input"));
+
+        var currentValue = Number.isFinite(shares) && Number.isFinite(price) && shares >= 0 && price > 0
+          ? shares * price
+          : 0;
+
+        row.querySelector(".current-value-cell").textContent = formatCurrency(currentValue);
+        currentTotal += currentValue;
+        if (Number.isFinite(targetWeight) && targetWeight >= 0) {
+          weightTotal += targetWeight;
+        }
+      });
+
+      document.getElementById("liveCurrentTotal").textContent = "Current total: " + formatCurrency(currentTotal);
+      document.getElementById("liveWeightTotal").textContent = "Target weight total: " + formatPct(weightTotal);
+    }
+
+    function parsePositionsFromTable() {
+      var rows = Array.prototype.slice.call(inputRowsNode.querySelectorAll("tr"));
+      if (!rows.length) {
+        throw new Error("Add at least one security row.");
+      }
+
+      var positions = rows.map(function (row, idx) {
+        var ticker = row.querySelector(".ticker-input").value.trim().toUpperCase();
+        var shares = readNumberInput(row.querySelector(".shares-input"));
+        var price = readNumberInput(row.querySelector(".price-input"));
+        var targetWeight = readNumberInput(row.querySelector(".target-weight-input"));
+
+        if (!ticker) {
+          throw new Error("Row " + (idx + 1) + ": ticker is required.");
+        }
+        if (!Number.isFinite(shares) || shares < 0) {
+          throw new Error("Row " + (idx + 1) + ": shares/units must be a non-negative number.");
+        }
+        if (!Number.isFinite(price) || price <= 0) {
+          throw new Error("Row " + (idx + 1) + ": price must be greater than 0.");
+        }
+        if (!Number.isFinite(targetWeight) || targetWeight < 0) {
+          throw new Error("Row " + (idx + 1) + ": target weight must be 0 or greater.");
+        }
+
+        return {
+          ticker: ticker,
+          shares: shares,
+          price: price,
+          currentValue: shares * price,
+          targetWeight: targetWeight
+        };
+      });
+
+      var hasPositiveWeight = positions.some(function (p) { return p.targetWeight > 0; });
+      if (!hasPositiveWeight) {
+        throw new Error("At least one target weight must be greater than 0.");
+      }
+
+      return positions;
+    }
+
+    function buildResultTable(rows) {
+      var tableHead = "<table class='sheet-table output-sheet'><thead><tr>" +
+        "<th>Ticker</th><th>Shares</th><th>Price</th><th>Current Value</th><th>Target Weight</th>" +
+        "<th>Target Value</th><th>Trade Value</th><th>Trade Shares</th><th>Action</th><th>Post-Trade Shares</th>" +
+        "</tr></thead><tbody>";
+
       var tableBody = rows.map(function (r) {
-        var actionText = r.trade >= 0 ? "Buy " + formatCurrency(r.trade) : "Sell " + formatCurrency(Math.abs(r.trade));
-        return "<tr><td>" + r.name + "</td><td>" + formatCurrency(r.currentValue) + "</td><td>" +
-          formatPct(r.targetWeightNorm) + "</td><td>" + formatCurrency(r.targetValue) + "</td><td>" +
-          actionText + "</td><td>" + formatCurrency(r.postTradeValue) + "</td></tr>";
+        var actionClass = r.action.toLowerCase();
+        return "<tr>" +
+          "<td>" + escapeHtml(r.ticker) + "</td>" +
+          "<td>" + formatShares(r.shares) + "</td>" +
+          "<td>" + formatCurrency(r.price) + "</td>" +
+          "<td>" + formatCurrency(r.currentValue) + "</td>" +
+          "<td>" + formatPct(r.targetWeightNorm * 100) + "</td>" +
+          "<td>" + formatCurrency(r.targetValue) + "</td>" +
+          "<td>" + formatCurrency(r.tradeValue) + "</td>" +
+          "<td>" + formatShares(r.tradeShares) + "</td>" +
+          "<td><span class='action-pill action-" + actionClass + "'>" + r.action + "</span></td>" +
+          "<td>" + formatShares(r.postTradeShares) + "</td>" +
+          "</tr>";
       }).join("");
+
       return tableHead + tableBody + "</tbody></table>";
     }
 
+    function summaryHtml(data) {
+      return "<div class='summary-grid'>" +
+        "<div class='summary-item'><span>Total Current</span><strong>" + formatCurrency(data.totalCurrent) + "</strong></div>" +
+        "<div class='summary-item'><span>Net Flow</span><strong>" + formatCurrency(data.netFlow) + "</strong></div>" +
+        "<div class='summary-item'><span>Target Ending Value</span><strong>" + formatCurrency(data.endingValue) + "</strong></div>" +
+        "<div class='summary-item'><span>Total Buy Value</span><strong>" + formatCurrency(data.totalBuys) + "</strong></div>" +
+        "<div class='summary-item'><span>Total Sell Value</span><strong>" + formatCurrency(data.totalSells) + "</strong></div>" +
+        "</div>";
+    }
+
     function calculateRebalance() {
-      var msg = document.getElementById("validationMessage");
-      var resultsNode = document.getElementById("rebalanceResults");
-      msg.textContent = "";
+      validationNode.textContent = "";
 
       try {
-        var raw = document.getElementById("holdingsInput").value;
-        var rows = parseInputRows(raw);
-        if (!rows.length) {
-          throw new Error("Enter at least one position.");
-        }
-
-        var positions = parsePositions(rows);
+        var positions = parsePositionsFromTable();
         var netFlow = Number(document.getElementById("netFlowInput").value || "0");
         if (!Number.isFinite(netFlow)) {
           throw new Error("Net contribution / withdrawal must be a valid number.");
@@ -131,46 +266,117 @@ Cash,5000,5</textarea>
         }
 
         var endingPortfolioValue = totalCurrent + netFlow;
-        var buys = 0;
-        var sells = 0;
+        var totalBuys = 0;
+        var totalSells = 0;
 
         var results = positions.map(function (p) {
           var targetWeightNorm = p.targetWeight / totalWeight;
           var targetValue = targetWeightNorm * endingPortfolioValue;
-          var trade = targetValue - p.currentValue;
-          if (trade >= 0) {
-            buys += trade;
-          } else {
-            sells += Math.abs(trade);
+          var tradeValue = targetValue - p.currentValue;
+          var tradeShares = tradeValue / p.price;
+          var action = "Hold";
+
+          if (tradeValue > 0.005) {
+            action = "Buy";
+            totalBuys += tradeValue;
+          } else if (tradeValue < -0.005) {
+            action = "Sell";
+            totalSells += Math.abs(tradeValue);
           }
+
+          if (Math.abs(tradeValue) <= 0.005) {
+            tradeValue = 0;
+            tradeShares = 0;
+          }
+
           return {
-            name: p.name,
+            ticker: p.ticker,
+            shares: p.shares,
+            price: p.price,
             currentValue: p.currentValue,
             targetWeightNorm: targetWeightNorm,
             targetValue: targetValue,
-            trade: trade,
-            postTradeValue: p.currentValue + trade
+            tradeValue: tradeValue,
+            tradeShares: tradeShares,
+            action: action,
+            postTradeShares: p.shares + tradeShares
           };
         });
 
-        var summary = "<p><strong>Total current value:</strong> " + formatCurrency(totalCurrent) + "<br/>" +
-          "<strong>Net flow:</strong> " + formatCurrency(netFlow) + "<br/>" +
-          "<strong>Target ending value:</strong> " + formatCurrency(endingPortfolioValue) + "<br/>" +
-          "<strong>Total buys:</strong> " + formatCurrency(buys) + " | <strong>Total sells:</strong> " + formatCurrency(sells) + "</p>";
+        var summaryData = {
+          totalCurrent: totalCurrent,
+          netFlow: netFlow,
+          endingValue: endingPortfolioValue,
+          totalBuys: totalBuys,
+          totalSells: totalSells
+        };
 
-        resultsNode.innerHTML = summary + buildTable(results);
+        resultsNode.innerHTML = summaryHtml(summaryData) + buildResultTable(results);
       } catch (err) {
-        resultsNode.textContent = "Results will appear here after calculation.";
-        msg.textContent = err.message;
+        resultsNode.textContent = "Output will appear here after you run rebalancing.";
+        validationNode.textContent = err.message;
       }
     }
 
+    function getCurrentRowData() {
+      var rows = Array.prototype.slice.call(inputRowsNode.querySelectorAll("tr"));
+      return rows.map(function (row) {
+        return {
+          ticker: row.querySelector(".ticker-input").value.trim().toUpperCase(),
+          shares: row.querySelector(".shares-input").value,
+          price: row.querySelector(".price-input").value,
+          targetWeight: row.querySelector(".target-weight-input").value
+        };
+      });
+    }
+
+    document.getElementById("applyRowCountBtn").addEventListener("click", function () {
+      var targetRows = Number(rowCountInput.value);
+      var existingData = getCurrentRowData();
+      var seededRows = [];
+      var rowLimit = Math.max(1, Math.min(50, Math.floor(targetRows) || 1));
+
+      for (var i = 0; i < rowLimit; i += 1) {
+        seededRows.push(existingData[i] || null);
+      }
+
+      setRows(rowLimit, seededRows);
+    });
+
+    document.getElementById("addRowBtn").addEventListener("click", function () {
+      var currentData = getCurrentRowData();
+      if (currentData.length >= 50) {
+        validationNode.textContent = "Maximum row limit reached (50).";
+        return;
+      }
+      currentData.push(null);
+      setRows(currentData.length, currentData);
+    });
+
+    document.getElementById("removeRowBtn").addEventListener("click", function () {
+      var currentData = getCurrentRowData();
+      if (currentData.length <= 1) {
+        validationNode.textContent = "At least one row is required.";
+        return;
+      }
+      currentData.pop();
+      setRows(currentData.length, currentData);
+    });
+
+    inputRowsNode.addEventListener("input", function () {
+      validationNode.textContent = "";
+      updateLiveTotals();
+    });
+
     document.getElementById("rebalanceBtn").addEventListener("click", calculateRebalance);
     document.getElementById("sampleBtn").addEventListener("click", function () {
-      document.getElementById("holdingsInput").value = "US Equity,45000,50\nInternational Equity,25000,25\nFixed Income,15000,20\nCash,5000,5";
+      rowCountInput.value = String(samplePortfolio.length);
+      setRows(samplePortfolio.length, samplePortfolio);
       document.getElementById("netFlowInput").value = "0";
-      document.getElementById("validationMessage").textContent = "";
-      document.getElementById("rebalanceResults").textContent = "Results will appear here after calculation.";
+      validationNode.textContent = "";
+      resultsNode.textContent = "Output will appear here after you run rebalancing.";
     });
+
+    setRows(samplePortfolio.length, samplePortfolio);
   })();
 </script>
