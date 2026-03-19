@@ -2,7 +2,7 @@
 layout: page
 title: Monte Carlo Retirement Simulator
 permalink: /projects/monte-carlo-simulator/
-summary: Retirement planning Monte Carlo workflow with browser simulator, starter Python app, and setup guide.
+summary: Retirement planning Monte Carlo workflow with browser simulator, desktop Python app, and setup guide.
 last_updated: 2026-03-19
 ---
 
@@ -14,7 +14,7 @@ last_updated: 2026-03-19
 
 ## Downloads
 <div class="btn-row">
-  <a class="btn" href="{{ '/projects/Monte_Carlo_Simulator/monte_carlo_simulator.py' | relative_url }}" download>Download Monte Carlo Simulator (.py)</a>
+  <a class="btn" href="{{ '/projects/Monte_Carlo_Simulator/monte_carlo_simulator.py' | relative_url }}" download>Download Desktop Monte Carlo Simulator (.py)</a>
   <a class="btn" href="{{ '/projects/Monte_Carlo_Simulator/Monte_Carlo_Setup_Guide.md' | relative_url }}" download="Monte_Carlo_Setup_Guide.md">Download Setup Guide (.md)</a>
 </div>
 
@@ -137,7 +137,7 @@ This web version is designed for quick scenario analysis in-browser while matchi
   </section>
   <section class="card">
     <h3>Downloadable Resources</h3>
-    <p class="muted">Desktop Python script and setup guide download links are included to support local workflow setup and next-stage build steps.</p>
+    <p class="muted">Download the desktop Python simulator and setup guide to run threaded simulations, write Excel outputs, and export percentile CSV data locally.</p>
   </section>
 </div>
 

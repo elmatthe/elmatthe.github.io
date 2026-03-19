@@ -1,6 +1,6 @@
 # Monte Carlo Retirement Simulator - Setup Guide
 
-This guide is the starter companion for the Monte Carlo Retirement Simulator project. It follows the same practical format as the CPI and Portfolio Rebalancer project guides.
+This guide supports the full desktop Monte Carlo Retirement Simulator workflow. It follows the same practical format as the CPI and Portfolio Rebalancer project guides.
 
 ---
 
@@ -44,7 +44,13 @@ From the project page, download:
 
 ### Step 4: Keep workbook closed while writing results
 
-When the full Excel output version is used, make sure the target workbook is closed in Excel before running the script.
+The simulator writes directly into your selected workbook and creates/overwrites:
+
+- `MC_Summary`
+- `MC_Percentiles`
+- `MC_Chart`
+
+Keep the target workbook closed in Excel while the script runs.
 
 ---
 
@@ -53,9 +59,9 @@ When the full Excel output version is used, make sure the target workbook is clo
 1. Save `monte_carlo_simulator.py` locally.
 2. Double-click the script (or run `python monte_carlo_simulator.py` in terminal).
 3. Enter your assumptions in the input form.
-4. Click **Run Simulation**.
-
-> Note: the current script is a starter scaffold. The full Excel-writing version is planned in the next build steps.
+4. Choose a target `.xlsx` workbook.
+5. (Optional) check **Also export to CSV** and select a `.csv` output path.
+6. Click **Run Simulation**.
 
 ---
 
@@ -71,12 +77,14 @@ When the full Excel output version is used, make sure the target workbook is clo
    - annual spending
    - pension income
    - simulation count
-2. Run the simulation.
-3. Review summary output:
-   - probability of success
-   - median retirement and final values
-   - safe withdrawal rate estimate
-4. Compare scenarios by adjusting one assumption at a time.
+2. Select the workbook destination.
+3. Optional: enable CSV export and choose path.
+4. Run the simulation.
+5. Open the workbook and review:
+   - `MC_Summary` for key assumptions and output stats
+   - `MC_Percentiles` for year-by-year percentile bands
+   - `MC_Chart` for embedded fan chart image
+6. Compare scenarios by adjusting one assumption at a time.
 
 ---
 
@@ -86,6 +94,7 @@ When the full Excel output version is used, make sure the target workbook is clo
 - **Percentile bands:** show optimistic, median, and conservative path ranges.
 - **Safe withdrawal rate (SWR):** net withdrawal divided by median portfolio at retirement.
 - **Nominal vs real values:** nominal values are in future dollars; real values adjust for inflation.
+- **Ruin year metric:** when failures occur, median ruin year shows when depletion typically happens in retirement.
 
 ---
 
@@ -96,7 +105,8 @@ When the full Excel output version is used, make sure the target workbook is clo
 | Script does not start | Python not installed or path issue | Install Python 3.10+ and re-run |
 | Import error (openpyxl/matplotlib/numpy) | Dependencies missing | Run `pip install openpyxl matplotlib numpy` |
 | Inputs rejected | Invalid value in one or more fields | Check that required fields are numeric and positive where required |
-| Slow browser simulation | Too many simulation runs | Keep browser run count at or below 2,000 |
+| Workbook save fails | Workbook open in Excel | Close workbook in Excel and run again |
+| Slow desktop simulation | Very high simulation count | Reduce run count (e.g. 1,000-5,000) for faster turnaround |
 
 ---
 
