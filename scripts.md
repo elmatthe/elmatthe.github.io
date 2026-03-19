@@ -10,6 +10,16 @@ Reference scripts and utilities used for data handling, spreadsheet automation, 
 
 ## Python Data Scripts (Economic Data)
 - [CPI Dashboard Downloader (v7)](/projects/CPI_Automation/cpi_dashboard_downloader-v7.py)
+- [Portfolio Rebalancer Desktop App](/projects/Portfolio_Rebalancer/portfolio_rebalancer_desktop.py)
+- [Monte Carlo Retirement Simulator Desktop App](/projects/Monte_Carlo_Simulator/monte_carlo_simulator.py)
+
+## Python Script Version Archive
+- [CPI Dashboard Downloader (v1)](/projects/CPI_Automation/CPI%20Dashboard%20Version%20Archive/cpi_dashboard_downloader-v1.py)
+- [CPI Dashboard Downloader (v2)](/projects/CPI_Automation/CPI%20Dashboard%20Version%20Archive/cpi_dashboard_downloader-v2.py)
+- [CPI Dashboard Downloader (v3)](/projects/CPI_Automation/CPI%20Dashboard%20Version%20Archive/cpi_dashboard_downloader-v3.py)
+- [CPI Dashboard Downloader (v4)](/projects/CPI_Automation/CPI%20Dashboard%20Version%20Archive/cpi_dashboard_downloader-v4.py)
+- [CPI Dashboard Downloader (v5)](/projects/CPI_Automation/CPI%20Dashboard%20Version%20Archive/cpi_dashboard_downloader-v5.py)
+- [CPI Dashboard Downloader (v6)](/projects/CPI_Automation/CPI%20Dashboard%20Version%20Archive/cpi_dashboard_downloader-v6.py)
 
 ## VBA Scripts (Excel Utilities)
 - [BUBBLESORT.bas](/projects/VBA_Macros_and_Functions/BUBBLESORT.bas)
