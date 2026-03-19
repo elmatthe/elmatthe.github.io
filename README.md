@@ -12,7 +12,8 @@ Professional GitHub Pages portfolio for wealth management projects, a finance kn
 - `assets/main.scss` - Global visual styling
 
 ## Featured Tool
-- `projects/portfolio-rebalancer.md` - Browser-based portfolio rebalancer that calculates buy/sell trades to return holdings to target weights.
+- `projects/portfolio-rebalancer.md` - Portfolio rebalancer project page with browser tool, downloadable desktop script, and setup guide links.
+- `projects/Portfolio_Rebalancer/portfolio_rebalancer_desktop.py` - Standalone desktop GUI script that mirrors the website rebalancer workflow.
 
 ## Run Locally (optional)
 If you use Jekyll locally:
