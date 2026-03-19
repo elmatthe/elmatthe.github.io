@@ -6,29 +6,37 @@ This guide explains how to use the Portfolio Rebalancer project page to calculat
 
 ## Inputs
 
-Enter one position per line in this format:
+Use the input table on the page:
 
-`Asset, Current Value, Target Weight %`
+- **Ticker** (example: `AAPL`, `VTI`)
+- **Shares / Units held**
+- **Price (USD)** per share/unit
+- **Target Weight %**
 
-Example:
-
-`US Equity,45000,50`
+Choose the number of securities using **Number of securities** and click **Apply Rows**.
 
 ## Steps
 
 1. Open the Portfolio Rebalancer Tool page.
-2. Paste or type all positions into the input box.
-3. Enter net contribution/withdrawal:
+2. Set the number of securities held.
+3. Fill the table rows (ticker, shares, price, target weight).
+4. Enter net contribution/withdrawal:
    - Positive = contribution
    - Negative = withdrawal
-4. Click **Calculate Rebalance**.
-5. Review the generated trade table and post-trade allocation values.
+5. Click **Run Rebalance**.
+6. Review the generated output table and strategy:
+   - Current value vs target value by ticker
+   - Buy/sell dollar amount per ticker
+   - Shares/units to buy or sell
+   - Post-trade shares/units
 
 ## Validation Rules
 
-- Each line must contain exactly 3 comma-separated values.
-- Current value must be numeric and non-negative.
-- Target weight must be numeric and greater than 0.
+- Ticker is required in every row.
+- Shares/units must be numeric and non-negative.
+- Price must be numeric and greater than 0.
+- Target weight must be numeric and 0 or greater.
+- At least one row must have a target weight greater than 0.
 - Ending portfolio value must remain above 0.
 
 ## Output
@@ -38,5 +46,6 @@ The tool returns:
 - Total current value
 - Net flow
 - Target ending value
-- Trade-by-asset instructions (buy/sell)
-- Post-trade asset values
+- Total buy and sell value
+- Trade-by-ticker instructions (buy/sell)
+- Shares/units to trade and post-trade holdings
