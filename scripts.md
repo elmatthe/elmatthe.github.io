@@ -6,16 +6,11 @@ permalink: /scripts/
 
 {% assign project_files = site.static_files | sort: "path" %}
 {% assign py_count = 0 %}
-{% assign py_archive_count = 0 %}
 {% assign vba_count = 0 %}
 
 {% for file in project_files %}
   {% if file.path contains '/projects/' and file.path contains '.py' %}
-    {% if file.path contains 'Version Archive' %}
-      {% assign py_archive_count = py_archive_count | plus: 1 %}
-    {% else %}
-      {% assign py_count = py_count | plus: 1 %}
-    {% endif %}
+    {% assign py_count = py_count | plus: 1 %}
   {% endif %}
   {% if file.path contains '/projects/' and file.path contains '.bas' %}
     {% assign vba_count = vba_count | plus: 1 %}
@@ -25,17 +20,13 @@ permalink: /scripts/
 <section class="hero-panel">
   <p class="eyebrow">Automation Library</p>
   <h1>Scripts &amp; Automation Catalog</h1>
-  <p class="lede">Download-ready script catalog for the portfolio, including production Python tools, historical script versions, and VBA utility modules.</p>
+  <p class="lede">Download-ready script catalog for the portfolio, including production Python tools and VBA utility modules.</p>
 </section>
 
 <div class="card-grid">
   <section class="card">
     <h3>Python Tools</h3>
     <p class="muted">{{ py_count }} active scripts</p>
-  </section>
-  <section class="card">
-    <h3>Python Archive</h3>
-    <p class="muted">{{ py_archive_count }} versioned scripts</p>
   </section>
   <section class="card">
     <h3>VBA Utilities</h3>
@@ -48,39 +39,19 @@ permalink: /scripts/
 </section>
 
 ## Python Scripts (Current Tools)
-<ul class="script-list">
+<ul class="link-list">
 {% for file in project_files %}
   {% if file.path contains '/projects/' and file.path contains '.py' %}
-    {% unless file.path contains 'Version Archive' %}
-      <li>
-        <a href="{{ file.path | replace: ' ', '%20' | relative_url }}" download>{{ file.name }}</a>
-        <span class="script-meta">{{ file.path }}</span>
-      </li>
-    {% endunless %}
-  {% endif %}
-{% endfor %}
-</ul>
-
-## Python Script Version Archive
-<ul class="script-list">
-{% for file in project_files %}
-  {% if file.path contains '/projects/' and file.path contains '.py' and file.path contains 'Version Archive' %}
-    <li>
-      <a href="{{ file.path | replace: ' ', '%20' | relative_url }}" download>{{ file.name }}</a>
-      <span class="script-meta">{{ file.path }}</span>
-    </li>
+    <li><a href="{{ file.path | replace: ' ', '%20' | relative_url }}" download>{{ file.name }}</a></li>
   {% endif %}
 {% endfor %}
 </ul>
 
 ## VBA Scripts (Excel Utilities)
-<ul class="script-list">
+<ul class="link-list">
 {% for file in project_files %}
   {% if file.path contains '/projects/' and file.path contains '.bas' %}
-    <li>
-      <a href="{{ file.path | replace: ' ', '%20' | relative_url }}" download>{{ file.name }}</a>
-      <span class="script-meta">{{ file.path }}</span>
-    </li>
+    <li><a href="{{ file.path | replace: ' ', '%20' | relative_url }}" download>{{ file.name }}</a></li>
   {% endif %}
 {% endfor %}
 </ul>
