@@ -32,7 +32,8 @@ title: Home
   </article>
 </div>
 
-## Latest Notes
+## Knowledge Hub Highlights
+Use the finance knowledge hub for topic-based market updates, reference knowledge, and advisor resources.
 <ul class="link-list">
 {% assign all = site.pages | sort: "last_updated" | reverse %}
 {% assign note_count = 0 %}
@@ -43,7 +44,7 @@ title: Home
   {% endif %}
 {% endfor %}
 {% if note_count == 0 %}
-  <li>No notes published yet.</li>
+  <li>No knowledge hub topics published yet.</li>
 {% endif %}
 </ul>
 
