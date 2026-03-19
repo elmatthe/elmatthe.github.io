@@ -1,20 +1,31 @@
 ---
 layout: page
-title: Portfolio Rebalancer Tool
+title: Portfolio Rebalancer Project
 permalink: /projects/portfolio-rebalancer/
-summary: Interactive tool to rebalance holdings back to a target strategic allocation.
-last_updated: 2026-03-13
+summary: Portfolio rebalancer workflow with interactive web tool, downloadable desktop script, and setup guide.
+last_updated: 2026-03-19
 ---
 
-# Portfolio Rebalancer Tool
-
-Use this calculator to rebalance holdings back to strategic target weights with a spreadsheet-style input table.
-
-<section class="callout">
-  <p><strong>How it works:</strong> choose how many securities you hold, then fill in <strong>ticker</strong>, <strong>shares</strong>, <strong>price</strong>, <strong>row currency</strong>, and <strong>target weight</strong> for each row.</p>
-  <p>The tool calculates each current value, target value, and the buy/sell strategy required to rebalance.</p>
-  <p><a href="{{ '/projects/portfolio-rebalancer-guide/' | relative_url }}">Open Setup Guide (Web Page)</a></p>
+<section class="hero-panel">
+  <div class="eyebrow">Financial Tool Project</div>
+  <h1>Portfolio Rebalancer</h1>
+  <p class="lede">This project provides a practical portfolio rebalancing workflow for advisory prep and client review meetings. Use the interactive web tool or download the desktop Python script to run the same logic locally.</p>
 </section>
+
+## Downloads
+<div class="btn-row">
+  <a class="btn" href="{{ '/projects/Portfolio_Rebalancer/portfolio_rebalancer_desktop.py' | relative_url }}" download>Download Portfolio Rebalancer (.py)</a>
+  <a class="btn" href="{{ '/projects/Portfolio_Rebalancer/Portfolio_Rebalancer_Setup_Guide.md' | relative_url }}" download="Portfolio_Rebalancer_Setup_Guide.md">Download Setup &amp; Usage Guide (.md)</a>
+</div>
+
+## Guides
+<ul class="link-list">
+  <li><a href="{{ '/projects/Portfolio_Rebalancer/Portfolio_Rebalancer_Setup_Guide.md' | relative_url }}" download="Portfolio_Rebalancer_Setup_Guide.md">Download Portfolio Rebalancer Setup Guide (.md)</a></li>
+  <li><a href="{{ '/projects/portfolio-rebalancer-guide/' | relative_url }}">Open Portfolio Rebalancer Setup Guide (Web Page)</a></li>
+</ul>
+
+## Interactive Web Tool
+Use the browser version below to run the same rebalancing workflow directly on this site.
 
 <div class="tool-grid rebalancer-theme">
   <section class="tool-card rebalancer-input-card">
@@ -81,6 +92,22 @@ Use this calculator to rebalance holdings back to strategic target weights with 
   <section class="tool-card rebalancer-output-card">
     <h3>Rebalance Output</h3>
     <div id="rebalanceResults" class="result-box">Output will appear here after you run rebalancing.</div>
+  </section>
+</div>
+
+## Workflow Snapshot
+<div class="card-grid">
+  <section class="card">
+    <h3>1) Input</h3>
+    <p class="muted">Enter each security, shares, local price, row currency, and target weight.</p>
+  </section>
+  <section class="card">
+    <h3>2) Rebalancing Logic</h3>
+    <p class="muted">The tool converts values to your reporting currency, normalizes target weights, and computes trade values/shares.</p>
+  </section>
+  <section class="card">
+    <h3>3) Output</h3>
+    <p class="muted">Review Buy/Sell/Hold actions, trade amounts, and post-trade shares for each position.</p>
   </section>
 </div>
 

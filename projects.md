@@ -11,6 +11,6 @@ permalink: /Projects/
   </li>
   <li>
     <a href="{{ '/projects/portfolio-rebalancer/' | relative_url }}">Portfolio Rebalancer Project</a>
-    <div class="muted">Interactive rebalancing tool and setup guide.</div>
+    <div class="muted">Interactive web rebalancing tool, downloadable desktop Python app, and setup guide.</div>
   </li>
 </ul>
