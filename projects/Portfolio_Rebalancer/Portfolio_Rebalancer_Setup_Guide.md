@@ -10,8 +10,10 @@ Use the input table on the page:
 
 - **Ticker** (example: `AAPL`, `VTI`)
 - **Shares / Units held**
-- **Price (USD)** per share/unit
+- **Price (local currency)** per share/unit
+- **Row Currency** (`CAD`, `USD`, `JPN`, `EUR`, `GBP`, `CHY/CNH`)
 - **Target Weight %**
+- **Reporting Currency** for model-level totals/output
 
 Choose the number of securities using **Number of securities** and click **Apply Rows**.
 
@@ -19,14 +21,15 @@ Choose the number of securities using **Number of securities** and click **Apply
 
 1. Open the Portfolio Rebalancer Tool page.
 2. Set the number of securities held.
-3. Fill the table rows (ticker, shares, price, target weight).
-4. Enter net contribution/withdrawal:
+3. Fill the table rows (ticker, shares, price, row currency, target weight).
+4. Select a reporting currency for portfolio-level results.
+5. Enter net contribution/withdrawal:
    - Positive = contribution
    - Negative = withdrawal
-5. Click **Run Rebalance**.
-6. Review the generated output table and strategy:
+6. Click **Run Rebalance**.
+7. Review the generated output table and strategy:
    - Current value vs target value by ticker
-   - Buy/sell dollar amount per ticker
+   - Buy/sell value in reporting currency and local row currency
    - Shares/units to buy or sell
    - Post-trade shares/units
 
@@ -35,6 +38,7 @@ Choose the number of securities using **Number of securities** and click **Apply
 - Ticker is required in every row.
 - Shares/units must be numeric and non-negative.
 - Price must be numeric and greater than 0.
+- Row currency is required for each row.
 - Target weight must be numeric and 0 or greater.
 - At least one row must have a target weight greater than 0.
 - Ending portfolio value must remain above 0.

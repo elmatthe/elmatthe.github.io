@@ -11,7 +11,7 @@ last_updated: 2026-03-13
 Use this calculator to rebalance holdings back to strategic target weights with a spreadsheet-style input table.
 
 <section class="callout">
-  <p><strong>How it works:</strong> choose how many securities you hold, then fill in <strong>ticker</strong>, <strong>shares</strong>, <strong>price</strong>, and <strong>target weight</strong> for each row.</p>
+  <p><strong>How it works:</strong> choose how many securities you hold, then fill in <strong>ticker</strong>, <strong>shares</strong>, <strong>price</strong>, <strong>row currency</strong>, and <strong>target weight</strong> for each row.</p>
   <p>The tool calculates each current value, target value, and the buy/sell strategy required to rebalance.</p>
   <p><a href="{{ '/projects/portfolio-rebalancer-guide/' | relative_url }}">Open Setup Guide (Web Page)</a></p>
 </section>
@@ -22,11 +22,11 @@ Use this calculator to rebalance holdings back to strategic target weights with 
     <div class="input-controls">
       <div class="field inline-field">
         <label for="rowCountInput">Number of securities</label>
-        <input id="rowCountInput" type="number" min="1" max="50" step="1" value="4" />
+        <input id="rowCountInput" type="number" min="1" max="50" step="1" value="5" />
       </div>
       <div class="field inline-field">
-        <label for="currencySelect">Display currency</label>
-        <select id="currencySelect" class="sheet-select">
+        <label for="reportingCurrencySelect">Reporting currency</label>
+        <select id="reportingCurrencySelect" class="sheet-select">
           <option value="USD" selected>USD</option>
           <option value="CAD">CAD</option>
           <option value="JPN">JPN</option>
@@ -49,8 +49,10 @@ Use this calculator to rebalance holdings back to strategic target weights with 
             <th>#</th>
             <th>Ticker</th>
             <th>Shares / Units</th>
-            <th>Price (<span id="priceCurrencyLabel">USD</span>)</th>
-            <th>Current Value (auto)</th>
+            <th>Price (local)</th>
+            <th>Row Currency</th>
+            <th>FX to <span id="reportingCurrencyLabel">USD</span></th>
+            <th>Current Value (<span id="currentValueCurrencyLabel">USD</span>)</th>
             <th>Target Weight %</th>
           </tr>
         </thead>
@@ -66,6 +68,7 @@ Use this calculator to rebalance holdings back to strategic target weights with 
     <div class="field">
       <label for="netFlowInput" id="netFlowLabel">Net contribution / withdrawal (USD)</label>
       <input id="netFlowInput" type="number" value="0" step="0.01" />
+      <div class="muted">Each row can use a different currency. Values are converted to your reporting currency with built-in FX estimates.</div>
       <div class="muted">Use a positive value for contribution and negative for withdrawal.</div>
     </div>
     <div class="btn-row">
@@ -84,33 +87,53 @@ Use this calculator to rebalance holdings back to strategic target weights with 
 <script>
   (function () {
     var samplePortfolio = [
-      { ticker: "VTI", shares: 120, price: 250, targetWeight: 45 },
-      { ticker: "VXUS", shares: 95, price: 58, targetWeight: 25 },
-      { ticker: "BND", shares: 180, price: 72, targetWeight: 20 },
-      { ticker: "VNQ", shares: 40, price: 84, targetWeight: 10 }
+      { ticker: "VTI", shares: 120, price: 250, targetWeight: 35, currencyKey: "USD" },
+      { ticker: "XIC", shares: 140, price: 36, targetWeight: 20, currencyKey: "CAD" },
+      { ticker: "EWJ", shares: 220, price: 2480, targetWeight: 15, currencyKey: "JPN" },
+      { ticker: "VGK", shares: 115, price: 64, targetWeight: 15, currencyKey: "EUR" },
+      { ticker: "ISF", shares: 260, price: 7.4, targetWeight: 15, currencyKey: "GBP" }
     ];
 
     var rowCountInput = document.getElementById("rowCountInput");
-    var currencySelect = document.getElementById("currencySelect");
+    var reportingCurrencySelect = document.getElementById("reportingCurrencySelect");
     var inputRowsNode = document.getElementById("inputRows");
     var validationNode = document.getElementById("validationMessage");
     var resultsNode = document.getElementById("rebalanceResults");
     var hasCalculated = false;
     var currencyOptions = {
-      USD: { code: "USD", locale: "en-US", label: "USD" },
-      CAD: { code: "CAD", locale: "en-CA", label: "CAD" },
-      JPN: { code: "JPY", locale: "ja-JP", label: "JPN" },
-      EUR: { code: "EUR", locale: "de-DE", label: "EUR" },
-      GBP: { code: "GBP", locale: "en-GB", label: "GBP" },
-      CHY_CNH: { code: "CNY", locale: "zh-CN", label: "CHY/CNH" }
+      USD: { code: "USD", locale: "en-US", label: "USD", fxToUsd: 1.00 },
+      CAD: { code: "CAD", locale: "en-CA", label: "CAD", fxToUsd: 0.74 },
+      JPN: { code: "JPY", locale: "ja-JP", label: "JPN", fxToUsd: 0.0067 },
+      EUR: { code: "EUR", locale: "de-DE", label: "EUR", fxToUsd: 1.09 },
+      GBP: { code: "GBP", locale: "en-GB", label: "GBP", fxToUsd: 1.28 },
+      CHY_CNH: { code: "CNY", locale: "zh-CN", label: "CHY/CNH", fxToUsd: 0.14 }
     };
 
-    function getCurrencyMeta() {
-      return currencyOptions[currencySelect.value] || currencyOptions.USD;
+    function getReportingCurrencyMeta() {
+      return currencyOptions[reportingCurrencySelect.value] || currencyOptions.USD;
+    }
+
+    function getRowCurrencyMeta(currencyKey) {
+      return currencyOptions[currencyKey] || currencyOptions.USD;
+    }
+
+    function getFxToReporting(currencyKey) {
+      var rowMeta = getRowCurrencyMeta(currencyKey);
+      var reportingMeta = getReportingCurrencyMeta();
+      return rowMeta.fxToUsd / reportingMeta.fxToUsd;
+    }
+
+    function formatFx(num) {
+      return num.toFixed(4);
+    }
+
+    function formatCurrencyByKey(num, currencyKey) {
+      var meta = getRowCurrencyMeta(currencyKey);
+      return new Intl.NumberFormat(meta.locale, { style: "currency", currency: meta.code }).format(num);
     }
 
     function formatCurrency(num) {
-      var meta = getCurrencyMeta();
+      var meta = getReportingCurrencyMeta();
       return new Intl.NumberFormat(meta.locale, { style: "currency", currency: meta.code }).format(num);
     }
 
@@ -134,20 +157,32 @@ Use this calculator to rebalance holdings back to strategic target weights with 
         .replace(/'/g, "&#39;");
     }
 
+    function currencyOptionsHtml(selectedKey) {
+      return Object.keys(currencyOptions).map(function (key) {
+        var selected = key === selectedKey ? " selected" : "";
+        return "<option value='" + key + "'" + selected + ">" + currencyOptions[key].label + "</option>";
+      }).join("");
+    }
+
     function rowHtml(index, data) {
       var rowData = data || {};
       var shares = Number.isFinite(Number(rowData.shares)) ? Number(rowData.shares) : "";
       var price = Number.isFinite(Number(rowData.price)) ? Number(rowData.price) : "";
       var targetWeight = Number.isFinite(Number(rowData.targetWeight)) ? Number(rowData.targetWeight) : "";
       var ticker = rowData.ticker ? String(rowData.ticker).toUpperCase() : "";
-      var currentValue = Number(shares) * Number(price);
-      var currentValueText = Number.isFinite(currentValue) && currentValue >= 0 ? formatCurrency(currentValue) : formatCurrency(0);
+      var currencyKey = rowData.currencyKey && currencyOptions[rowData.currencyKey] ? rowData.currencyKey : "USD";
+      var localValue = Number(shares) * Number(price);
+      var fxToReporting = getFxToReporting(currencyKey);
+      var reportingValue = localValue * fxToReporting;
+      var currentValueText = Number.isFinite(reportingValue) && reportingValue >= 0 ? formatCurrency(reportingValue) : formatCurrency(0);
 
       return "<tr>" +
         "<td class='row-index'>" + (index + 1) + "</td>" +
         "<td><input class='sheet-input ticker-input' type='text' maxlength='12' placeholder='e.g. AAPL' value='" + escapeHtml(ticker) + "' /></td>" +
         "<td><input class='sheet-input shares-input' type='number' min='0' step='0.0001' value='" + shares + "' /></td>" +
         "<td><input class='sheet-input price-input' type='number' min='0.0001' step='0.0001' value='" + price + "' /></td>" +
+        "<td><select class='sheet-input sheet-select row-currency-select'>" + currencyOptionsHtml(currencyKey) + "</select></td>" +
+        "<td class='fx-rate-cell'>" + formatFx(fxToReporting) + "</td>" +
         "<td class='current-value-cell'>" + currentValueText + "</td>" +
         "<td><input class='sheet-input target-weight-input' type='number' min='0' step='0.01' value='" + targetWeight + "' /></td>" +
         "</tr>";
@@ -179,13 +214,17 @@ Use this calculator to rebalance holdings back to strategic target weights with 
         var shares = readNumberInput(row.querySelector(".shares-input"));
         var price = readNumberInput(row.querySelector(".price-input"));
         var targetWeight = readNumberInput(row.querySelector(".target-weight-input"));
+        var currencyKey = row.querySelector(".row-currency-select").value;
+        var fxToReporting = getFxToReporting(currencyKey);
 
-        var currentValue = Number.isFinite(shares) && Number.isFinite(price) && shares >= 0 && price > 0
+        var localValue = Number.isFinite(shares) && Number.isFinite(price) && shares >= 0 && price > 0
           ? shares * price
           : 0;
+        var reportingValue = localValue * fxToReporting;
 
-        row.querySelector(".current-value-cell").textContent = formatCurrency(currentValue);
-        currentTotal += currentValue;
+        row.querySelector(".fx-rate-cell").textContent = formatFx(fxToReporting);
+        row.querySelector(".current-value-cell").textContent = formatCurrency(reportingValue);
+        currentTotal += reportingValue;
         if (Number.isFinite(targetWeight) && targetWeight >= 0) {
           weightTotal += targetWeight;
         }
@@ -206,6 +245,8 @@ Use this calculator to rebalance holdings back to strategic target weights with 
         var shares = readNumberInput(row.querySelector(".shares-input"));
         var price = readNumberInput(row.querySelector(".price-input"));
         var targetWeight = readNumberInput(row.querySelector(".target-weight-input"));
+        var currencyKey = row.querySelector(".row-currency-select").value;
+        var fxToReporting = getFxToReporting(currencyKey);
 
         if (!ticker) {
           throw new Error("Row " + (idx + 1) + ": ticker is required.");
@@ -224,7 +265,11 @@ Use this calculator to rebalance holdings back to strategic target weights with 
           ticker: ticker,
           shares: shares,
           price: price,
-          currentValue: shares * price,
+          currencyKey: currencyKey,
+          currencyLabel: getRowCurrencyMeta(currencyKey).label,
+          fxToReporting: fxToReporting,
+          currentValueLocal: shares * price,
+          currentValue: shares * price * fxToReporting,
           targetWeight: targetWeight
         };
       });
@@ -238,22 +283,23 @@ Use this calculator to rebalance holdings back to strategic target weights with 
     }
 
     function buildResultTable(rows) {
-      var priceHeader = "Price (" + getCurrencyMeta().label + ")";
       var tableHead = "<table class='sheet-table output-sheet'><thead><tr>" +
-        "<th>Ticker</th><th>Shares</th><th>" + priceHeader + "</th><th>Current Value</th><th>Target Weight</th>" +
-        "<th>Target Value</th><th>Trade Value</th><th>Trade Shares</th><th>Action</th><th>Post-Trade Shares</th>" +
+        "<th>Ticker</th><th>Row Currency</th><th>Shares</th><th>Price (local)</th><th>Current Value</th><th>Target Weight</th>" +
+        "<th>Target Value</th><th>Trade Value</th><th>Trade Value (local)</th><th>Trade Shares</th><th>Action</th><th>Post-Trade Shares</th>" +
         "</tr></thead><tbody>";
 
       var tableBody = rows.map(function (r) {
         var actionClass = r.action.toLowerCase();
         return "<tr>" +
           "<td>" + escapeHtml(r.ticker) + "</td>" +
+          "<td>" + r.currencyLabel + "</td>" +
           "<td>" + formatShares(r.shares) + "</td>" +
-          "<td>" + formatCurrency(r.price) + "</td>" +
+          "<td>" + formatCurrencyByKey(r.price, r.currencyKey) + "</td>" +
           "<td>" + formatCurrency(r.currentValue) + "</td>" +
           "<td>" + formatPct(r.targetWeightNorm * 100) + "</td>" +
           "<td>" + formatCurrency(r.targetValue) + "</td>" +
           "<td>" + formatCurrency(r.tradeValue) + "</td>" +
+          "<td>" + formatCurrencyByKey(r.tradeValueLocal, r.currencyKey) + "</td>" +
           "<td>" + formatShares(r.tradeShares) + "</td>" +
           "<td><span class='action-pill action-" + actionClass + "'>" + r.action + "</span></td>" +
           "<td>" + formatShares(r.postTradeShares) + "</td>" +
@@ -274,9 +320,10 @@ Use this calculator to rebalance holdings back to strategic target weights with 
     }
 
     function updateCurrencyUi() {
-      var meta = getCurrencyMeta();
-      document.getElementById("priceCurrencyLabel").textContent = meta.label;
+      var meta = getReportingCurrencyMeta();
       document.getElementById("netFlowLabel").textContent = "Net contribution / withdrawal (" + meta.label + ")";
+      document.getElementById("reportingCurrencyLabel").textContent = meta.label;
+      document.getElementById("currentValueCurrencyLabel").textContent = meta.label;
     }
 
     function calculateRebalance() {
@@ -303,7 +350,8 @@ Use this calculator to rebalance holdings back to strategic target weights with 
           var targetWeightNorm = p.targetWeight / totalWeight;
           var targetValue = targetWeightNorm * endingPortfolioValue;
           var tradeValue = targetValue - p.currentValue;
-          var tradeShares = tradeValue / p.price;
+          var tradeValueLocal = tradeValue / p.fxToReporting;
+          var tradeShares = tradeValueLocal / p.price;
           var action = "Hold";
 
           if (tradeValue > 0.005) {
@@ -316,17 +364,21 @@ Use this calculator to rebalance holdings back to strategic target weights with 
 
           if (Math.abs(tradeValue) <= 0.005) {
             tradeValue = 0;
+            tradeValueLocal = 0;
             tradeShares = 0;
           }
 
           return {
             ticker: p.ticker,
+            currencyKey: p.currencyKey,
+            currencyLabel: p.currencyLabel,
             shares: p.shares,
             price: p.price,
             currentValue: p.currentValue,
             targetWeightNorm: targetWeightNorm,
             targetValue: targetValue,
             tradeValue: tradeValue,
+            tradeValueLocal: tradeValueLocal,
             tradeShares: tradeShares,
             action: action,
             postTradeShares: p.shares + tradeShares
@@ -357,6 +409,7 @@ Use this calculator to rebalance holdings back to strategic target weights with 
           ticker: row.querySelector(".ticker-input").value.trim().toUpperCase(),
           shares: row.querySelector(".shares-input").value,
           price: row.querySelector(".price-input").value,
+          currencyKey: row.querySelector(".row-currency-select").value,
           targetWeight: row.querySelector(".target-weight-input").value
         };
       });
@@ -400,7 +453,15 @@ Use this calculator to rebalance holdings back to strategic target weights with 
       updateLiveTotals();
     });
 
-    currencySelect.addEventListener("change", function () {
+    inputRowsNode.addEventListener("change", function () {
+      validationNode.textContent = "";
+      updateLiveTotals();
+      if (hasCalculated) {
+        calculateRebalance();
+      }
+    });
+
+    reportingCurrencySelect.addEventListener("change", function () {
       validationNode.textContent = "";
       updateCurrencyUi();
       updateLiveTotals();
