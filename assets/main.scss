@@ -213,3 +213,186 @@ table.rebalance-table td {
   padding: 0.45rem;
   text-align: left;
 }
+
+.rebalancer-theme {
+  gap: 1.15rem;
+}
+
+.rebalancer-theme .tool-card {
+  border: 1px solid #2f4f7f;
+  background: linear-gradient(165deg, #0f2241 0%, #122d54 100%);
+  color: #e8f1ff;
+  box-shadow: 0 10px 24px rgba(9, 18, 36, 0.35);
+}
+
+.rebalancer-theme .tool-card h3 {
+  color: #f5f9ff;
+}
+
+.rebalancer-theme .muted {
+  color: #bdd1f0;
+}
+
+.input-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 0.75rem;
+  margin-bottom: 0.8rem;
+}
+
+.inline-field {
+  min-width: 210px;
+  margin-bottom: 0;
+}
+
+.btn-row.compact {
+  margin-bottom: 0;
+}
+
+.rebalancer-theme .field label {
+  color: #dbe8ff;
+}
+
+.rebalancer-theme .field input,
+.rebalancer-theme .field textarea,
+.rebalancer-theme .sheet-input {
+  border: 1px solid #4b6792;
+  background: #0d1d38;
+  color: #f3f7ff;
+}
+
+.rebalancer-theme .field input::placeholder,
+.rebalancer-theme .sheet-input::placeholder {
+  color: #87a4ce;
+}
+
+.rebalancer-theme .btn {
+  border-color: #9fc4ff;
+  background: #2c6bc0;
+  color: #f3f8ff;
+}
+
+.rebalancer-theme .btn:hover {
+  background: #1f559f;
+}
+
+.rebalancer-theme .btn-secondary {
+  background: #102545;
+  border-color: #4c74ac;
+  color: #d5e5ff;
+}
+
+.table-wrap {
+  border: 1px solid #355887;
+  border-radius: 10px;
+  overflow-x: auto;
+  background: #0a1a34;
+  margin-bottom: 0.5rem;
+}
+
+table.sheet-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 720px;
+}
+
+table.sheet-table th,
+table.sheet-table td {
+  border-bottom: 1px solid #274973;
+  padding: 0.5rem;
+  text-align: left;
+  vertical-align: middle;
+}
+
+table.sheet-table thead th {
+  background: #0b274b;
+  color: #dcecff;
+  font-size: 0.9rem;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+table.sheet-table tbody tr:nth-child(even) {
+  background: rgba(18, 45, 84, 0.32);
+}
+
+.row-index {
+  color: #a9c2e8;
+  font-weight: 600;
+}
+
+.current-value-cell {
+  color: #cde2ff;
+  font-variant-numeric: tabular-nums;
+}
+
+.table-footnote {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+  font-size: 0.92rem;
+  color: #c6d9f7;
+}
+
+.rebalancer-theme .result-box {
+  border: 1px solid #355887;
+  background: #0a1a34;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.6rem;
+  margin-bottom: 0.8rem;
+}
+
+.summary-item {
+  border: 1px solid #325780;
+  background: #0d2242;
+  border-radius: 8px;
+  padding: 0.6rem 0.7rem;
+}
+
+.summary-item span {
+  display: block;
+  color: #9fb9dc;
+  font-size: 0.82rem;
+  margin-bottom: 0.2rem;
+}
+
+.summary-item strong {
+  font-size: 1rem;
+  color: #f2f7ff;
+}
+
+.action-pill {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 0.16rem 0.55rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.action-buy {
+  background: rgba(57, 210, 134, 0.17);
+  color: #5ef0ab;
+  border: 1px solid rgba(57, 210, 134, 0.45);
+}
+
+.action-sell {
+  background: rgba(255, 125, 125, 0.17);
+  color: #ffb4b4;
+  border: 1px solid rgba(255, 125, 125, 0.45);
+}
+
+.action-hold {
+  background: rgba(138, 171, 222, 0.2);
+  color: #d6e5ff;
+  border: 1px solid rgba(138, 171, 222, 0.38);
+}
