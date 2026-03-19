@@ -168,6 +168,10 @@ This web version is designed for quick scenario analysis in-browser while matchi
     var sampleBtn = document.getElementById("mcSampleBtn");
     var modeRadioNodes = document.querySelectorAll("input[name='mcValueMode']");
     var chartUnavailable = typeof window.Chart === "undefined";
+    var MAX_MONEY_INPUT = 1e15;
+    var MAX_YEARS_INPUT = 120;
+    var MAX_ABS_RATE_INPUT = 100;
+    var MAX_VOLATILITY_INPUT = 300;
 
     var state = {
       valueMode: "nominal",
@@ -243,6 +247,12 @@ This web version is designed for quick scenario analysis in-browser while matchi
       return value;
     }
 
+    function requireMaxAbs(value, maxAbs, message) {
+      if (Math.abs(value) > maxAbs) {
+        throw new Error(message);
+      }
+    }
+
     function validateInputs() {
       var data = {
         currentPortfolio: parseRequiredNumber("mcCurrentPortfolio", "Current portfolio value must be greater than 0."),
@@ -264,14 +274,23 @@ This web version is designed for quick scenario analysis in-browser while matchi
       if (data.annualContribution < 0) {
         throw new Error("Enter annual contribution (0 is valid).");
       }
+      if (data.pensionIncome < 0) {
+        throw new Error("CPP/OAS/Pension income must be 0 or greater.");
+      }
       if (data.yearsToRetirement < 1) {
         throw new Error("Years to retirement must be a whole number of 1 or more.");
       }
       if (data.yearsInRetirement < 1) {
         throw new Error("Years in retirement must be a whole number of 1 or more.");
       }
+      if (data.yearsToRetirement > MAX_YEARS_INPUT || data.yearsInRetirement > MAX_YEARS_INPUT) {
+        throw new Error("Years to retirement and years in retirement must each be 120 or less.");
+      }
       if (data.volatility < 0) {
         throw new Error("Volatility must be 0 or greater.");
+      }
+      if (data.volatility * 100 > MAX_VOLATILITY_INPUT) {
+        throw new Error("Volatility must be 300% or less.");
       }
       if (data.annualSpending <= 0) {
         throw new Error("Annual retirement spending must be greater than 0.");
@@ -279,6 +298,14 @@ This web version is designed for quick scenario analysis in-browser while matchi
       if (data.simulationCount < 1 || data.simulationCount > 2000) {
         throw new Error("Number of simulations must be a whole number between 1 and 2,000.");
       }
+
+      requireMaxAbs(data.currentPortfolio, MAX_MONEY_INPUT, "Current portfolio value is too large for stable simulation.");
+      requireMaxAbs(data.annualContribution, MAX_MONEY_INPUT, "Annual contribution is too large for stable simulation.");
+      requireMaxAbs(data.annualSpending, MAX_MONEY_INPUT, "Annual retirement spending is too large for stable simulation.");
+      requireMaxAbs(data.pensionIncome, MAX_MONEY_INPUT, "CPP/OAS/Pension income is too large for stable simulation.");
+      requireMaxAbs(data.contributionGrowth * 100, MAX_ABS_RATE_INPUT, "Contribution growth rate must be between -100% and 100%.");
+      requireMaxAbs(data.expectedReturn * 100, MAX_ABS_RATE_INPUT, "Expected annual return must be between -100% and 100%.");
+      requireMaxAbs(data.inflation * 100, MAX_ABS_RATE_INPUT, "Inflation rate must be between -100% and 100%.");
 
       return data;
     }
@@ -337,11 +364,17 @@ This web version is designed for quick scenario analysis in-browser while matchi
       for (var yAcc = 1; yAcc <= inputs.yearsToRetirement; yAcc += 1) {
         var growthAcc = boxMullerRandom(inputs.expectedReturn, inputs.volatility);
         portfolio = portfolio * (1 + growthAcc) + contribution;
+        if (!Number.isFinite(portfolio)) {
+          throw new Error("Simulation overflow detected. Reduce large values and try again.");
+        }
         if (portfolio < 0) {
           portfolio = 0;
         }
         path[yAcc] = portfolio;
         contribution = contribution * (1 + inputs.contributionGrowth);
+        if (!Number.isFinite(contribution)) {
+          throw new Error("Contribution growth overflow detected. Reduce growth rate or contribution value.");
+        }
       }
 
       for (var yRet = 1; yRet <= inputs.yearsInRetirement; yRet += 1) {
@@ -353,6 +386,9 @@ This web version is designed for quick scenario analysis in-browser while matchi
 
         var growthRet = boxMullerRandom(inputs.expectedReturn, inputs.volatility);
         portfolio = portfolio * (1 + growthRet) - netWithdrawal;
+        if (!Number.isFinite(portfolio)) {
+          throw new Error("Simulation overflow detected during retirement. Reduce large values and try again.");
+        }
         if (portfolio <= 0) {
           portfolio = 0;
           failed = true;
@@ -403,6 +439,15 @@ This web version is designed for quick scenario analysis in-browser while matchi
         finalValuesReal.push(convertToReal(run.finalValue, inputs.inflation, totalYears));
       }
 
+      var hasInvalidNominal = yearlyValuesNominal.some(function (yearValues) {
+        return yearValues.some(function (value) {
+          return !Number.isFinite(value);
+        });
+      });
+      if (hasInvalidNominal) {
+        throw new Error("Simulation produced non-finite values. Reduce large input magnitudes and try again.");
+      }
+
       var percentilesByYear = yearlyValuesNominal.map(function (arr, year) {
         var nominalStats = computePercentiles(arr);
         return {
@@ -424,6 +469,17 @@ This web version is designed for quick scenario analysis in-browser while matchi
       var retirementStatsReal = computePercentiles(retirementValuesReal);
       var ruinStats = ruinYears.length ? computePercentiles(ruinYears) : null;
       var swr = retirementStatsNominal.p50 > 0 ? (netWithdrawal / retirementStatsNominal.p50) * 100 : 0;
+
+      var scalarCheckValues = [
+        finalStatsNominal.p50,
+        finalStatsReal.p50,
+        retirementStatsNominal.p50,
+        retirementStatsReal.p50,
+        swr
+      ];
+      if (!scalarCheckValues.every(function (value) { return Number.isFinite(value); })) {
+        throw new Error("Simulation produced unstable numeric output. Reduce large values and try again.");
+      }
 
       return {
         summary: {

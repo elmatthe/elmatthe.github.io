@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
+import math
 import queue
 import tempfile
 import threading
@@ -68,6 +69,10 @@ BRAND_NAVY_ARGB = "FF1A2E4A"
 STATUS_NEUTRAL = "#1f4f8a"
 STATUS_ERROR = "#9b2f2f"
 STATUS_SUCCESS = "#1c7550"
+MAX_MONETARY_INPUT = 1.0e15
+MAX_YEARS_INPUT = 120
+MAX_ABS_RATE_INPUT = 100.0
+MAX_VOLATILITY_INPUT = 300.0
 
 
 @dataclass
@@ -137,9 +142,74 @@ def _replace_or_create_sheet(workbook: "Workbook", title: str):
     return sheet
 
 
+def _validate_simulation_inputs(inputs: SimulationInputs, error_type=ValueError) -> None:
+    def _raise(message: str) -> None:
+        raise error_type(message)
+
+    monetary_checks = (
+        ("Current portfolio value", inputs.current_portfolio, True),
+        ("Annual contribution", inputs.annual_contribution, False),
+        ("Annual retirement spending", inputs.annual_spending, True),
+        ("CPP / OAS / Pension income", inputs.pension_income, False),
+    )
+    for label, value, must_be_positive in monetary_checks:
+        if not math.isfinite(float(value)):
+            _raise(f"{label} must be a finite numeric value.")
+        if must_be_positive and value <= 0:
+            _raise(f"{label} must be greater than 0.")
+        if not must_be_positive and value < 0:
+            _raise(f"{label} must be 0 or greater.")
+        if abs(value) > MAX_MONETARY_INPUT:
+            _raise(
+                f"{label} is too large. Use values less than or equal to "
+                f"{MAX_MONETARY_INPUT:,.0f}."
+            )
+
+    if not math.isfinite(float(inputs.contribution_growth_rate)):
+        _raise("Contribution growth rate must be a finite numeric value.")
+    if abs(inputs.contribution_growth_rate) > MAX_ABS_RATE_INPUT:
+        _raise(
+            f"Contribution growth rate must be between "
+            f"-{MAX_ABS_RATE_INPUT:.0f}% and {MAX_ABS_RATE_INPUT:.0f}%."
+        )
+
+    if not math.isfinite(float(inputs.expected_return)):
+        _raise("Expected annual return must be a finite numeric value.")
+    if abs(inputs.expected_return) > MAX_ABS_RATE_INPUT:
+        _raise(
+            f"Expected annual return must be between "
+            f"-{MAX_ABS_RATE_INPUT:.0f}% and {MAX_ABS_RATE_INPUT:.0f}%."
+        )
+
+    if not math.isfinite(float(inputs.volatility)):
+        _raise("Volatility must be a finite numeric value.")
+    if inputs.volatility < 0 or inputs.volatility > MAX_VOLATILITY_INPUT:
+        _raise(f"Volatility must be between 0% and {MAX_VOLATILITY_INPUT:.0f}%.")
+
+    if not math.isfinite(float(inputs.inflation_rate)):
+        _raise("Inflation rate must be a finite numeric value.")
+    if abs(inputs.inflation_rate) > MAX_ABS_RATE_INPUT:
+        _raise(
+            f"Inflation rate must be between "
+            f"-{MAX_ABS_RATE_INPUT:.0f}% and {MAX_ABS_RATE_INPUT:.0f}%."
+        )
+
+    if inputs.years_to_retirement < 1 or inputs.years_to_retirement > MAX_YEARS_INPUT:
+        _raise(
+            f"Years to retirement must be between 1 and {MAX_YEARS_INPUT}."
+        )
+    if inputs.years_in_retirement < 1 or inputs.years_in_retirement > MAX_YEARS_INPUT:
+        _raise(
+            f"Years in retirement must be between 1 and {MAX_YEARS_INPUT}."
+        )
+    if inputs.simulations < 1 or inputs.simulations > 10000:
+        _raise("Number of simulations must be a whole number between 1 and 10,000.")
+
+
 def run_monte_carlo(inputs: SimulationInputs) -> SimulationResult:
     _require_dependencies()
     assert np is not None
+    _validate_simulation_inputs(inputs, error_type=ValueError)
 
     total_years = inputs.years_to_retirement + inputs.years_in_retirement
     years = np.arange(total_years + 1)
@@ -164,10 +234,20 @@ def run_monte_carlo(inputs: SimulationInputs) -> SimulationResult:
         for year in range(1, inputs.years_to_retirement + 1):
             annual_return = float(np.random.normal(mean_return, volatility))
             portfolio = portfolio * (1.0 + annual_return) + contribution
+            if not np.isfinite(portfolio):
+                raise ValueError(
+                    "Simulation produced non-finite values. "
+                    "Reduce large input magnitudes and try again."
+                )
             if portfolio < 0:
                 portfolio = 0.0
             paths[sim_idx, year] = portfolio
             contribution *= 1.0 + contrib_growth
+            if not np.isfinite(contribution):
+                raise ValueError(
+                    "Contribution growth produced non-finite values. "
+                    "Use smaller contribution inputs or growth rates."
+                )
 
         for retire_year in range(1, inputs.years_in_retirement + 1):
             year_idx = inputs.years_to_retirement + retire_year
@@ -178,6 +258,11 @@ def run_monte_carlo(inputs: SimulationInputs) -> SimulationResult:
 
             annual_return = float(np.random.normal(mean_return, volatility))
             portfolio = portfolio * (1.0 + annual_return) - net_withdrawal
+            if not np.isfinite(portfolio):
+                raise ValueError(
+                    "Simulation produced non-finite values during retirement. "
+                    "Reduce large input magnitudes and try again."
+                )
             if portfolio <= 0:
                 portfolio = 0.0
                 ruined = True
@@ -190,6 +275,12 @@ def run_monte_carlo(inputs: SimulationInputs) -> SimulationResult:
         final_values[sim_idx] = portfolio
         retirement_values[sim_idx] = paths[sim_idx, inputs.years_to_retirement]
 
+    if not np.isfinite(paths).all():
+        raise ValueError(
+            "Simulation produced invalid values. "
+            "Please use smaller magnitudes for portfolio/contribution/spending."
+        )
+
     p10, p25, p50, p75, p90 = np.percentile(paths, [10, 25, 50, 75, 90], axis=0)
 
     failed_simulations = len(ruin_years)
@@ -200,6 +291,20 @@ def run_monte_carlo(inputs: SimulationInputs) -> SimulationResult:
     p90_final = float(np.percentile(final_values, 90))
     swr = (net_withdrawal / median_retirement * 100.0) if median_retirement > 0 else 0.0
     median_ruin_year = float(np.median(np.array(ruin_years))) if ruin_years else None
+
+    scalar_values = [
+        success_probability,
+        median_retirement,
+        median_final,
+        p10_final,
+        p90_final,
+        swr,
+    ]
+    if not all(math.isfinite(float(v)) for v in scalar_values):
+        raise ValueError(
+            "Simulation output became non-finite. "
+            "Reduce large input magnitudes and try again."
+        )
 
     return SimulationResult(
         years=years,
@@ -671,7 +776,7 @@ class MonteCarloApp:
                 raise ValidationError("Please select a CSV output path.")
             csv_path = Path(csv_raw)
 
-        return SimulationInputs(
+        parsed_inputs = SimulationInputs(
             current_portfolio=current_portfolio,
             annual_contribution=annual_contribution,
             contribution_growth_rate=contribution_growth_rate,
@@ -686,6 +791,8 @@ class MonteCarloApp:
             workbook_path=workbook_path,
             csv_path=csv_path,
         )
+        _validate_simulation_inputs(parsed_inputs, error_type=ValidationError)
+        return parsed_inputs
 
     def _set_running_state(self, running: bool) -> None:
         self.is_running = running
