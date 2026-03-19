@@ -154,7 +154,8 @@ h3 {
 }
 
 .field input,
-.field textarea {
+.field textarea,
+.field select {
   width: 100%;
   box-sizing: border-box;
   border: 1px solid #bdcde0;
@@ -219,18 +220,18 @@ table.rebalance-table td {
 }
 
 .rebalancer-theme .tool-card {
-  border: 1px solid #2f4f7f;
-  background: linear-gradient(165deg, #0f2241 0%, #122d54 100%);
-  color: #e8f1ff;
-  box-shadow: 0 10px 24px rgba(9, 18, 36, 0.35);
+  border: 1px solid #b9cbe3;
+  background: linear-gradient(165deg, #eff4fb 0%, #e3ecf9 100%);
+  color: #1f334f;
+  box-shadow: 0 8px 18px rgba(23, 46, 84, 0.12);
 }
 
 .rebalancer-theme .tool-card h3 {
-  color: #f5f9ff;
+  color: #1f3a5f;
 }
 
 .rebalancer-theme .muted {
-  color: #bdd1f0;
+  color: #496789;
 }
 
 .input-controls {
@@ -252,43 +253,45 @@ table.rebalance-table td {
 }
 
 .rebalancer-theme .field label {
-  color: #dbe8ff;
+  color: #29466a;
 }
 
 .rebalancer-theme .field input,
 .rebalancer-theme .field textarea,
-.rebalancer-theme .sheet-input {
-  border: 1px solid #4b6792;
-  background: #0d1d38;
-  color: #f3f7ff;
+.rebalancer-theme .field select,
+.rebalancer-theme .sheet-input,
+.rebalancer-theme .sheet-select {
+  border: 1px solid #a9bedc;
+  background: #ffffff;
+  color: #1c3554;
 }
 
 .rebalancer-theme .field input::placeholder,
 .rebalancer-theme .sheet-input::placeholder {
-  color: #87a4ce;
+  color: #7894b9;
 }
 
 .rebalancer-theme .btn {
-  border-color: #9fc4ff;
-  background: #2c6bc0;
+  border-color: #5378ac;
+  background: #4b6ea0;
   color: #f3f8ff;
 }
 
 .rebalancer-theme .btn:hover {
-  background: #1f559f;
+  background: #3c5d8c;
 }
 
 .rebalancer-theme .btn-secondary {
-  background: #102545;
-  border-color: #4c74ac;
-  color: #d5e5ff;
+  background: #f5f8fd;
+  border-color: #87a4cb;
+  color: #2f4f78;
 }
 
 .table-wrap {
-  border: 1px solid #355887;
+  border: 1px solid #b6c9e2;
   border-radius: 10px;
   overflow-x: auto;
-  background: #0a1a34;
+  background: #f8fbff;
   margin-bottom: 0.5rem;
 }
 
@@ -300,15 +303,15 @@ table.sheet-table {
 
 table.sheet-table th,
 table.sheet-table td {
-  border-bottom: 1px solid #274973;
+  border-bottom: 1px solid #c6d5e8;
   padding: 0.5rem;
   text-align: left;
   vertical-align: middle;
 }
 
 table.sheet-table thead th {
-  background: #0b274b;
-  color: #dcecff;
+  background: #dce7f6;
+  color: #233f62;
   font-size: 0.9rem;
   position: sticky;
   top: 0;
@@ -316,16 +319,16 @@ table.sheet-table thead th {
 }
 
 table.sheet-table tbody tr:nth-child(even) {
-  background: rgba(18, 45, 84, 0.32);
+  background: rgba(219, 229, 244, 0.5);
 }
 
 .row-index {
-  color: #a9c2e8;
+  color: #43648f;
   font-weight: 600;
 }
 
 .current-value-cell {
-  color: #cde2ff;
+  color: #2a476e;
   font-variant-numeric: tabular-nums;
 }
 
@@ -336,12 +339,12 @@ table.sheet-table tbody tr:nth-child(even) {
   justify-content: space-between;
   margin-bottom: 0.75rem;
   font-size: 0.92rem;
-  color: #c6d9f7;
+  color: #35577f;
 }
 
 .rebalancer-theme .result-box {
-  border: 1px solid #355887;
-  background: #0a1a34;
+  border: 1px solid #b6c9e2;
+  background: #f8fbff;
 }
 
 .summary-grid {
@@ -352,22 +355,22 @@ table.sheet-table tbody tr:nth-child(even) {
 }
 
 .summary-item {
-  border: 1px solid #325780;
-  background: #0d2242;
+  border: 1px solid #b7c9e3;
+  background: #eaf1fb;
   border-radius: 8px;
   padding: 0.6rem 0.7rem;
 }
 
 .summary-item span {
   display: block;
-  color: #9fb9dc;
+  color: #557295;
   font-size: 0.82rem;
   margin-bottom: 0.2rem;
 }
 
 .summary-item strong {
   font-size: 1rem;
-  color: #f2f7ff;
+  color: #234061;
 }
 
 .action-pill {
@@ -393,7 +396,7 @@ table.sheet-table tbody tr:nth-child(even) {
 
 .action-hold {
   background: rgba(138, 171, 222, 0.2);
-  color: #d6e5ff;
+  color: #345276;
   border: 1px solid rgba(138, 171, 222, 0.38);
 }
 
