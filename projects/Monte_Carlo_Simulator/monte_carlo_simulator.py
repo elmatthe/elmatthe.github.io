@@ -14,10 +14,19 @@ import datetime as dt
 import queue
 import tempfile
 import threading
-import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+
+TK_AVAILABLE = True
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, ttk
+except ImportError:
+    TK_AVAILABLE = False
+    tk = None  # type: ignore[assignment]
+    filedialog = None  # type: ignore[assignment]
+    messagebox = None  # type: ignore[assignment]
+    ttk = None  # type: ignore[assignment]
 
 MISSING_DEPENDENCIES: list[str] = []
 
@@ -55,6 +64,7 @@ except ImportError:
 WINDOW_TITLE = "Monte Carlo Retirement Simulator"
 WINDOW_SIZE = "480x580"
 BRAND_NAVY = "#1a2e4a"
+BRAND_NAVY_ARGB = "FF1A2E4A"
 STATUS_NEUTRAL = "#1f4f8a"
 STATUS_ERROR = "#9b2f2f"
 STATUS_SUCCESS = "#1c7550"
@@ -213,7 +223,7 @@ def run_monte_carlo(inputs: SimulationInputs) -> SimulationResult:
 def _write_summary_sheet(sheet, inputs: SimulationInputs, result: SimulationResult) -> None:
     assert Font is not None and PatternFill is not None and Alignment is not None
 
-    navy_fill = PatternFill(fill_type="solid", start_color=BRAND_NAVY, end_color=BRAND_NAVY)
+    navy_fill = PatternFill(fill_type="solid", start_color=BRAND_NAVY_ARGB, end_color=BRAND_NAVY_ARGB)
     white_bold = Font(color="FFFFFF", bold=True)
     heading_font = Font(bold=True)
 
@@ -248,7 +258,7 @@ def _write_summary_sheet(sheet, inputs: SimulationInputs, result: SimulationResu
         elif row_idx in {7, 10, 11, 12}:
             cell.number_format = "0.00%"
 
-    sheet.cell(row=17, column=1, value="RESULTS").font = Font(bold=True, color=BRAND_NAVY)
+    sheet.cell(row=17, column=1, value="RESULTS").font = Font(bold=True, color=BRAND_NAVY_ARGB)
 
     summary_rows = [
         (18, "Probability of Success", result.success_probability / 100.0, "0.0%"),
@@ -297,7 +307,7 @@ def _write_percentiles_sheet(sheet, inputs: SimulationInputs, result: Simulation
     assert Font is not None and PatternFill is not None
 
     headers = ["Year", "P10", "P25", "P50 (Median)", "P75", "P90", "Phase marker"]
-    header_fill = PatternFill(fill_type="solid", start_color=BRAND_NAVY, end_color=BRAND_NAVY)
+    header_fill = PatternFill(fill_type="solid", start_color=BRAND_NAVY_ARGB, end_color=BRAND_NAVY_ARGB)
     header_font = Font(color="FFFFFF", bold=True)
 
     for col_idx, header in enumerate(headers, start=1):
@@ -364,17 +374,15 @@ def _render_chart_image(result: SimulationResult, retirement_year: int) -> Path:
     return temp_path
 
 
-def _write_chart_sheet(sheet, result: SimulationResult, retirement_year: int) -> None:
+def _write_chart_sheet(sheet, result: SimulationResult, retirement_year: int) -> Path:
     assert XLImage is not None
 
     chart_path = _render_chart_image(result, retirement_year)
-    try:
-        img = XLImage(str(chart_path))
-        img.width = 980
-        img.height = 520
-        sheet.add_image(img, "A1")
-    finally:
-        chart_path.unlink(missing_ok=True)
+    img = XLImage(str(chart_path))
+    img.width = 980
+    img.height = 520
+    sheet.add_image(img, "A1")
+    return chart_path
 
 
 def write_excel_report(inputs: SimulationInputs, result: SimulationResult) -> None:
@@ -396,14 +404,17 @@ def write_excel_report(inputs: SimulationInputs, result: SimulationResult) -> No
 
     _write_summary_sheet(summary_sheet, inputs, result)
     _write_percentiles_sheet(percentiles_sheet, inputs, result)
-    _write_chart_sheet(chart_sheet, result, inputs.years_to_retirement)
+    chart_path = _write_chart_sheet(chart_sheet, result, inputs.years_to_retirement)
 
     try:
-        workbook.save(workbook_path)
-    except PermissionError as exc:
-        raise PermissionError(
-            "The workbook appears to be open. Close it in Excel and try again."
-        ) from exc
+        try:
+            workbook.save(workbook_path)
+        except PermissionError as exc:
+            raise PermissionError(
+                "The workbook appears to be open. Close it in Excel and try again."
+            ) from exc
+    finally:
+        chart_path.unlink(missing_ok=True)
 
 
 def write_csv_export(csv_path: Path, result: SimulationResult) -> None:
@@ -766,6 +777,12 @@ class MonteCarloApp:
 
 
 def main() -> None:
+    if not TK_AVAILABLE:
+        raise RuntimeError(
+            "tkinter is not available in this Python environment. "
+            "Install tkinter support to run the desktop GUI."
+        )
+
     root = tk.Tk()
     MonteCarloApp(root)
     root.mainloop()
