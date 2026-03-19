@@ -21,21 +21,38 @@
   <rect x="445" y="220" width="310" height="250" rx="16" fill="url(#card)" />
   <rect x="818" y="220" width="310" height="250" rx="16" fill="url(#card)" />
 
-  <rect x="102" y="258" width="64" height="64" rx="12" fill="#2c6bc0" />
-  <path d="M120 305h30m-30-15h30m-30-15h30" stroke="#ffffff" stroke-width="4" stroke-linecap="round" />
+  <g transform="translate(102 258)">
+    <rect x="0" y="0" width="64" height="64" rx="12" fill="#f1f5ff" stroke="#99b2db" />
+    <path d="M12 12h22c8 0 12 4 12 12v8H24c-4 0-7 3-7 7v6H10c-4 0-6-2-6-6V24c0-8 4-12 8-12z" fill="#376fa9" />
+    <circle cx="28" cy="20" r="2.1" fill="#ffffff" />
+    <path d="M52 52H30c-8 0-12-4-12-12v-8h22c4 0 7-3 7-7v-6h7c4 0 6 2 6 6v15c0 8-4 12-8 12z" fill="#ffd24a" />
+    <circle cx="36" cy="44" r="2.1" fill="#3a3a3a" />
+  </g>
   <text x="184" y="280" fill="#0d2240" font-family="Arial, sans-serif" font-size="18" font-weight="700">1) Python Pull</text>
   <text x="102" y="350" fill="#324d78" font-family="Arial, sans-serif" font-size="18">Collect latest CPI series with</text>
   <text x="102" y="378" fill="#324d78" font-family="Arial, sans-serif" font-size="18">the downloadable script.</text>
 
-  <rect x="475" y="258" width="64" height="64" rx="12" fill="#2c6bc0" />
-  <rect x="493" y="276" width="28" height="28" fill="#ffffff" />
-  <path d="M493 286h28M507 276v28" stroke="#2c6bc0" stroke-width="2" />
+  <g transform="translate(475 258)">
+    <rect x="0" y="0" width="64" height="64" rx="12" fill="#ecfff3" stroke="#8bcaa0" />
+    <path d="M15 11h24l10 10v32H15z" fill="#1f8f53" />
+    <path d="M39 11v10h10" fill="#52b67c" />
+    <rect x="20" y="26" width="22" height="20" rx="2" fill="#ffffff" />
+    <path d="M31 26v20M20 36h22" stroke="#1f8f53" stroke-width="1.7" />
+    <text x="30.8" y="57" text-anchor="middle" fill="#ffffff" font-family="Arial, sans-serif" font-size="10.5" font-weight="700">XLS</text>
+  </g>
   <text x="557" y="280" fill="#0d2240" font-family="Arial, sans-serif" font-size="18" font-weight="700">2) Workbook Model</text>
   <text x="475" y="350" fill="#324d78" font-family="Arial, sans-serif" font-size="18">Organize trend data, assumptions,</text>
   <text x="475" y="378" fill="#324d78" font-family="Arial, sans-serif" font-size="18">and monitoring notes in Excel.</text>
 
-  <rect x="848" y="258" width="64" height="64" rx="12" fill="#2c6bc0" />
-  <path d="M870 292l12 12 20-24" stroke="#ffffff" stroke-width="5" fill="none" stroke-linecap="round" stroke-linejoin="round" />
+  <g transform="translate(848 258)">
+    <rect x="0" y="0" width="64" height="64" rx="12" fill="#eef4ff" stroke="#9db4d8" />
+    <circle cx="24" cy="24" r="8" fill="#5a7ab1" />
+    <path d="M11 47c0-7 6-12 13-12s13 5 13 12" fill="#5a7ab1" />
+    <path d="M41 16h16c3 0 5 2 5 5v10c0 3-2 5-5 5h-5l-4 4v-4h-7c-3 0-5-2-5-5V21c0-3 2-5 5-5z" fill="#7b9ed4" />
+    <circle cx="46" cy="26" r="1.6" fill="#ffffff" />
+    <circle cx="51" cy="26" r="1.6" fill="#ffffff" />
+    <circle cx="56" cy="26" r="1.6" fill="#ffffff" />
+  </g>
   <text x="920" y="280" fill="#0d2240" font-family="Arial, sans-serif" font-size="18" font-weight="700">3) Advisory Output</text>
   <text x="848" y="350" fill="#324d78" font-family="Arial, sans-serif" font-size="18">Use insights in planning meetings,</text>
   <text x="848" y="378" fill="#324d78" font-family="Arial, sans-serif" font-size="18">stress tests, and client reviews.</text>

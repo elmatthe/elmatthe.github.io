@@ -298,7 +298,7 @@ table.rebalance-table td {
 table.sheet-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 720px;
+  min-width: 980px;
 }
 
 table.sheet-table th,
@@ -330,6 +330,12 @@ table.sheet-table tbody tr:nth-child(even) {
 .current-value-cell {
   color: #2a476e;
   font-variant-numeric: tabular-nums;
+}
+
+.fx-rate-cell {
+  color: #5a7394;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
 }
 
 .table-footnote {
