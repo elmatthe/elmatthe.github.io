@@ -6,6 +6,10 @@ permalink: /Projects/
 
 <ul class="project-list">
   <li>
+    <a href="{{ '/projects/monte-carlo-simulator/' | relative_url }}">Monte Carlo Retirement Simulator</a>
+    <div class="muted">Retirement Monte Carlo workflow with browser simulator, desktop Python starter, and setup guide resources.</div>
+  </li>
+  <li>
     <a href="{{ '/projects/cpi-webscraper/' | relative_url }}">CPI Webscraper Project</a>
     <div class="muted">Python CPI webscraper workflow, setup guide, and workbook template downloads.</div>
   </li>
