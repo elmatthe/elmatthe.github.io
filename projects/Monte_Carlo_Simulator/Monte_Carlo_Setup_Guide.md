@@ -1,120 +1,320 @@
-# Monte Carlo Retirement Simulator - Setup Guide
+# Monte Carlo Retirement Simulator - Detailed Setup and Methodology Guide
 
-This guide supports the full desktop Monte Carlo Retirement Simulator workflow. It follows the same practical format as the CPI and Portfolio Rebalancer project guides.
-
----
-
-## 1) What Does This Tool Do?
-
-The simulator runs many market return scenarios to estimate how likely a retirement plan is to sustain withdrawals over time.
-
-The workflow has two phases:
-
-1. **Accumulation:** your portfolio grows with market returns and annual contributions.
-2. **Retirement drawdown:** your portfolio continues to evolve while annual spending is withdrawn (net of pension income).
-
-Outputs focus on planning-friendly metrics such as probability of success, median outcomes, and percentile bands.
+This guide explains **exactly how the tool works**, the logic and theory behind each output, and how to use the results for better retirement-planning decisions.
 
 ---
 
-## 2) Before You Use It - One-Time Setup
+## 1) What this tool is designed to answer
 
-### Step 1: Check Python installation
+A retirement plan is not a single path problem. Markets are uncertain, and the order of returns matters.
 
-Open a terminal and run:
+This simulator answers:
 
-```bash
-python --version
+- "How often does my plan survive under many possible market paths?"
+- "How wide is the range of potential outcomes?"
+- "When failures happen, how early do they typically happen?"
+- "How sensitive is success to my assumptions (return, volatility, spending, contribution)?"
+
+Instead of one deterministic projection, the model runs many simulations and evaluates the full distribution of outcomes.
+
+---
+
+## 2) Core modeling framework
+
+The model is a two-phase annual simulation:
+
+1. **Accumulation phase** (before retirement)
+2. **Decumulation phase** (during retirement)
+
+Each simulation is one possible market path. Across all paths, the model computes percentile bands and success/failure statistics.
+
+### 2.1 Annual return model
+
+Each year return is sampled from a normal distribution:
+
+```text
+r_t ~ Normal(mu, sigma)
 ```
 
-If Python is not installed, install Python 3.10+ first.
+Where:
 
-### Step 2: Install required libraries
+- `mu` = expected annual return input (converted from % to decimal)
+- `sigma` = annual volatility input (converted from % to decimal)
+
+This is a practical, widely used approximation for planning tools. It is useful for scenario analysis, but does not perfectly model all real-world tail behavior.
+
+### 2.2 Accumulation dynamics
+
+For each pre-retirement year:
+
+```text
+Portfolio_t = Portfolio_(t-1) * (1 + r_t) + Contribution_t
+Contribution_t+1 = Contribution_t * (1 + contribution_growth_rate)
+```
+
+Interpretation:
+
+- portfolio grows or shrinks with market return
+- annual contribution is added
+- contribution can grow over time (for example, with salary growth)
+
+### 2.3 Decumulation dynamics
+
+Net withdrawal is:
+
+```text
+Net Withdrawal = Annual Spending - Pension Income
+```
+
+For each retirement year:
+
+```text
+Portfolio_t = Portfolio_(t-1) * (1 + r_t) - Net Withdrawal
+```
+
+Ruin rule:
+
+- if `Portfolio_t <= 0`, the path is marked failed
+- portfolio is set to `0`
+- all remaining years for that path stay at `0`
+
+This gives a clear and consistent definition of failure.
+
+### 2.4 Success and distribution statistics
+
+After all simulations:
+
+- **Probability of Success** = fraction of paths that never hit zero during retirement
+- **Failed simulations** = paths that did hit zero at least once
+- **Median Ruin Year** = median retirement year among failed paths
+- **Percentile bands by year** = P10, P25, P50, P75, P90 across all paths
+
+These yearly percentiles are what drive the fan chart and percentile tables.
+
+---
+
+## 3) Inputs: precise meaning and effect
+
+### Current Portfolio Value ($)
+Starting value at simulation year 0.
+
+### Annual Contribution ($)
+Amount added each accumulation year.
+
+### Contribution Growth Rate (% / yr)
+Annual growth applied to contribution amount each year before retirement.
+
+### Years to Retirement
+Number of accumulation years.
+
+### Years in Retirement
+Number of withdrawal years evaluated.
+
+### Expected Annual Return (%)
+Mean annual return for random sampling.
+
+### Annual Volatility / Std Dev (%)
+Standard deviation of annual returns. Higher values increase outcome dispersion and sequence risk.
+
+### Inflation Rate (%)
+Used for inflation-adjusted (real) views in web output and interpretation context.
+
+### Annual Retirement Spending ($)
+Target annual spending during retirement.
+
+### CPP / OAS / Pension Income ($ / yr)
+Income that offsets spending need. Higher value lowers net withdrawal and usually improves success odds.
+
+### Number of Simulations
+How many random paths to run.
+
+- More simulations = more stable estimates
+- Fewer simulations = faster runs but noisier estimates
+
+---
+
+## 4) Validation and numerical safety rules
+
+The tool rejects invalid or unstable configurations before running:
+
+- required fields must be numeric
+- minimum/maximum bounds for years, rates, volatility, and simulation count
+- monetary values must be finite and within safe magnitude limits
+- overflow / non-finite math detection during simulation loops
+
+Why this matters:
+
+- prevents misleading outputs caused by numeric overflow (`inf`/`nan`)
+- ensures the reported success rate is mathematically valid
+
+If instability is detected, the tool fails fast with a clear error message instead of returning unreliable results.
+
+---
+
+## 5) Desktop workflow (Python app)
+
+### 5.1 One-time setup
+
+Install Python 3.10+ and dependencies:
 
 ```bash
 pip install openpyxl matplotlib numpy
 ```
 
-### Step 3: Download project files
+### 5.2 Running the app
 
-From the project page, download:
+1. Download `monte_carlo_simulator.py`
+2. Run:
+   ```bash
+   python monte_carlo_simulator.py
+   ```
+3. Enter assumptions
+4. Select target `.xlsx` workbook
+5. Optional: enable CSV export and choose output path
+6. Click **Run Simulation**
 
-- `monte_carlo_simulator.py`
-- `Monte_Carlo_Setup_Guide.md`
-
-### Step 4: Keep workbook closed while writing results
-
-The simulator writes directly into your selected workbook and creates/overwrites:
-
-- `MC_Summary`
-- `MC_Percentiles`
-- `MC_Chart`
-
-Keep the target workbook closed in Excel while the script runs.
+The app runs simulations in a background thread and shows progress/status updates.
 
 ---
 
-## 3) How to Run the Script
+## 6) Output structure and what each artifact means
 
-1. Save `monte_carlo_simulator.py` locally.
-2. Double-click the script (or run `python monte_carlo_simulator.py` in terminal).
-3. Enter your assumptions in the input form.
-4. Choose a target `.xlsx` workbook.
-5. (Optional) check **Also export to CSV** and select a `.csv` output path.
-6. Click **Run Simulation**.
+### 6.1 `MC_Summary`
 
----
+Contains:
 
-## 4) Using the Program - Step by Step
+- input assumptions used in the run
+- probability of success
+- median retirement portfolio
+- median/final percentiles
+- failed simulation count
+- median ruin timing
+- safe withdrawal rate
 
-1. Enter core assumptions:
-   - current portfolio
-   - annual contribution and growth
-   - years to retirement
-   - years in retirement
-   - expected return and volatility
-   - inflation
-   - annual spending
-   - pension income
-   - simulation count
-2. Select the workbook destination.
-3. Optional: enable CSV export and choose path.
-4. Run the simulation.
-5. Open the workbook and review:
-   - `MC_Summary` for key assumptions and output stats
-   - `MC_Percentiles` for year-by-year percentile bands
-   - `MC_Chart` for embedded fan chart image
-6. Compare scenarios by adjusting one assumption at a time.
+Use this sheet as an executive summary of plan feasibility under uncertainty.
 
----
+### 6.2 `MC_Percentiles`
 
-## 5) Understanding the Output
+Year-by-year table for P10/P25/P50/P75/P90.
 
-- **Probability of success:** percent of simulations where portfolio does not hit zero before the end of retirement.
-- **Percentile bands:** show optimistic, median, and conservative path ranges.
-- **Safe withdrawal rate (SWR):** net withdrawal divided by median portfolio at retirement.
-- **Nominal vs real values:** nominal values are in future dollars; real values adjust for inflation.
-- **Ruin year metric:** when failures occur, median ruin year shows when depletion typically happens in retirement.
+Use this sheet to inspect trajectory shape and downside/upside spread over time.
+
+### 6.3 `MC_Chart`
+
+Embedded fan chart:
+
+- P10-P90 outer band
+- P25-P75 inner band
+- P50 median line
+- retirement marker
+
+Use this chart to communicate uncertainty visually and compare scenario runs.
+
+### 6.4 Optional CSV export
+
+Exports the percentile table with dates (year offsets from today). Useful for downstream analysis or custom charting.
 
 ---
 
-## 6) Troubleshooting
+## 7) How to interpret results correctly
 
-| Issue | Likely cause | What to do |
+### 7.1 Probability of success
+
+This is not a guarantee. It is the share of simulated paths that survive under your assumptions.
+
+- high value: plan appears robust under modeled uncertainty
+- low value: plan is fragile to adverse return sequences
+
+### 7.2 Percentile fan interpretation
+
+- **P50**: central tendency, not "most likely exact path"
+- **P10/P25**: downside bands (stress-side context)
+- **P75/P90**: upside bands
+
+Widening bands over time indicate compounding uncertainty.
+
+### 7.3 Median ruin year
+
+Shows *when* failures tend to occur, not just whether they occur.
+
+- early ruin -> severe near-retirement vulnerability
+- late ruin -> plan works for a long time but may fail at tail end
+
+### 7.4 Safe Withdrawal Rate (SWR)
+
+Computed as:
+
+```text
+SWR = Net Withdrawal / Median Portfolio at Retirement
+```
+
+SWR is scenario-dependent and should be treated as a planning signal, not a universal rule.
+
+---
+
+## 8) Insight types this tool can provide
+
+You can use this model to quantify:
+
+1. **Feasibility gap**
+   - Is current contribution/spending balance enough?
+2. **Sequence-of-returns sensitivity**
+   - How much downside timing risk hurts drawdown years
+3. **Volatility fragility**
+   - How success changes when sigma rises
+4. **Retirement timing impact**
+   - How delaying retirement shifts success odds
+5. **Spending discipline effect**
+   - How spending reductions improve tail outcomes
+6. **Pension bridge value**
+   - How external income improves resilience
+
+Best practice: run controlled scenario sets by changing one assumption at a time.
+
+---
+
+## 9) Recommended scenario analysis workflow
+
+1. **Base case**
+   - realistic assumptions for your current plan
+2. **Conservative case**
+   - lower return, higher volatility, higher spending
+3. **Optimistic case**
+   - higher return, lower volatility
+4. **Policy levers**
+   - raise contribution, reduce spending, delay retirement
+
+Compare:
+
+- success probability
+- median ruin year (if failures exist)
+- percentile spread at retirement and end horizon
+
+---
+
+## 10) Troubleshooting
+
+| Issue | Meaning | Action |
 |---|---|---|
-| Script does not start | Python not installed or path issue | Install Python 3.10+ and re-run |
-| Import error (openpyxl/matplotlib/numpy) | Dependencies missing | Run `pip install openpyxl matplotlib numpy` |
-| Inputs rejected | Invalid value in one or more fields | Check that required fields are numeric and positive where required |
-| Workbook save fails | Workbook open in Excel | Close workbook in Excel and run again |
-| Slow desktop simulation | Very high simulation count | Reduce run count (e.g. 1,000-5,000) for faster turnaround |
+| Workbook appears open | Excel lock prevents save | Close workbook and rerun |
+| Non-finite/overflow error | Inputs too extreme for stable arithmetic | Reduce very large values and rerun |
+| Dependency import error | Missing libraries | `pip install openpyxl matplotlib numpy` |
+| Slow runtime | Large simulation count/horizon | Reduce runs or years for faster iteration |
 
 ---
 
-## 7) Assumptions and Limitations
+## 11) Assumptions and limitations
 
-- Returns are modeled with a normal distribution.
-- Taxes are not modeled.
-- Sequence-specific spending adjustments are not modeled.
-- Output is designed for educational scenario analysis.
+- annual returns modeled as normal draws
+- no taxes, fees, or dynamic spending rules
+- no asset-class-level factor modeling
+- no regime switching or fat-tail calibration
 
-**Disclaimer:** This tool is for illustrative and educational purposes only and does not constitute financial advice.
+This is a **decision-support and education tool**, not a guarantee engine.
+
+---
+
+## 12) Important disclaimer
+
+This simulator is for illustrative and educational planning use only.  
+It is **not** financial advice, investment advice, or a recommendation to take any specific action.
