@@ -1,0 +1,29 @@
+<svg width="1200" height="260" viewBox="0 0 1200 260" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Monte Carlo workflow overview</title>
+  <desc id="desc">Three-step flow: Input Assumptions to Run Simulations to Review Output.</desc>
+  <rect width="1200" height="260" fill="#F5F8FC"/>
+
+  <rect x="40" y="44" width="320" height="172" rx="14" fill="#1A2E4A"/>
+  <text x="200" y="94" text-anchor="middle" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="28" font-weight="700">Input Assumptions</text>
+  <text x="200" y="132" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">Portfolio value</text>
+  <text x="200" y="158" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">Return and volatility</text>
+  <text x="200" y="184" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">Spending and timeline</text>
+
+  <rect x="440" y="44" width="320" height="172" rx="14" fill="#1A2E4A"/>
+  <text x="600" y="94" text-anchor="middle" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="28" font-weight="700">Run Simulations</text>
+  <text x="600" y="132" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">1,000+ random paths</text>
+  <text x="600" y="158" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">Accumulation phase</text>
+  <text x="600" y="184" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">Retirement drawdown phase</text>
+
+  <rect x="840" y="44" width="320" height="172" rx="14" fill="#1A2E4A"/>
+  <text x="1000" y="94" text-anchor="middle" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="28" font-weight="700">Review Output</text>
+  <text x="1000" y="132" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">Success probability</text>
+  <text x="1000" y="158" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">Percentile fan chart</text>
+  <text x="1000" y="184" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">Scenario comparison</text>
+
+  <path d="M368 130H430" stroke="#2C4D77" stroke-width="8" stroke-linecap="round"/>
+  <path d="M430 130L412 115V145L430 130Z" fill="#2C4D77"/>
+
+  <path d="M768 130H830" stroke="#2C4D77" stroke-width="8" stroke-linecap="round"/>
+  <path d="M830 130L812 115V145L830 130Z" fill="#2C4D77"/>
+</svg>

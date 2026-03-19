@@ -506,6 +506,87 @@ table.sheet-table tbody tr:nth-child(even) {
   margin-top: 0.55rem;
 }
 
+.mc-theme .tool-card {
+  border: 1px solid #b9cbe3;
+  background: linear-gradient(165deg, #f3f7fd 0%, #e8f0fb 100%);
+  color: #1f334f;
+  box-shadow: 0 8px 18px rgba(23, 46, 84, 0.1);
+}
+
+.mc-theme .tool-card h3 {
+  color: #1f3a5f;
+}
+
+.mc-input-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 0.7rem 0.9rem;
+}
+
+.mc-theme .field {
+  margin-bottom: 0.35rem;
+}
+
+.mc-theme .field label {
+  color: #29466a;
+}
+
+.mc-theme .field input {
+  border: 1px solid #a9bedc;
+  background: #ffffff;
+  color: #1c3554;
+}
+
+.mc-chart-wrap {
+  border: 1px solid #b6c9e2;
+  border-radius: 10px;
+  background: #f8fbff;
+  padding: 0.5rem;
+  margin-bottom: 0.8rem;
+}
+
+#mcChartCanvas {
+  width: 100%;
+  max-width: 100%;
+  display: block;
+}
+
+.mc-table {
+  margin-top: 0.6rem;
+  min-width: 700px;
+}
+
+.mc-disclaimer {
+  margin-top: 0.8rem;
+}
+
+.mc-stat-good {
+  border-color: rgba(43, 154, 106, 0.5);
+  background: rgba(43, 154, 106, 0.18);
+}
+
+.mc-stat-good strong {
+  color: #186546;
+}
+
+.mc-stat-warn {
+  border-color: rgba(208, 155, 43, 0.55);
+  background: rgba(208, 155, 43, 0.2);
+}
+
+.mc-stat-warn strong {
+  color: #835f15;
+}
+
+.mc-stat-risk {
+  border-color: rgba(190, 72, 72, 0.55);
+  background: rgba(190, 72, 72, 0.2);
+}
+
+.mc-stat-risk strong {
+  color: #8d2626;
+}
+
 table.input-sheet th:nth-child(1),
 table.input-sheet td:nth-child(1) {
   min-width: 28px;
@@ -602,5 +683,9 @@ table.input-sheet td:nth-child(8) {
   table.sheet-table th,
   table.sheet-table td {
     font-size: 0.88rem;
+  }
+
+  .mc-input-grid {
+    grid-template-columns: 1fr;
   }
 }
