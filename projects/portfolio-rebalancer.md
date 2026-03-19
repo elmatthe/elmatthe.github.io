@@ -7,14 +7,15 @@ last_updated: 2026-03-19
 ---
 
 <section class="hero-panel">
-  <div class="eyebrow">Portfolio Analytics Tool</div>
-  <h1>Portfolio Rebalancer Project</h1>
-  <p class="lede">This project supports a practical portfolio rebalancing workflow for advisory research and client review prep, with both an interactive web version and a downloadable Python desktop script.</p>
+  <div class="eyebrow">Financial Tool Project</div>
+  <h1>Portfolio Rebalancer</h1>
+  <p class="lede">This project provides a practical portfolio rebalancing workflow for advisory prep and client review meetings. Use the interactive web tool or download the desktop Python script to run the same logic locally.</p>
 </section>
 
 ## Downloads
 <div class="btn-row">
   <a class="btn" href="{{ '/projects/Portfolio_Rebalancer/portfolio_rebalancer_desktop.py' | relative_url }}" download>Download Portfolio Rebalancer (.py)</a>
+  <a class="btn" href="{{ '/projects/Portfolio_Rebalancer/Portfolio_Rebalancer_Setup_Guide.md' | relative_url }}" download="Portfolio_Rebalancer_Setup_Guide.md">Download Setup &amp; Usage Guide (.md)</a>
 </div>
 
 ## Guides
@@ -91,6 +92,22 @@ Use the browser version below to run the same rebalancing workflow directly on t
   <section class="tool-card rebalancer-output-card">
     <h3>Rebalance Output</h3>
     <div id="rebalanceResults" class="result-box">Output will appear here after you run rebalancing.</div>
+  </section>
+</div>
+
+## Workflow Snapshot
+<div class="card-grid">
+  <section class="card">
+    <h3>1) Input</h3>
+    <p class="muted">Enter each security, shares, local price, row currency, and target weight.</p>
+  </section>
+  <section class="card">
+    <h3>2) Rebalancing Logic</h3>
+    <p class="muted">The tool converts values to your reporting currency, normalizes target weights, and computes trade values/shares.</p>
+  </section>
+  <section class="card">
+    <h3>3) Output</h3>
+    <p class="muted">Review Buy/Sell/Hold actions, trade amounts, and post-trade shares for each position.</p>
   </section>
 </div>
 
