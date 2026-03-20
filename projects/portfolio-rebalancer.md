@@ -33,7 +33,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
     <div class="input-controls">
       <div class="field inline-field">
         <label for="rowCountInput">Number of securities</label>
-        <input id="rowCountInput" type="number" min="1" max="50" step="1" value="5" />
+        <input id="rowCountInput" type="number" min="1" max="50" step="1" value="9" />
       </div>
       <div class="field inline-field">
         <label for="reportingCurrencySelect">Reporting currency</label>
@@ -114,11 +114,15 @@ Use the browser version below to run the same rebalancing workflow directly on t
 <script>
   (function () {
     var samplePortfolio = [
-      { ticker: "VTI", shares: 120, price: 250, targetWeight: 35, currencyKey: "USD" },
-      { ticker: "XIC", shares: 140, price: 36, targetWeight: 20, currencyKey: "CAD" },
-      { ticker: "EWJ", shares: 220, price: 2480, targetWeight: 15, currencyKey: "JPN" },
-      { ticker: "VGK", shares: 115, price: 64, targetWeight: 15, currencyKey: "EUR" },
-      { ticker: "ISF", shares: 260, price: 7.4, targetWeight: 15, currencyKey: "GBP" }
+      { ticker: "VTI", shares: 120, price: 250, targetWeight: 10, currencyKey: "USD" },
+      { ticker: "XIC", shares: 320, price: 36, targetWeight: 10, currencyKey: "CAD" },
+      { ticker: "VEQT", shares: 410, price: 42, targetWeight: 20, currencyKey: "CAD" },
+      { ticker: "EWJ", shares: 220, price: 2480, targetWeight: 10, currencyKey: "JPN" },
+      { ticker: "VGK", shares: 115, price: 64, targetWeight: 10, currencyKey: "EUR" },
+      { ticker: "ISF", shares: 260, price: 7.4, targetWeight: 10, currencyKey: "GBP" },
+      { ticker: "AAPL", shares: 45, price: 180, targetWeight: 10, currencyKey: "USD" },
+      { ticker: "BND", shares: 200, price: 72, targetWeight: 10, currencyKey: "USD" },
+      { ticker: "MCHI", shares: 140, price: 40, targetWeight: 10, currencyKey: "USD" }
     ];
 
     var rowCountInput = document.getElementById("rowCountInput");
@@ -135,6 +139,28 @@ Use the browser version below to run the same rebalancing workflow directly on t
       GBP: { code: "GBP", locale: "en-GB", label: "GBP", fxToUsd: 1.28 },
       CHY_CNH: { code: "CNY", locale: "zh-CN", label: "CHY/CNH", fxToUsd: 0.14 }
     };
+    var exchangeSuffixHints = {
+      USD: ["", ".US"],
+      CAD: [".TO", ".V", ""],
+      JPN: [".T", ""],
+      EUR: [".DE", ".AS", ".PA", ".MI", ".BR", ""],
+      GBP: [".L", ""],
+      CHY_CNH: [".SS", ".SZ", ".HK", ""]
+    };
+    var suffixToCurrencyKey = {
+      ".TO": "CAD",
+      ".V": "CAD",
+      ".T": "JPN",
+      ".DE": "EUR",
+      ".AS": "EUR",
+      ".PA": "EUR",
+      ".MI": "EUR",
+      ".BR": "EUR",
+      ".L": "GBP",
+      ".SS": "CHY_CNH",
+      ".SZ": "CHY_CNH",
+      ".HK": "CHY_CNH"
+    };
 
     function getReportingCurrencyMeta() {
       return currencyOptions[reportingCurrencySelect.value] || currencyOptions.USD;
@@ -148,6 +174,63 @@ Use the browser version below to run the same rebalancing workflow directly on t
       var rowMeta = getRowCurrencyMeta(currencyKey);
       var reportingMeta = getReportingCurrencyMeta();
       return rowMeta.fxToUsd / reportingMeta.fxToUsd;
+    }
+
+    function buildTickerCandidates(ticker, currencyKey) {
+      var clean = String(ticker || "").trim().toUpperCase();
+      if (!clean) {
+        return [];
+      }
+      if (clean.indexOf(".") >= 0 || clean.indexOf("=") >= 0) {
+        return [clean];
+      }
+      var suffixes = exchangeSuffixHints[currencyKey] || [""];
+      var candidates = [];
+      suffixes.forEach(function (suffix) {
+        var candidate = suffix ? (clean + suffix) : clean;
+        if (candidates.indexOf(candidate) === -1) {
+          candidates.push(candidate);
+        }
+      });
+      return candidates;
+    }
+
+    function inferCurrencyFromTickerSuffix(ticker) {
+      var clean = String(ticker || "").trim().toUpperCase();
+      if (!clean) {
+        return null;
+      }
+      var dotIdx = clean.lastIndexOf(".");
+      if (dotIdx < 0) {
+        return null;
+      }
+      var suffix = clean.slice(dotIdx);
+      return suffixToCurrencyKey[suffix] || null;
+    }
+
+    function buildTickerCurrencyWarnings(positions) {
+      var warnings = [];
+      positions.forEach(function (position, idx) {
+        var inferredCurrencyKey = inferCurrencyFromTickerSuffix(position.ticker);
+        var expectedCode = getRowCurrencyMeta(position.currencyKey).code;
+        if (inferredCurrencyKey && inferredCurrencyKey !== position.currencyKey) {
+          warnings.push(
+            "Row " + (idx + 1) + " (" + position.ticker + "): ticker suffix implies " +
+            getRowCurrencyMeta(inferredCurrencyKey).code + " but row currency is " + expectedCode + "."
+          );
+        }
+
+        if (position.currencyKey !== "USD" && !inferredCurrencyKey) {
+          var candidates = buildTickerCandidates(position.ticker, position.currencyKey);
+          if (candidates.length > 1) {
+            warnings.push(
+              "Row " + (idx + 1) + " (" + position.ticker + "): desktop live fetch will auto-try exchange symbols " +
+              candidates.join(", ") + " for " + expectedCode + " quotes."
+            );
+          }
+        }
+      });
+      return warnings;
     }
 
     function formatFx(num) {
@@ -346,6 +429,16 @@ Use the browser version below to run the same rebalancing workflow directly on t
         "</div>";
     }
 
+    function warningsHtml(warnings) {
+      if (!warnings.length) {
+        return "";
+      }
+      return "<div class='muted' style='margin-top:12px;'>" +
+        "<strong>Ticker/Currency Checks</strong><br />" +
+        warnings.map(function (w) { return "• " + escapeHtml(w); }).join("<br />") +
+        "</div>";
+    }
+
     function updateCurrencyUi() {
       var meta = getReportingCurrencyMeta();
       document.getElementById("netFlowLabel").textContent = "Net contribution / withdrawal (" + meta.label + ")";
@@ -358,6 +451,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
 
       try {
         var positions = parsePositionsFromTable();
+        var tickerWarnings = buildTickerCurrencyWarnings(positions);
         var netFlow = Number(document.getElementById("netFlowInput").value || "0");
         if (!Number.isFinite(netFlow)) {
           throw new Error("Net contribution / withdrawal must be a valid number.");
@@ -420,7 +514,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
           totalSells: totalSells
         };
 
-        resultsNode.innerHTML = summaryHtml(summaryData) + buildResultTable(results);
+        resultsNode.innerHTML = summaryHtml(summaryData) + buildResultTable(results) + warningsHtml(tickerWarnings);
         hasCalculated = true;
       } catch (err) {
         resultsNode.textContent = "Output will appear here after you run rebalancing.";
