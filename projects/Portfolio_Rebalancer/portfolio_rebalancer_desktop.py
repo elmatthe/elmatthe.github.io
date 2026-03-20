@@ -53,6 +53,24 @@ STATUS_WARN = "#8f5f12"
 BRAND_NAVY_ARGB = "FF1A2E4A"
 HOLD_THRESHOLD = 0.005
 
+EXCHANGE_SUFFIX_HINTS = {
+    "USD": ["", ".US"],
+    "CAD": [".TO", ".V", ""],
+    "JPN": [".T", ""],
+    "EUR": [".DE", ".AS", ".PA", ".MI", ".BR", ""],
+    "GBP": [".L", ""],
+    "CHY_CNH": [".SS", ".SZ", ".HK", ""],
+}
+
+EXCHANGE_PREFIX_HINTS = {
+    "USD": "Use plain symbol (AAPL) or optional .US suffix.",
+    "CAD": "TSX/TSXV: use .TO / .V (e.g., XIC.TO, VEQT.TO).",
+    "JPN": "Tokyo: use .T suffix (example: 7203.T).",
+    "EUR": "Use exchange suffix (.DE, .AS, .PA, .MI, .BR).",
+    "GBP": "London: use .L suffix (example: ISF.L).",
+    "CHY_CNH": "China/HK: use .SS / .SZ / .HK suffixes.",
+}
+
 CURRENCY_OPTIONS = {
     "USD": {"code": "USD", "label": "USD", "fx_to_usd": 1.00, "symbol": "$"},
     "CAD": {"code": "CAD", "label": "CAD", "fx_to_usd": 0.74, "symbol": "C$"},
@@ -60,6 +78,28 @@ CURRENCY_OPTIONS = {
     "EUR": {"code": "EUR", "label": "EUR", "fx_to_usd": 1.09, "symbol": "EUR "},
     "GBP": {"code": "GBP", "label": "GBP", "fx_to_usd": 1.28, "symbol": "GBP "},
     "CHY_CNH": {"code": "CNY", "label": "CHY/CNH", "fx_to_usd": 0.14, "symbol": "CNY "},
+}
+
+CURRENCY_CODE_TO_KEY = {meta["code"]: key for key, meta in CURRENCY_OPTIONS.items()}
+SUFFIX_TO_CURRENCY_KEY = {
+    ".TO": "CAD",
+    ".V": "CAD",
+    ".T": "JPN",
+    ".L": "GBP",
+    ".DE": "EUR",
+    ".AS": "EUR",
+    ".PA": "EUR",
+    ".MI": "EUR",
+    ".BR": "EUR",
+    ".SS": "CHY_CNH",
+    ".SZ": "CHY_CNH",
+    ".HK": "CHY_CNH",
+}
+PREFIX_TO_SUFFIX = {
+    "TSE:": ".TO",
+    "TSX:": ".TO",
+    "LSE:": ".L",
+    "JPX:": ".T",
 }
 
 SAMPLE_PORTFOLIO = [
@@ -124,6 +164,141 @@ def _extract_yf_last_price(yf_ticker) -> float | None:
         pass
 
     return None
+
+
+def _extract_yf_quote_currency(yf_ticker) -> str | None:
+    fast_info = getattr(yf_ticker, "fast_info", None)
+    if fast_info is not None:
+        for key in ("currency", "currency_code"):
+            raw_value = None
+            try:
+                if hasattr(fast_info, "get"):
+                    raw_value = fast_info.get(key)
+                else:
+                    raw_value = getattr(fast_info, key, None)
+            except Exception:
+                raw_value = None
+            if isinstance(raw_value, str) and raw_value.strip():
+                return raw_value.strip()
+
+    try:
+        info = yf_ticker.get_info()
+        if isinstance(info, dict):
+            raw_value = info.get("currency")
+            if isinstance(raw_value, str) and raw_value.strip():
+                return raw_value.strip()
+    except Exception:
+        pass
+
+    return None
+
+
+def _normalize_quote_currency(raw_currency: str | None) -> tuple[str | None, float]:
+    if raw_currency is None:
+        return None, 1.0
+    cleaned = raw_currency.strip()
+    if not cleaned:
+        return None, 1.0
+
+    # LSE quotes often use pence labels (GBp/GBX).
+    if cleaned in {"GBp", "GBX"}:
+        return "GBP", 0.01
+
+    upper = cleaned.upper()
+    if upper == "CNH":
+        return "CNY", 1.0
+    return upper, 1.0
+
+
+def _build_ticker_candidates(ticker_symbol: str, currency_key: str) -> list[str]:
+    base = ticker_symbol.strip().upper()
+    if not base:
+        return []
+    for prefix, preferred_suffix in PREFIX_TO_SUFFIX.items():
+        if base.startswith(prefix):
+            stripped = base[len(prefix):].strip()
+            if not stripped:
+                return []
+            inferred_key = SUFFIX_TO_CURRENCY_KEY.get(preferred_suffix, currency_key)
+            suffixes = EXCHANGE_SUFFIX_HINTS.get(inferred_key, [""])
+            ordered_suffixes = [preferred_suffix] + [s for s in suffixes if s != preferred_suffix]
+            prefixed_candidates: list[str] = []
+            for suffix in ordered_suffixes:
+                candidate = f"{stripped}{suffix}" if suffix else stripped
+                if candidate not in prefixed_candidates:
+                    prefixed_candidates.append(candidate)
+            return prefixed_candidates
+    if "." in base or "=" in base:
+        return [base]
+
+    candidates: list[str] = []
+    for suffix in EXCHANGE_SUFFIX_HINTS.get(currency_key, [""]):
+        candidate = f"{base}{suffix}" if suffix else base
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def fetch_live_quote_details(ticker_symbol: str) -> dict | None:
+    if yf is None:
+        return None
+    try:
+        ticker = yf.Ticker(ticker_symbol)
+        raw_price = _extract_yf_last_price(ticker)
+        if raw_price is None:
+            return None
+
+        raw_quote_currency = _extract_yf_quote_currency(ticker)
+        quote_currency, unit_scale = _normalize_quote_currency(raw_quote_currency)
+        return {
+            "resolvedTicker": ticker_symbol,
+            "rawPrice": raw_price,
+            "price": raw_price * unit_scale,
+            "rawQuoteCurrency": raw_quote_currency,
+            "quoteCurrency": quote_currency,
+            "unitScale": unit_scale,
+        }
+    except Exception:
+        return None
+
+
+def build_ticker_input_hint(ticker_symbol: str, currency_key: str) -> str:
+    cleaned = ticker_symbol.strip().upper()
+    if not cleaned:
+        return ""
+
+    expected_key = currency_key if currency_key in CURRENCY_OPTIONS else "USD"
+    expected_code = CURRENCY_OPTIONS[expected_key]["code"]
+
+    for prefix, suffix in PREFIX_TO_SUFFIX.items():
+        if cleaned.startswith(prefix):
+            base = cleaned[len(prefix):].strip()
+            if not base:
+                return ""
+            suggestion = f"{base}{suffix}"
+            mapped_key = SUFFIX_TO_CURRENCY_KEY.get(suffix, expected_key)
+            mapped_code = CURRENCY_OPTIONS[mapped_key]["code"]
+            if mapped_key != expected_key:
+                return (
+                    f"{prefix} format may fail. Try {suggestion} "
+                    f"({mapped_code}) or switch row currency."
+                )
+            return f"{prefix} format may fail. Try {suggestion}."
+
+    if "." in cleaned:
+        suffix = "." + cleaned.rsplit(".", 1)[1]
+        mapped_key = SUFFIX_TO_CURRENCY_KEY.get(suffix)
+        if mapped_key and mapped_key != expected_key:
+            mapped_code = CURRENCY_OPTIONS[mapped_key]["code"]
+            return f"{suffix} implies {mapped_code}; row is {expected_code}."
+        return ""
+
+    if expected_key != "USD":
+        for candidate in _build_ticker_candidates(cleaned, expected_key):
+            if candidate != cleaned:
+                return f"Try {candidate} for {expected_code} quotes."
+
+    return ""
 
 
 def fetch_live_price(ticker_symbol: str) -> float | None:
@@ -411,6 +586,15 @@ class PortfolioRebalancerApp:
             foreground="#3f5066",
         )
         subtitle.pack(anchor="w", pady=(0, 8))
+        exchange_help = ttk.Label(
+            main,
+            text=(
+                "Ticker format help for live fetch: TSX/TSXV use .TO/.V (XIC.TO), "
+                "LSE use .L (ISF.L), Tokyo use .T (7203.T)."
+            ),
+            foreground="#5c6a7c",
+        )
+        exchange_help.pack(anchor="w", pady=(0, 8))
 
         controls = ttk.Frame(main)
         controls.pack(fill="x", pady=(0, 6))
@@ -718,7 +902,7 @@ class PortfolioRebalancerApp:
 
             frame = ttk.Frame(self.rows_frame)
             frame.grid(row=idx, column=0, sticky="ew", pady=1)
-            frame.columnconfigure(1, weight=1)
+            frame.columnconfigure(8, weight=1)
 
             ticker_var = tk.StringVar(value=ticker)
             shares_var = tk.StringVar(value=shares)
@@ -747,6 +931,8 @@ class PortfolioRebalancerApp:
             current_label.grid(row=0, column=6, padx=2, sticky="w")
             target_entry = ttk.Entry(frame, textvariable=target_var, width=14)
             target_entry.grid(row=0, column=7, padx=2, sticky="w")
+            ticker_hint_label = ttk.Label(frame, text="", foreground="#8f5f12")
+            ticker_hint_label.grid(row=1, column=1, columnspan=7, padx=2, sticky="w")
 
             for entry in (ticker_entry, shares_entry, price_entry, target_entry):
                 entry.bind("<KeyRelease>", lambda _e: self._handle_live_input_change())
@@ -764,6 +950,7 @@ class PortfolioRebalancerApp:
                     "currency_var": currency_var,
                     "fx_label": fx_label,
                     "current_label": current_label,
+                    "ticker_hint_label": ticker_hint_label,
                 }
             )
 
@@ -801,6 +988,9 @@ class PortfolioRebalancerApp:
 
             row["fx_label"].configure(text=self.format_fx(fx, is_live=fx_is_live))
             row["current_label"].configure(text=self.format_currency(current_value))
+            row_ticker = row["ticker_var"].get().strip().upper()
+            row_hint = build_ticker_input_hint(row_ticker, currency_key)
+            row["ticker_hint_label"].configure(text=row_hint)
 
             total_current += current_value
             if target is not None and target >= 0:
@@ -836,6 +1026,7 @@ class PortfolioRebalancerApp:
 
             positions.append(
                 {
+                    "rowIndex": idx,
                     "ticker": ticker,
                     "shares": shares,
                     "price": price,
@@ -1038,31 +1229,86 @@ class PortfolioRebalancerApp:
             fx_to_usd_map = {key: self._fallback_fx_to_usd(key) for key in CURRENCY_OPTIONS}
             live_fx_keys: set[str] = set()
             live_price_tickers: set[str] = set()
-            live_price_updates: dict[str, float] = {}
+            live_price_updates: dict[int, float] = {}
+            live_currency_updates: dict[int, str] = {}
 
             if use_live_fetch:
                 self.worker_events.put(("status", "Fetching live prices from Yahoo Finance..."))
-                unique_tickers = sorted({position["ticker"] for position in positions})
-                ticker_prices: dict[str, float] = {}
-                for ticker in unique_tickers:
-                    fetched_price = fetch_live_price(ticker)
-                    if fetched_price is not None:
-                        ticker_prices[ticker] = fetched_price
-
                 for position in positions:
                     ticker = position["ticker"]
-                    fetched_price = ticker_prices.get(ticker)
-                    if fetched_price is not None:
-                        position["price"] = fetched_price
-                        live_price_updates[ticker] = fetched_price
-                        live_price_tickers.add(ticker)
-                    elif position["price"] is None:
-                        raise ValueError(
-                            f"Live price unavailable for {ticker} and no manual price is provided."
-                        )
-                    else:
+                    row_idx = int(position["rowIndex"])
+                    selected_currency_key = position["currencyKey"]
+                    selected_currency_code = CURRENCY_OPTIONS[selected_currency_key]["code"]
+                    manual_price = position["price"]
+
+                    best_matching_quote = None
+                    first_fallback_quote = None
+                    for candidate in _build_ticker_candidates(ticker, selected_currency_key):
+                        quote_details = fetch_live_quote_details(candidate)
+                        if quote_details is None:
+                            continue
+                        quote_code = quote_details.get("quoteCurrency")
+                        if quote_code == selected_currency_code:
+                            best_matching_quote = quote_details
+                            break
+                        if first_fallback_quote is None:
+                            first_fallback_quote = quote_details
+
+                    chosen_quote = best_matching_quote or first_fallback_quote
+                    if chosen_quote is None:
+                        if manual_price is None:
+                            raise ValueError(
+                                f"Live price unavailable for {ticker} and no manual price is provided."
+                            )
                         warnings.append(
-                            f"Live price unavailable for {ticker}; using manual entry {position['price']:.4f}."
+                            f"Live price unavailable for {ticker}; using manual entry {manual_price:.4f}."
+                        )
+                        continue
+
+                    resolved_ticker = str(chosen_quote["resolvedTicker"])
+                    quote_code = chosen_quote.get("quoteCurrency")
+                    quote_key = CURRENCY_CODE_TO_KEY.get(quote_code) if quote_code else None
+                    chosen_price = float(chosen_quote["price"])
+
+                    if quote_code and quote_code != selected_currency_code:
+                        if quote_key is not None and manual_price is None:
+                            position["currencyKey"] = quote_key
+                            position["currencyLabel"] = self.get_row_meta(quote_key)["label"]
+                            live_currency_updates[row_idx] = quote_key
+                            position["price"] = chosen_price
+                            live_price_updates[row_idx] = chosen_price
+                            live_price_tickers.add(ticker)
+                            warnings.append(
+                                f"{ticker}: live quote currency {quote_code} does not match selected "
+                                f"{selected_currency_code}; adjusted row currency to {quote_code} for this run."
+                            )
+                            if resolved_ticker != ticker:
+                                warnings.append(
+                                    f"{ticker}: used exchange symbol {resolved_ticker} for live quote."
+                                )
+                            continue
+
+                        if manual_price is not None:
+                            warnings.append(
+                                f"{ticker}: live quote currency {quote_code} does not match selected "
+                                f"{selected_currency_code}; keeping manual entry {manual_price:.4f}."
+                            )
+                            continue
+
+                        raise ValueError(
+                            f"{ticker}: live quote returned unsupported quote currency {quote_code} "
+                            f"for selected {selected_currency_code}; enter a manual price."
+                        )
+
+                    position["price"] = chosen_price
+                    live_price_updates[row_idx] = chosen_price
+                    live_price_tickers.add(ticker)
+                    if resolved_ticker != ticker:
+                        warnings.append(f"{ticker}: used exchange symbol {resolved_ticker} for live quote.")
+                    if chosen_quote.get("unitScale", 1.0) != 1.0:
+                        warnings.append(
+                            f"{ticker}: converted sub-unit quote currency "
+                            f"{chosen_quote.get('rawQuoteCurrency')} to {quote_code} units."
                         )
 
                 self.worker_events.put(("status", "Fetching live FX rates..."))
@@ -1107,6 +1353,7 @@ class PortfolioRebalancerApp:
                         "live_fx_keys": live_fx_keys,
                         "live_price_tickers": live_price_tickers,
                         "live_price_updates": live_price_updates,
+                        "live_currency_updates": live_currency_updates,
                     },
                 )
             )
@@ -1129,10 +1376,14 @@ class PortfolioRebalancerApp:
                 self.live_fx_to_usd = dict(data["live_fx_to_usd"])
                 self.live_fx_keys = set(data["live_fx_keys"])
                 self.live_price_tickers = set(data["live_price_tickers"])
-                for row in self.rows:
-                    ticker = row["ticker_var"].get().strip().upper()
-                    if ticker in data["live_price_updates"]:
-                        row["price_var"].set(self.format_input_price(float(data["live_price_updates"][ticker])))
+                for row_idx, new_price in data.get("live_price_updates", {}).items():
+                    idx = int(row_idx)
+                    if 0 <= idx < len(self.rows):
+                        self.rows[idx]["price_var"].set(self.format_input_price(float(new_price)))
+                for row_idx, new_currency_key in data.get("live_currency_updates", {}).items():
+                    idx = int(row_idx)
+                    if 0 <= idx < len(self.rows):
+                        self.rows[idx]["currency_var"].set(new_currency_key)
                 self.update_live_totals()
                 output_text = self.build_output(
                     summary=data["summary"],
