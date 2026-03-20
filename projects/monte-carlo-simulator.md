@@ -359,6 +359,7 @@ This web version is designed for quick scenario analysis in-browser while matchi
       var failed = false;
       var ruinYear = null;
       var netWithdrawal = inputs.annualSpending - inputs.pensionIncome;
+      var retirementWithdrawal = netWithdrawal;
       path[0] = portfolio;
 
       for (var yAcc = 1; yAcc <= inputs.yearsToRetirement; yAcc += 1) {
@@ -385,7 +386,7 @@ This web version is designed for quick scenario analysis in-browser while matchi
         }
 
         var growthRet = boxMullerRandom(inputs.expectedReturn, inputs.volatility);
-        portfolio = portfolio * (1 + growthRet) - netWithdrawal;
+        portfolio = portfolio * (1 + growthRet) - retirementWithdrawal;
         if (!Number.isFinite(portfolio)) {
           throw new Error("Simulation overflow detected during retirement. Reduce large values and try again.");
         }
@@ -395,6 +396,10 @@ This web version is designed for quick scenario analysis in-browser while matchi
           ruinYear = yRet;
         }
         path[idx] = portfolio;
+        retirementWithdrawal = retirementWithdrawal * (1 + inputs.inflation);
+        if (!Number.isFinite(retirementWithdrawal)) {
+          throw new Error("Inflation-adjusted withdrawal overflow detected. Reduce spending, pension, or inflation inputs.");
+        }
       }
 
       return {
@@ -549,7 +554,7 @@ This web version is designed for quick scenario analysis in-browser while matchi
 
       detailNode.innerHTML = "" +
         "<div class='mc-detail-item'><span>Simulations Run</span><strong>" + formatSimulationCount(summary.totalRuns) + "</strong></div>" +
-        "<div class='mc-detail-item'><span>Net Annual Withdrawal</span><strong>" + formatCurrency(summary.netWithdrawal) + "</strong></div>" +
+        "<div class='mc-detail-item'><span>Net Annual Withdrawal (Year 1)</span><strong>" + formatCurrency(summary.netWithdrawal) + "</strong></div>" +
         "<div class='mc-detail-item'><span>Failed Simulations</span><strong>" + formatSimulationCount(summary.failedRuns) + " of " + formatSimulationCount(summary.totalRuns) + "</strong></div>" +
         "<div class='mc-detail-item'><span>Median Ruin Year</span><strong>" + ruinText + "</strong></div>" +
         "<div class='mc-detail-item'><span>10th Percentile Final (" + modeText() + ")</span><strong>" + formatCurrency(finalP10) + "</strong></div>" +
@@ -809,7 +814,7 @@ This web version is designed for quick scenario analysis in-browser while matchi
 
     function renderRunMeta(result, runtimeMs) {
       var summary = result.summary;
-      var withdrawText = summary.netWithdrawal >= 0 ? "Net withdrawal" : "Net contribution";
+      var withdrawText = summary.netWithdrawal >= 0 ? "Year 1 net withdrawal" : "Year 1 net contribution";
       runMetaNode.textContent =
         formatSimulationCount(summary.totalRuns) + " simulations | " +
         "Accumulation: " + result.inputs.yearsToRetirement + " yrs | " +
