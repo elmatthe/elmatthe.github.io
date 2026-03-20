@@ -82,6 +82,10 @@ Use the browser version below to run the same rebalancing workflow directly on t
       <div class="muted">Each row can use a different currency. Values are converted to your reporting currency with built-in FX estimates.</div>
       <div class="muted">Use a positive value for contribution and negative for withdrawal.</div>
     </div>
+    <div class="field">
+      <label><input id="webLiveFetchToggle" type="checkbox" /> Fetch live prices and spot FX (internet required)</label>
+      <div class="muted">Web mode fetches prices from Yahoo chart endpoint via CORS proxy and FX from open.er-api.com; prices may be delayed.</div>
+    </div>
     <div class="btn-row">
       <button class="btn" id="rebalanceBtn" type="button">Run Rebalance</button>
       <button class="btn btn-secondary" id="sampleBtn" type="button">Load Sample Portfolio</button>
@@ -126,11 +130,16 @@ Use the browser version below to run the same rebalancing workflow directly on t
     ];
 
     var rowCountInput = document.getElementById("rowCountInput");
+    var webLiveFetchToggle = document.getElementById("webLiveFetchToggle");
     var reportingCurrencySelect = document.getElementById("reportingCurrencySelect");
     var inputRowsNode = document.getElementById("inputRows");
     var validationNode = document.getElementById("validationMessage");
     var resultsNode = document.getElementById("rebalanceResults");
     var hasCalculated = false;
+    var webLiveFetchToggle = document.getElementById("webLiveFetchToggle");
+    var isLiveFetchRunning = false;
+    var liveFxToUsd = {};
+    var liveFxKeys = {};
     var currencyOptions = {
       USD: { code: "USD", locale: "en-US", label: "USD", fxToUsd: 1.00 },
       CAD: { code: "CAD", locale: "en-CA", label: "CAD", fxToUsd: 0.74 },
@@ -160,6 +169,24 @@ Use the browser version below to run the same rebalancing workflow directly on t
       ".SS": "CHY_CNH",
       ".SZ": "CHY_CNH",
       ".HK": "CHY_CNH"
+    };
+    var currencyCodeToKey = {
+      USD: "USD",
+      CAD: "CAD",
+      JPY: "JPN",
+      EUR: "EUR",
+      GBP: "GBP",
+      CNY: "CHY_CNH",
+      CNH: "CHY_CNH"
+    };
+
+    var yahooProxyBase = "https://r.jina.ai/http://query1.finance.yahoo.com/v8/finance/chart/";
+    var fxApiBase = "https://open.er-api.com/v6/latest/USD";
+    var prefixToSuffix = {
+      "TSE:": ".TO",
+      "TSX:": ".TO",
+      "LSE:": ".L",
+      "JPX:": ".T"
     };
 
     function getReportingCurrencyMeta() {
@@ -231,6 +258,241 @@ Use the browser version below to run the same rebalancing workflow directly on t
         }
       });
       return warnings;
+    }
+
+
+    function parseYahooProxyJson(text) {
+      var marker = "Markdown Content:";
+      var markerIdx = text.indexOf(marker);
+      if (markerIdx < 0) {
+        throw new Error("Unexpected Yahoo proxy response format.");
+      }
+      var jsonText = text.slice(markerIdx + marker.length).trim();
+      return JSON.parse(jsonText);
+    }
+
+    function normalizeQuoteCurrency(rawCurrency) {
+      if (!rawCurrency) {
+        return { code: null, unitScale: 1 };
+      }
+      var cleaned = String(rawCurrency).trim();
+      if (!cleaned) {
+        return { code: null, unitScale: 1 };
+      }
+      if (cleaned === "GBp" || cleaned === "GBX") {
+        return { code: "GBP", unitScale: 0.01 };
+      }
+      var upper = cleaned.toUpperCase();
+      if (upper === "CNH") {
+        return { code: "CNY", unitScale: 1 };
+      }
+      return { code: upper, unitScale: 1 };
+    }
+
+    async function fetchLiveQuoteDetails(symbol) {
+      var url = yahooProxyBase + encodeURIComponent(symbol) + "?range=1d&interval=1d";
+      var response = await fetch(url);
+      if (!response.ok) {
+        throw new Error("Quote request failed for " + symbol + ".");
+      }
+      var bodyText = await response.text();
+      var payload = parseYahooProxyJson(bodyText);
+      var result = payload && payload.chart && payload.chart.result && payload.chart.result[0];
+      if (!result || !result.meta) {
+        throw new Error("No quote data for " + symbol + ".");
+      }
+      var quote = result.indicators && result.indicators.quote && result.indicators.quote[0];
+      var closes = quote && quote.close ? quote.close : [];
+      var closeValue = null;
+      for (var i = closes.length - 1; i >= 0; i -= 1) {
+        var candidate = Number(closes[i]);
+        if (Number.isFinite(candidate) && candidate > 0) {
+          closeValue = candidate;
+          break;
+        }
+      }
+      var regularMarketPrice = Number(result.meta.regularMarketPrice);
+      if (closeValue === null && Number.isFinite(regularMarketPrice) && regularMarketPrice > 0) {
+        closeValue = regularMarketPrice;
+      }
+      if (closeValue === null) {
+        throw new Error("No valid close/market price for " + symbol + ".");
+      }
+      var normalizedCurrency = normalizeQuoteCurrency(result.meta.currency);
+      return {
+        resolvedTicker: symbol,
+        rawPrice: closeValue,
+        price: closeValue * normalizedCurrency.unitScale,
+        rawQuoteCurrency: result.meta.currency || null,
+        quoteCurrency: normalizedCurrency.code,
+        unitScale: normalizedCurrency.unitScale
+      };
+    }
+
+    async function fetchLiveFxToUsdMap() {
+      var response = await fetch(fxApiBase);
+      if (!response.ok) {
+        throw new Error("FX API request failed.");
+      }
+      var payload = await response.json();
+      if (!payload || payload.result !== "success" || !payload.rates) {
+        throw new Error("FX API returned invalid payload.");
+      }
+
+      var fxToUsdMap = {};
+      Object.keys(currencyOptions).forEach(function (key) {
+        var code = currencyOptions[key].code;
+        if (code === "USD") {
+          fxToUsdMap[key] = 1;
+          return;
+        }
+        var usdToCode = Number(payload.rates[code]);
+        if (!Number.isFinite(usdToCode) || usdToCode <= 0) {
+          throw new Error("FX API missing valid rate for " + code + ".");
+        }
+        fxToUsdMap[key] = 1 / usdToCode;
+      });
+      return fxToUsdMap;
+    }
+
+    function normalizeTickerByPrefix(rawTicker, currencyKey) {
+      var clean = String(rawTicker || "").trim().toUpperCase();
+      if (!clean) {
+        return clean;
+      }
+      var prefixMap = {
+        "TSE:": ".TO",
+        "TSX:": ".TO",
+        "LSE:": ".L",
+        "JPX:": ".T"
+      };
+      var prefixes = Object.keys(prefixMap);
+      for (var i = 0; i < prefixes.length; i += 1) {
+        var prefix = prefixes[i];
+        if (clean.indexOf(prefix) === 0) {
+          var stripped = clean.slice(prefix.length).trim();
+          if (!stripped) {
+            return clean;
+          }
+          return stripped + prefixMap[prefix];
+        }
+      }
+      return clean;
+    }
+
+    async function applyWebLiveFetch(rows) {
+      var warnings = [];
+      var priceUpdates = [];
+      var currencyUpdates = [];
+      var fxToUsdMap = {};
+      Object.keys(currencyOptions).forEach(function (key) {
+        fxToUsdMap[key] = currencyOptions[key].fxToUsd;
+      });
+
+      try {
+        fxToUsdMap = await fetchLiveFxToUsdMap();
+      } catch (fxError) {
+        warnings.push("Live FX fetch failed: " + fxError.message + " Using built-in fallback rates.");
+      }
+
+      for (var idx = 0; idx < rows.length; idx += 1) {
+        var row = rows[idx];
+        var selectedCode = getRowCurrencyMeta(row.currencyKey).code;
+        var manualPrice = readNumberInput(row.querySelector(".price-input"));
+        var tickerInput = row.querySelector(".ticker-input");
+        var originalTicker = tickerInput.value.trim().toUpperCase();
+        var normalizedTicker = normalizeTickerByPrefix(originalTicker, row.currencyKey);
+
+        if (normalizedTicker && normalizedTicker !== originalTicker) {
+          tickerInput.value = normalizedTicker;
+          warnings.push(originalTicker + ": normalized to " + normalizedTicker + " for web live fetch.");
+        }
+
+        var bestMatch = null;
+        var firstFallback = null;
+        var candidates = buildTickerCandidates(normalizedTicker, row.currencyKey);
+        for (var c = 0; c < candidates.length; c += 1) {
+          var candidateSymbol = candidates[c];
+          try {
+            var quote = await fetchLiveQuoteDetails(candidateSymbol);
+            if (quote.quoteCurrency === selectedCode) {
+              bestMatch = quote;
+              break;
+            }
+            if (!firstFallback) {
+              firstFallback = quote;
+            }
+          } catch (_err) {
+            // Keep trying fallbacks.
+          }
+        }
+
+        var chosen = bestMatch || firstFallback;
+        if (!chosen) {
+          if (!Number.isFinite(manualPrice) || manualPrice <= 0) {
+            throw new Error(
+              "Live price unavailable for " + (normalizedTicker || "row " + (idx + 1)) +
+              " and manual price is missing/invalid."
+            );
+          }
+          warnings.push("Live price unavailable for " + normalizedTicker + "; using manual entry " + manualPrice.toFixed(4) + ".");
+          continue;
+        }
+
+        var quoteKey = chosen.quoteCurrency ? currencyCodeToKey[chosen.quoteCurrency] : null;
+        var resolvedTicker = chosen.resolvedTicker;
+        if (resolvedTicker && resolvedTicker !== normalizedTicker) {
+          warnings.push(normalizedTicker + ": used exchange symbol " + resolvedTicker + " for live quote.");
+        }
+        if (chosen.unitScale !== 1) {
+          warnings.push(
+            normalizedTicker + ": converted sub-unit quote currency " + chosen.rawQuoteCurrency +
+            " to " + chosen.quoteCurrency + " units."
+          );
+        }
+
+        if (chosen.quoteCurrency && chosen.quoteCurrency !== selectedCode) {
+          if (quoteKey && (!Number.isFinite(manualPrice) || manualPrice <= 0)) {
+            currencyUpdates.push({ row: row, key: quoteKey });
+            priceUpdates.push({ row: row, price: chosen.price });
+            warnings.push(
+              normalizedTicker + ": live quote currency " + chosen.quoteCurrency +
+              " does not match selected " + selectedCode +
+              "; adjusted row currency to " + chosen.quoteCurrency + " for this run."
+            );
+            continue;
+          }
+
+          if (Number.isFinite(manualPrice) && manualPrice > 0) {
+            warnings.push(
+              normalizedTicker + ": live quote currency " + chosen.quoteCurrency +
+              " does not match selected " + selectedCode +
+              "; keeping manual entry " + manualPrice.toFixed(4) + "."
+            );
+            continue;
+          }
+
+          throw new Error(
+            normalizedTicker + ": live quote returned unsupported quote currency " +
+            chosen.quoteCurrency + " for selected " + selectedCode + "."
+          );
+        }
+
+        priceUpdates.push({ row: row, price: chosen.price });
+      }
+
+      priceUpdates.forEach(function (item) {
+        item.row.querySelector(".price-input").value = item.price.toFixed(4);
+      });
+      currencyUpdates.forEach(function (item) {
+        item.row.querySelector(".row-currency-select").value = item.key;
+      });
+
+      return {
+        warnings: warnings,
+        liveDataUsed: true,
+        fxToUsdMap: fxToUsdMap
+      };
     }
 
     function formatFx(num) {
@@ -420,7 +682,9 @@ Use the browser version below to run the same rebalancing workflow directly on t
     }
 
     function summaryHtml(data) {
+      var modeText = data.liveDataUsed ? "Live" : "Manual";
       return "<div class='summary-grid'>" +
+        "<div class='summary-item'><span>Run Mode</span><strong>" + modeText + "</strong></div>" +
         "<div class='summary-item'><span>Total Current</span><strong>" + formatCurrency(data.totalCurrent) + "</strong></div>" +
         "<div class='summary-item'><span>Net Flow</span><strong>" + formatCurrency(data.netFlow) + "</strong></div>" +
         "<div class='summary-item'><span>Target Ending Value</span><strong>" + formatCurrency(data.endingValue) + "</strong></div>" +
@@ -446,16 +710,41 @@ Use the browser version below to run the same rebalancing workflow directly on t
       document.getElementById("currentValueCurrencyLabel").textContent = meta.label;
     }
 
-    function calculateRebalance() {
+
+    function updateFxToUsdOverrides(fxToUsdMap) {
+      if (!fxToUsdMap) {
+        return;
+      }
+      Object.keys(fxToUsdMap).forEach(function (key) {
+        if (currencyOptions[key] && Number.isFinite(fxToUsdMap[key]) && fxToUsdMap[key] > 0) {
+          currencyOptions[key].fxToUsd = Number(fxToUsdMap[key]);
+        }
+      });
+    }
+
+    async function calculateRebalance() {
       validationNode.textContent = "";
 
       try {
-        var positions = parsePositionsFromTable();
-        var tickerWarnings = buildTickerCurrencyWarnings(positions);
         var netFlow = Number(document.getElementById("netFlowInput").value || "0");
         if (!Number.isFinite(netFlow)) {
           throw new Error("Net contribution / withdrawal must be a valid number.");
         }
+
+        var liveWarnings = [];
+        var liveDataUsed = false;
+        if (webLiveFetchToggle && webLiveFetchToggle.checked) {
+          var rows = Array.prototype.slice.call(inputRowsNode.querySelectorAll("tr"));
+          var liveResult = await applyWebLiveFetch(rows);
+          liveWarnings = liveResult.warnings || [];
+          liveDataUsed = !!liveResult.liveDataUsed;
+          updateFxToUsdOverrides(liveResult.fxToUsdMap);
+          updateLiveTotals();
+        }
+
+        var positions = parsePositionsFromTable();
+        var tickerWarnings = buildTickerCurrencyWarnings(positions);
+        var allWarnings = tickerWarnings.concat(liveWarnings);
 
         var totalCurrent = positions.reduce(function (sum, p) { return sum + p.currentValue; }, 0);
         var totalWeight = positions.reduce(function (sum, p) { return sum + p.targetWeight; }, 0);
@@ -511,10 +800,11 @@ Use the browser version below to run the same rebalancing workflow directly on t
           netFlow: netFlow,
           endingValue: endingPortfolioValue,
           totalBuys: totalBuys,
-          totalSells: totalSells
+          totalSells: totalSells,
+          liveDataUsed: liveDataUsed
         };
 
-        resultsNode.innerHTML = summaryHtml(summaryData) + buildResultTable(results) + warningsHtml(tickerWarnings);
+        resultsNode.innerHTML = summaryHtml(summaryData) + buildResultTable(results) + warningsHtml(allWarnings);
         hasCalculated = true;
       } catch (err) {
         resultsNode.textContent = "Output will appear here after you run rebalancing.";
@@ -578,7 +868,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
       validationNode.textContent = "";
       updateLiveTotals();
       if (hasCalculated) {
-        calculateRebalance();
+        void calculateRebalance();
       }
     });
 
@@ -587,11 +877,13 @@ Use the browser version below to run the same rebalancing workflow directly on t
       updateCurrencyUi();
       updateLiveTotals();
       if (hasCalculated) {
-        calculateRebalance();
+        void calculateRebalance();
       }
     });
 
-    document.getElementById("rebalanceBtn").addEventListener("click", calculateRebalance);
+    document.getElementById("rebalanceBtn").addEventListener("click", function () {
+      void calculateRebalance();
+    });
     document.getElementById("sampleBtn").addEventListener("click", function () {
       rowCountInput.value = String(samplePortfolio.length);
       setRows(samplePortfolio.length, samplePortfolio);
