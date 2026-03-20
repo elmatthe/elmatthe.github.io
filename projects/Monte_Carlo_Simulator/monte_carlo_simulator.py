@@ -205,6 +205,12 @@ def _validate_simulation_inputs(inputs: SimulationInputs, error_type=ValueError)
     if inputs.simulations < 1 or inputs.simulations > 10000:
         _raise("Number of simulations must be a whole number between 1 and 10,000.")
 
+    if inputs.pension_income >= inputs.annual_spending:
+        _raise(
+            "CPP/OAS/Pension income must be less than annual retirement spending. "
+            "If pension income fully covers spending, simulation is not required."
+        )
+
 
 def run_monte_carlo(inputs: SimulationInputs) -> SimulationResult:
     _require_dependencies()
@@ -240,6 +246,7 @@ def run_monte_carlo(inputs: SimulationInputs) -> SimulationResult:
                     "Simulation produced non-finite values. "
                     "Reduce large input magnitudes and try again."
                 )
+            # Accumulation can recover via future contributions, so only clamp negatives.
             if portfolio < 0:
                 portfolio = 0.0
             paths[sim_idx, year] = portfolio
@@ -265,6 +272,7 @@ def run_monte_carlo(inputs: SimulationInputs) -> SimulationResult:
                     "Simulation produced non-finite values during retirement. "
                     "Reduce large input magnitudes and try again."
                 )
+            # Retirement cannot recover after hitting zero; treat zero as failure.
             if portfolio <= 0:
                 portfolio = 0.0
                 ruined = True
@@ -408,9 +416,9 @@ def _write_summary_sheet(sheet, inputs: SimulationInputs, result: SimulationResu
     if result.success_probability >= 85:
         probability_cell.fill = PatternFill(fill_type="solid", start_color="C6EFCE", end_color="C6EFCE")
     elif result.success_probability >= 70:
-        probability_cell.fill = PatternFill(fill_type="solid", start_color="FCE4D6", end_color="FCE4D6")
+        probability_cell.fill = PatternFill(fill_type="solid", start_color="FFEB9C", end_color="FFEB9C")
     else:
-        probability_cell.fill = PatternFill(fill_type="solid", start_color="F8CBAD", end_color="F8CBAD")
+        probability_cell.fill = PatternFill(fill_type="solid", start_color="FFC7CE", end_color="FFC7CE")
 
     sheet.column_dimensions["A"].width = 40
     sheet.column_dimensions["B"].width = 26
@@ -503,6 +511,7 @@ def write_excel_report(inputs: SimulationInputs, result: SimulationResult) -> No
     assert Workbook is not None and load_workbook is not None
 
     workbook_path = inputs.workbook_path
+    workbook_is_new = not workbook_path.exists()
     if workbook_path.exists():
         workbook = load_workbook(workbook_path)
     else:
@@ -512,7 +521,8 @@ def write_excel_report(inputs: SimulationInputs, result: SimulationResult) -> No
     percentiles_sheet = _replace_or_create_sheet(workbook, "MC_Percentiles")
     chart_sheet = _replace_or_create_sheet(workbook, "MC_Chart")
 
-    if "Sheet" in workbook.sheetnames and len(workbook.sheetnames) > 3:
+    # Remove openpyxl's default blank sheet only for newly created workbooks.
+    if workbook_is_new and "Sheet" in workbook.sheetnames:
         del workbook["Sheet"]
 
     _write_summary_sheet(summary_sheet, inputs, result)
