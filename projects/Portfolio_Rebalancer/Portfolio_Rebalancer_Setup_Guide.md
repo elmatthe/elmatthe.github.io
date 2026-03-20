@@ -109,11 +109,16 @@ When **Fetch live prices and FX rates** is checked:
 - The app attempts to fetch FX rates for every currency used in the portfolio and reporting currency
 - Fetched prices overwrite row **Price (local)** fields for visibility
 - Fetched FX values are shown with a `~` prefix in the FX column (example: `~0.6971`)
+- For non-USD rows, the app auto-tries exchange ticker suffixes (example: `.TO`, `.L`, `.T`) to find local-market quotes
+- The app validates fetched quote currency against your selected row currency before using it
 
 Fallback behavior:
 
 - If a ticker live price fails, the app uses the manual row price and shows a warning
 - If a currency live FX fetch fails, the app falls back to built-in FX constants and shows a warning
+- If fetched quote currency mismatches the selected row currency:
+  - the app keeps manual price when available, or
+  - auto-adjusts to the fetched quote currency for that run and warns you
 
 Notes:
 
