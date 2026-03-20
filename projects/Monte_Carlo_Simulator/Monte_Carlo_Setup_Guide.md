@@ -55,7 +55,7 @@ Contribution_t+1 = Contribution_t * (1 + contribution_growth_rate)
 Interpretation:
 
 - portfolio grows or shrinks with market return
-- annual contribution is added
+- annual contribution is added at end of year (after that year's return is applied)
 - contribution can grow over time (for example, with salary growth)
 
 ### 2.3 Decumulation dynamics
@@ -141,6 +141,7 @@ The tool rejects invalid or unstable configurations before running:
 - required fields must be numeric
 - minimum/maximum bounds for years, rates, volatility, and simulation count
 - monetary values must be finite and within safe magnitude limits
+- CPP/OAS/Pension income must be less than annual retirement spending
 - overflow / non-finite math detection during simulation loops
 
 Why this matters:
