@@ -62,6 +62,15 @@ EXCHANGE_SUFFIX_HINTS = {
     "CHY_CNH": [".SS", ".SZ", ".HK", ""],
 }
 
+EXCHANGE_PREFIX_HINTS = {
+    "USD": "Use plain symbol (AAPL) or optional .US suffix.",
+    "CAD": "TSX/TSXV: use .TO / .V (e.g., XIC.TO, VEQT.TO).",
+    "JPN": "Tokyo: use .T suffix (example: 7203.T).",
+    "EUR": "Use exchange suffix (.DE, .AS, .PA, .MI, .BR).",
+    "GBP": "London: use .L suffix (example: ISF.L).",
+    "CHY_CNH": "China/HK: use .SS / .SZ / .HK suffixes.",
+}
+
 CURRENCY_OPTIONS = {
     "USD": {"code": "USD", "label": "USD", "fx_to_usd": 1.00, "symbol": "$"},
     "CAD": {"code": "CAD", "label": "CAD", "fx_to_usd": 0.74, "symbol": "C$"},
@@ -72,6 +81,26 @@ CURRENCY_OPTIONS = {
 }
 
 CURRENCY_CODE_TO_KEY = {meta["code"]: key for key, meta in CURRENCY_OPTIONS.items()}
+SUFFIX_TO_CURRENCY_KEY = {
+    ".TO": "CAD",
+    ".V": "CAD",
+    ".T": "JPN",
+    ".L": "GBP",
+    ".DE": "EUR",
+    ".AS": "EUR",
+    ".PA": "EUR",
+    ".MI": "EUR",
+    ".BR": "EUR",
+    ".SS": "CHY_CNH",
+    ".SZ": "CHY_CNH",
+    ".HK": "CHY_CNH",
+}
+PREFIX_TO_SUFFIX = {
+    "TSE:": ".TO",
+    "TSX:": ".TO",
+    "LSE:": ".L",
+    "JPX:": ".T",
+}
 
 SAMPLE_PORTFOLIO = [
     {"ticker": "VTI", "shares": 120, "price": 250, "targetWeight": 10, "currencyKey": "USD"},
@@ -185,6 +214,20 @@ def _build_ticker_candidates(ticker_symbol: str, currency_key: str) -> list[str]
     base = ticker_symbol.strip().upper()
     if not base:
         return []
+    for prefix, preferred_suffix in PREFIX_TO_SUFFIX.items():
+        if base.startswith(prefix):
+            stripped = base[len(prefix):].strip()
+            if not stripped:
+                return []
+            inferred_key = SUFFIX_TO_CURRENCY_KEY.get(preferred_suffix, currency_key)
+            suffixes = EXCHANGE_SUFFIX_HINTS.get(inferred_key, [""])
+            ordered_suffixes = [preferred_suffix] + [s for s in suffixes if s != preferred_suffix]
+            prefixed_candidates: list[str] = []
+            for suffix in ordered_suffixes:
+                candidate = f"{stripped}{suffix}" if suffix else stripped
+                if candidate not in prefixed_candidates:
+                    prefixed_candidates.append(candidate)
+            return prefixed_candidates
     if "." in base or "=" in base:
         return [base]
 
@@ -217,6 +260,45 @@ def fetch_live_quote_details(ticker_symbol: str) -> dict | None:
         }
     except Exception:
         return None
+
+
+def build_ticker_input_hint(ticker_symbol: str, currency_key: str) -> str:
+    cleaned = ticker_symbol.strip().upper()
+    if not cleaned:
+        return ""
+
+    expected_key = currency_key if currency_key in CURRENCY_OPTIONS else "USD"
+    expected_code = CURRENCY_OPTIONS[expected_key]["code"]
+
+    for prefix, suffix in PREFIX_TO_SUFFIX.items():
+        if cleaned.startswith(prefix):
+            base = cleaned[len(prefix):].strip()
+            if not base:
+                return ""
+            suggestion = f"{base}{suffix}"
+            mapped_key = SUFFIX_TO_CURRENCY_KEY.get(suffix, expected_key)
+            mapped_code = CURRENCY_OPTIONS[mapped_key]["code"]
+            if mapped_key != expected_key:
+                return (
+                    f"{prefix} format may fail. Try {suggestion} "
+                    f"({mapped_code}) or switch row currency."
+                )
+            return f"{prefix} format may fail. Try {suggestion}."
+
+    if "." in cleaned:
+        suffix = "." + cleaned.rsplit(".", 1)[1]
+        mapped_key = SUFFIX_TO_CURRENCY_KEY.get(suffix)
+        if mapped_key and mapped_key != expected_key:
+            mapped_code = CURRENCY_OPTIONS[mapped_key]["code"]
+            return f"{suffix} implies {mapped_code}; row is {expected_code}."
+        return ""
+
+    if expected_key != "USD":
+        for candidate in _build_ticker_candidates(cleaned, expected_key):
+            if candidate != cleaned:
+                return f"Try {candidate} for {expected_code} quotes."
+
+    return ""
 
 
 def fetch_live_price(ticker_symbol: str) -> float | None:
@@ -504,6 +586,15 @@ class PortfolioRebalancerApp:
             foreground="#3f5066",
         )
         subtitle.pack(anchor="w", pady=(0, 8))
+        exchange_help = ttk.Label(
+            main,
+            text=(
+                "Ticker format help for live fetch: TSX/TSXV use .TO/.V (XIC.TO), "
+                "LSE use .L (ISF.L), Tokyo use .T (7203.T)."
+            ),
+            foreground="#5c6a7c",
+        )
+        exchange_help.pack(anchor="w", pady=(0, 8))
 
         controls = ttk.Frame(main)
         controls.pack(fill="x", pady=(0, 6))
@@ -811,7 +902,7 @@ class PortfolioRebalancerApp:
 
             frame = ttk.Frame(self.rows_frame)
             frame.grid(row=idx, column=0, sticky="ew", pady=1)
-            frame.columnconfigure(1, weight=1)
+            frame.columnconfigure(8, weight=1)
 
             ticker_var = tk.StringVar(value=ticker)
             shares_var = tk.StringVar(value=shares)
@@ -840,6 +931,8 @@ class PortfolioRebalancerApp:
             current_label.grid(row=0, column=6, padx=2, sticky="w")
             target_entry = ttk.Entry(frame, textvariable=target_var, width=14)
             target_entry.grid(row=0, column=7, padx=2, sticky="w")
+            ticker_hint_label = ttk.Label(frame, text="", foreground="#8f5f12")
+            ticker_hint_label.grid(row=1, column=1, columnspan=7, padx=2, sticky="w")
 
             for entry in (ticker_entry, shares_entry, price_entry, target_entry):
                 entry.bind("<KeyRelease>", lambda _e: self._handle_live_input_change())
@@ -857,6 +950,7 @@ class PortfolioRebalancerApp:
                     "currency_var": currency_var,
                     "fx_label": fx_label,
                     "current_label": current_label,
+                    "ticker_hint_label": ticker_hint_label,
                 }
             )
 
@@ -894,6 +988,9 @@ class PortfolioRebalancerApp:
 
             row["fx_label"].configure(text=self.format_fx(fx, is_live=fx_is_live))
             row["current_label"].configure(text=self.format_currency(current_value))
+            row_ticker = row["ticker_var"].get().strip().upper()
+            row_hint = build_ticker_input_hint(row_ticker, currency_key)
+            row["ticker_hint_label"].configure(text=row_hint)
 
             total_current += current_value
             if target is not None and target >= 0:
