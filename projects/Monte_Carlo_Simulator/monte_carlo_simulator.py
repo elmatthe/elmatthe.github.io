@@ -223,6 +223,7 @@ def run_monte_carlo(inputs: SimulationInputs) -> SimulationResult:
     mean_return = inputs.expected_return / 100.0
     volatility = inputs.volatility / 100.0
     contrib_growth = inputs.contribution_growth_rate / 100.0
+    inflation_rate = inputs.inflation_rate / 100.0
 
     for sim_idx in range(inputs.simulations):
         portfolio = inputs.current_portfolio
@@ -249,6 +250,7 @@ def run_monte_carlo(inputs: SimulationInputs) -> SimulationResult:
                     "Use smaller contribution inputs or growth rates."
                 )
 
+        retirement_withdrawal = net_withdrawal
         for retire_year in range(1, inputs.years_in_retirement + 1):
             year_idx = inputs.years_to_retirement + retire_year
 
@@ -257,7 +259,7 @@ def run_monte_carlo(inputs: SimulationInputs) -> SimulationResult:
                 continue
 
             annual_return = float(np.random.normal(mean_return, volatility))
-            portfolio = portfolio * (1.0 + annual_return) - net_withdrawal
+            portfolio = portfolio * (1.0 + annual_return) - retirement_withdrawal
             if not np.isfinite(portfolio):
                 raise ValueError(
                     "Simulation produced non-finite values during retirement. "
@@ -268,6 +270,12 @@ def run_monte_carlo(inputs: SimulationInputs) -> SimulationResult:
                 ruined = True
                 ruin_year = retire_year
             paths[sim_idx, year_idx] = portfolio
+            retirement_withdrawal *= 1.0 + inflation_rate
+            if not np.isfinite(retirement_withdrawal):
+                raise ValueError(
+                    "Inflation-adjusted withdrawal produced non-finite values. "
+                    "Use smaller spending/pension inputs or inflation rates."
+                )
 
         if ruin_year is not None:
             ruin_years.append(ruin_year)
@@ -352,7 +360,7 @@ def _write_summary_sheet(sheet, inputs: SimulationInputs, result: SimulationResu
         (12, "Inflation Rate", inputs.inflation_rate / 100.0),
         (13, "Annual Retirement Spending", inputs.annual_spending),
         (14, "CPP / OAS / Pension Income", inputs.pension_income),
-        (15, "Net Annual Withdrawal", result.net_withdrawal),
+        (15, "Net Annual Withdrawal (Year 1)", result.net_withdrawal),
     ]
 
     for row_idx, label, value in rows:
