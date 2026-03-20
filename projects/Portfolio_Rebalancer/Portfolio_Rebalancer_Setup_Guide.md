@@ -14,6 +14,8 @@ Both versions support:
 - Reporting currency totals
 - Net contribution/withdrawal input
 - Buy/Sell/Hold trade instructions with post-trade share counts
+- Optional live ticker price + FX snapshot fetch on run
+- Optional CSV + Excel export
 
 ---
 
@@ -33,6 +35,19 @@ From the Portfolio Rebalancer project page:
 
 - Python **3.9+** recommended
 - `tkinter` available (included with most Python installs)
+
+### Before You Use It - One-Time Setup
+
+Install optional packages if you want live data and Excel export:
+
+```bash
+pip install openpyxl yfinance
+```
+
+- `openpyxl` - required for Excel export
+- `yfinance` - required for live ticker/FX fetch
+
+If you only need manual inputs and on-screen output, no extra install is required.
 
 ### 2) Run command
 
@@ -57,6 +72,10 @@ When launched, the script opens a window with:
 - Live FX and current value columns
 - **Run Rebalance** button for final trade output
 - **Load Sample Portfolio** button for quick testing
+- Run options:
+  - **Fetch live prices and FX rates** (optional)
+  - **Also export to CSV** with file picker
+  - **Also export to Excel** with file picker
 
 ---
 
@@ -73,8 +92,33 @@ When launched, the script opens a window with:
 4. Enter **Net contribution / withdrawal**:
    - Positive value = contribution
    - Negative value = withdrawal
-5. Click **Run Rebalance**.
-6. Review summary totals and trade instructions.
+5. Optional:
+   - Enable **Fetch live prices and FX rates**
+   - Enable **Also export to CSV** and choose output file
+   - Enable **Also export to Excel** and choose output file
+6. Click **Run Rebalance**.
+7. Review summary totals, trade instructions, and warnings.
+
+---
+
+## Live Price and FX Fetch
+
+When **Fetch live prices and FX rates** is checked:
+
+- The app attempts to fetch current ticker prices from Yahoo Finance
+- The app attempts to fetch FX rates for every currency used in the portfolio and reporting currency
+- Fetched prices overwrite row **Price (local)** fields for visibility
+- Fetched FX values are shown with a `~` prefix in the FX column (example: `~0.6971`)
+
+Fallback behavior:
+
+- If a ticker live price fails, the app uses the manual row price and shows a warning
+- If a currency live FX fetch fails, the app falls back to built-in FX constants and shows a warning
+
+Notes:
+
+- Yahoo Finance free data is often delayed by ~15-20 minutes
+- Always verify execution prices at your broker before placing orders
 
 ---
 
@@ -86,6 +130,30 @@ When launched, the script opens a window with:
 - Target weight must be numeric and 0 or greater.
 - At least one target weight must be greater than 0.
 - Ending portfolio value must remain greater than 0.
+- If live fetch is off, each row price must be valid manually.
+- If live fetch is on and a ticker fetch fails, a manual row price is required for fallback.
+
+---
+
+## Exporting results
+
+### CSV export
+
+1. Check **Also export to CSV**
+2. Click **Browse...** and choose a `.csv` file path
+3. Run rebalance
+4. CSV is written automatically with:
+   - Summary block
+   - Per-ticker trade table
+
+### Excel export
+
+1. Check **Also export to Excel**
+2. Click **Browse...** and choose a `.xlsx` file path
+3. Run rebalance
+4. Workbook is written automatically with:
+   - `RB_Summary` sheet
+   - `RB_TradePlan` sheet
 
 ---
 
@@ -106,3 +174,9 @@ The results include:
   - Trade shares/units
   - Action (Buy / Sell / Hold)
   - Post-trade shares/units
+
+---
+
+## Disclaimer
+
+This tool is for illustrative and educational planning use only. It is not financial advice, investment advice, or a recommendation to take any specific action. Verify prices at your broker before placing any orders.
