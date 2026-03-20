@@ -60,16 +60,17 @@ Interpretation:
 
 ### 2.3 Decumulation dynamics
 
-Net withdrawal is:
+Year-1 net withdrawal is:
 
 ```text
 Net Withdrawal = Annual Spending - Pension Income
 ```
 
-For each retirement year:
+Retirement withdrawals are then inflation-indexed each year:
 
 ```text
-Portfolio_t = Portfolio_(t-1) * (1 + r_t) - Net Withdrawal
+Withdrawal_t = Net Withdrawal * (1 + inflation_rate)^(t-1)
+Portfolio_t = Portfolio_(t-1) * (1 + r_t) - Withdrawal_t
 ```
 
 Ruin rule:
