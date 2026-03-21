@@ -181,7 +181,27 @@ Use the browser version below to run the same rebalancing workflow directly on t
       if (!clean) {
         return [];
       }
-      if (clean.indexOf(".") >= 0 || clean.indexOf("=") >= 0) {
+      if (clean.indexOf("=") >= 0) {
+        return [clean];
+      }
+      if (clean.indexOf(".") >= 0) {
+        var dotIdx = clean.lastIndexOf(".");
+        var stem = clean.slice(0, dotIdx);
+        var suffix = clean.slice(dotIdx);
+        if (stem && suffixToCurrencyKey[suffix]) {
+          var dottedCandidates = [clean];
+          var inferredKey = suffixToCurrencyKey[suffix] || currencyKey;
+          [currencyKey, inferredKey].forEach(function (key) {
+            var suffixesForKey = exchangeSuffixHints[key] || [""];
+            suffixesForKey.forEach(function (altSuffix) {
+              var candidate = altSuffix ? (stem + altSuffix) : stem;
+              if (dottedCandidates.indexOf(candidate) === -1) {
+                dottedCandidates.push(candidate);
+              }
+            });
+          });
+          return dottedCandidates;
+        }
         return [clean];
       }
       var suffixes = exchangeSuffixHints[currencyKey] || [""];
