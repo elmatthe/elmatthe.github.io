@@ -228,7 +228,21 @@ def _build_ticker_candidates(ticker_symbol: str, currency_key: str) -> list[str]
                 if candidate not in prefixed_candidates:
                     prefixed_candidates.append(candidate)
             return prefixed_candidates
-    if "." in base or "=" in base:
+    if "=" in base:
+        return [base]
+
+    if "." in base:
+        stem, raw_suffix = base.rsplit(".", 1)
+        suffix = f".{raw_suffix}"
+        if stem and suffix in SUFFIX_TO_CURRENCY_KEY:
+            candidates = [base]
+            inferred_key = SUFFIX_TO_CURRENCY_KEY.get(suffix, currency_key)
+            for key in (currency_key, inferred_key):
+                for alt_suffix in EXCHANGE_SUFFIX_HINTS.get(key, [""]):
+                    candidate = f"{stem}{alt_suffix}" if alt_suffix else stem
+                    if candidate not in candidates:
+                        candidates.append(candidate)
+            return candidates
         return [base]
 
     candidates: list[str] = []
