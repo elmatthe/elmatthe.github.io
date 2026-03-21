@@ -52,6 +52,9 @@ Use the browser version below to run the same rebalancing workflow directly on t
         <button class="btn btn-secondary" id="removeRowBtn" type="button">Remove Last Row</button>
       </div>
     </div>
+    <div class="muted">
+      Ticker format help for live fetch: TSX/TSXV use .TO/.V (XIC.TO), LSE use .L (ISF.L), Tokyo use .T (7203.T).
+    </div>
 
     <div class="table-wrap">
       <table class="sheet-table input-sheet" id="inputSheet">
@@ -161,6 +164,12 @@ Use the browser version below to run the same rebalancing workflow directly on t
       ".SZ": "CHY_CNH",
       ".HK": "CHY_CNH"
     };
+    var prefixToSuffix = {
+      "TSE:": ".TO",
+      "TSX:": ".TO",
+      "LSE:": ".L",
+      "JPX:": ".T"
+    };
 
     function getReportingCurrencyMeta() {
       return currencyOptions[reportingCurrencySelect.value] || currencyOptions.USD;
@@ -180,6 +189,28 @@ Use the browser version below to run the same rebalancing workflow directly on t
       var clean = String(ticker || "").trim().toUpperCase();
       if (!clean) {
         return [];
+      }
+      var prefixKeys = Object.keys(prefixToSuffix);
+      for (var i = 0; i < prefixKeys.length; i += 1) {
+        var prefix = prefixKeys[i];
+        if (clean.indexOf(prefix) === 0) {
+          var stripped = clean.slice(prefix.length).trim();
+          if (!stripped) {
+            return [];
+          }
+          var preferredSuffix = prefixToSuffix[prefix];
+          var inferredKey = suffixToCurrencyKey[preferredSuffix] || currencyKey;
+          var suffixes = exchangeSuffixHints[inferredKey] || [""];
+          var orderedSuffixes = [preferredSuffix].concat(suffixes.filter(function (s) { return s !== preferredSuffix; }));
+          var prefixedCandidates = [];
+          orderedSuffixes.forEach(function (suffix) {
+            var candidate = suffix ? (stripped + suffix) : stripped;
+            if (prefixedCandidates.indexOf(candidate) === -1) {
+              prefixedCandidates.push(candidate);
+            }
+          });
+          return prefixedCandidates;
+        }
       }
       if (clean.indexOf("=") >= 0) {
         return [clean];
@@ -213,6 +244,56 @@ Use the browser version below to run the same rebalancing workflow directly on t
         }
       });
       return candidates;
+    }
+
+    function buildTickerInputHint(ticker, currencyKey) {
+      var clean = String(ticker || "").trim().toUpperCase();
+      if (!clean) {
+        return "";
+      }
+
+      var expectedKey = currencyOptions[currencyKey] ? currencyKey : "USD";
+      var expectedCode = getRowCurrencyMeta(expectedKey).code;
+      var prefixKeys = Object.keys(prefixToSuffix);
+      for (var i = 0; i < prefixKeys.length; i += 1) {
+        var prefix = prefixKeys[i];
+        if (clean.indexOf(prefix) === 0) {
+          var base = clean.slice(prefix.length).trim();
+          if (!base) {
+            return "";
+          }
+          var suggestionSuffix = prefixToSuffix[prefix];
+          var suggestion = base + suggestionSuffix;
+          var mappedKey = suffixToCurrencyKey[suggestionSuffix] || expectedKey;
+          var mappedCode = getRowCurrencyMeta(mappedKey).code;
+          if (mappedKey !== expectedKey) {
+            return prefix + " format may fail. Try " + suggestion + " (" + mappedCode + ") or switch row currency.";
+          }
+          return prefix + " format may fail. Try " + suggestion + ".";
+        }
+      }
+
+      if (clean.indexOf(".") >= 0) {
+        var dotIdx = clean.lastIndexOf(".");
+        var suffix = clean.slice(dotIdx);
+        var mappedCurrencyKey = suffixToCurrencyKey[suffix];
+        if (mappedCurrencyKey && mappedCurrencyKey !== expectedKey) {
+          var mappedCurrencyCode = getRowCurrencyMeta(mappedCurrencyKey).code;
+          return suffix + " implies " + mappedCurrencyCode + "; row is " + expectedCode + ".";
+        }
+        return "";
+      }
+
+      if (expectedKey !== "USD") {
+        var candidates = buildTickerCandidates(clean, expectedKey);
+        for (var j = 0; j < candidates.length; j += 1) {
+          if (candidates[j] !== clean) {
+            return "Try " + candidates[j] + " for " + expectedCode + " quotes.";
+          }
+        }
+      }
+
+      return "";
     }
 
     function inferCurrencyFromTickerSuffix(ticker) {
@@ -308,7 +389,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
 
       return "<tr>" +
         "<td class='row-index'>" + (index + 1) + "</td>" +
-        "<td><input class='sheet-input ticker-input' type='text' maxlength='12' placeholder='e.g. AAPL' value='" + escapeHtml(ticker) + "' /></td>" +
+        "<td><input class='sheet-input ticker-input' type='text' maxlength='12' placeholder='e.g. AAPL' value='" + escapeHtml(ticker) + "' /><div class='ticker-hint' style='margin-top:2px;font-size:0.78rem;color:#8f5f12;'></div></td>" +
         "<td><input class='sheet-input shares-input' type='number' min='0' step='0.0001' value='" + shares + "' /></td>" +
         "<td><input class='sheet-input price-input' type='number' min='0.0001' step='0.0001' value='" + price + "' /></td>" +
         "<td><select class='sheet-input sheet-select row-currency-select'>" + currencyOptionsHtml(currencyKey) + "</select></td>" +
@@ -351,9 +432,12 @@ Use the browser version below to run the same rebalancing workflow directly on t
           ? shares * price
           : 0;
         var reportingValue = localValue * fxToReporting;
+        var ticker = row.querySelector(".ticker-input").value.trim().toUpperCase();
+        var tickerHint = buildTickerInputHint(ticker, currencyKey);
 
         row.querySelector(".fx-rate-cell").textContent = formatFx(fxToReporting);
         row.querySelector(".current-value-cell").textContent = formatCurrency(reportingValue);
+        row.querySelector(".ticker-hint").textContent = tickerHint;
         currentTotal += reportingValue;
         if (Number.isFinite(targetWeight) && targetWeight >= 0) {
           weightTotal += targetWeight;
