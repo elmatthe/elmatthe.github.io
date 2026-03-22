@@ -85,6 +85,13 @@ Use the browser version below to run the same rebalancing workflow directly on t
       <div class="muted">Each row can use a different currency. Values are converted to your reporting currency with built-in FX estimates.</div>
       <div class="muted">Use a positive value for contribution and negative for withdrawal.</div>
     </div>
+    <div class="field">
+      <label for="fetchLiveInput">
+        <input id="fetchLiveInput" type="checkbox" />
+        Fetch live prices and FX rates (requires internet)
+      </label>
+      <div class="muted">Live Yahoo data may be delayed by ~15-20 minutes.</div>
+    </div>
     <div class="btn-row">
       <button class="btn" id="rebalanceBtn" type="button">Run Rebalance</button>
       <button class="btn btn-secondary" id="sampleBtn" type="button">Load Sample Portfolio</button>
@@ -134,6 +141,9 @@ Use the browser version below to run the same rebalancing workflow directly on t
     var validationNode = document.getElementById("validationMessage");
     var resultsNode = document.getElementById("rebalanceResults");
     var hasCalculated = false;
+    var isRunning = false;
+    var rebalanceBtn = document.getElementById("rebalanceBtn");
+    var fetchLiveInput = document.getElementById("fetchLiveInput");
     var currencyOptions = {
       USD: { code: "USD", locale: "en-US", label: "USD", fxToUsd: 1.00 },
       CAD: { code: "CAD", locale: "en-CA", label: "CAD", fxToUsd: 0.74 },
@@ -170,6 +180,8 @@ Use the browser version below to run the same rebalancing workflow directly on t
       "LSE:": ".L",
       "JPX:": ".T"
     };
+    var liveFxToUsd = {};
+    var liveFxKeys = new Set();
 
     function getReportingCurrencyMeta() {
       return currencyOptions[reportingCurrencySelect.value] || currencyOptions.USD;
@@ -182,7 +194,27 @@ Use the browser version below to run the same rebalancing workflow directly on t
     function getFxToReporting(currencyKey) {
       var rowMeta = getRowCurrencyMeta(currencyKey);
       var reportingMeta = getReportingCurrencyMeta();
-      return rowMeta.fxToUsd / reportingMeta.fxToUsd;
+      var rowToUsd = Object.prototype.hasOwnProperty.call(liveFxToUsd, currencyKey)
+        ? Number(liveFxToUsd[currencyKey])
+        : Number(rowMeta.fxToUsd);
+      var reportingKey = reportingCurrencySelect.value;
+      var reportToUsd = Object.prototype.hasOwnProperty.call(liveFxToUsd, reportingKey)
+        ? Number(liveFxToUsd[reportingKey])
+        : Number(reportingMeta.fxToUsd);
+      return rowToUsd / reportToUsd;
+    }
+
+    function clearLiveSnapshot() {
+      liveFxToUsd = {};
+      liveFxKeys = new Set();
+    }
+
+    function getFallbackFxToUsd(currencyKey) {
+      return Number(getRowCurrencyMeta(currencyKey).fxToUsd);
+    }
+
+    function isLiveFxPair(rowCurrencyKey, reportCurrencyKey) {
+      return liveFxKeys.has(rowCurrencyKey) || liveFxKeys.has(reportCurrencyKey);
     }
 
     function buildTickerCandidates(ticker, currencyKey) {
@@ -334,8 +366,9 @@ Use the browser version below to run the same rebalancing workflow directly on t
       return warnings;
     }
 
-    function formatFx(num) {
-      return num.toFixed(4);
+    function formatFx(num, isLive) {
+      var rendered = Number(num).toFixed(4);
+      return isLive ? ("~" + rendered) : rendered;
     }
 
     function formatCurrencyByKey(num, currencyKey) {
@@ -357,6 +390,224 @@ Use the browser version below to run the same rebalancing workflow directly on t
         minimumFractionDigits: 0,
         maximumFractionDigits: 4
       }).format(num);
+    }
+
+    function formatInputPrice(num) {
+      return Number(num).toFixed(4).replace(/\.?0+$/, "");
+    }
+
+    function safePositiveNumber(raw) {
+      var parsed = Number(raw);
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+    }
+
+    function normalizeQuoteCurrency(rawCurrency) {
+      if (typeof rawCurrency !== "string") {
+        return { quoteCurrency: null, unitScale: 1.0, rawQuoteCurrency: rawCurrency || null };
+      }
+      var trimmed = rawCurrency.trim();
+      if (!trimmed) {
+        return { quoteCurrency: null, unitScale: 1.0, rawQuoteCurrency: rawCurrency };
+      }
+      if (trimmed === "GBp" || trimmed === "GBX") {
+        return { quoteCurrency: "GBP", unitScale: 0.01, rawQuoteCurrency: rawCurrency };
+      }
+      var upper = trimmed.toUpperCase();
+      if (upper === "CNH") {
+        return { quoteCurrency: "CNY", unitScale: 1.0, rawQuoteCurrency: rawCurrency };
+      }
+      return { quoteCurrency: upper, unitScale: 1.0, rawQuoteCurrency: rawCurrency };
+    }
+
+    function extractPriceFromQuoteRecord(quoteRecord) {
+      if (!quoteRecord || typeof quoteRecord !== "object") {
+        return null;
+      }
+      var priceFields = [
+        "regularMarketPrice",
+        "postMarketPrice",
+        "preMarketPrice",
+        "bid",
+        "ask",
+        "previousClose"
+      ];
+      for (var i = 0; i < priceFields.length; i += 1) {
+        var value = safePositiveNumber(quoteRecord[priceFields[i]]);
+        if (value !== null) {
+          return value;
+        }
+      }
+      return null;
+    }
+
+    function chunkList(items, chunkSize) {
+      var chunks = [];
+      for (var i = 0; i < items.length; i += chunkSize) {
+        chunks.push(items.slice(i, i + chunkSize));
+      }
+      return chunks;
+    }
+
+    async function fetchYahooQuoteRecords(symbols) {
+      var deduped = [];
+      symbols.forEach(function (symbol) {
+        var clean = String(symbol || "").trim().toUpperCase();
+        if (clean && deduped.indexOf(clean) === -1) {
+          deduped.push(clean);
+        }
+      });
+
+      var recordsBySymbol = {};
+      if (!deduped.length) {
+        return recordsBySymbol;
+      }
+
+      var chunks = chunkList(deduped, 40);
+      for (var i = 0; i < chunks.length; i += 1) {
+        var symbolsParam = encodeURIComponent(chunks[i].join(","));
+        var url = "https://query1.finance.yahoo.com/v7/finance/quote?symbols=" + symbolsParam;
+        var response;
+        try {
+          response = await fetch(url);
+        } catch (err) {
+          throw new Error("Yahoo quote request failed. Check internet/CORS availability.");
+        }
+        if (!response.ok) {
+          throw new Error("Yahoo quote request failed with status " + response.status + ".");
+        }
+        var payload = await response.json();
+        var results = (((payload || {}).quoteResponse || {}).result || []);
+        results.forEach(function (record) {
+          var symbol = String(record && record.symbol || "").trim().toUpperCase();
+          if (symbol) {
+            recordsBySymbol[symbol] = record;
+          }
+        });
+      }
+
+      return recordsBySymbol;
+    }
+
+    async function fetchYahooChartDetails(symbol) {
+      var encoded = encodeURIComponent(String(symbol || "").trim().toUpperCase());
+      var url = "https://query1.finance.yahoo.com/v8/finance/chart/" + encoded + "?range=5d&interval=1d";
+      var response;
+      try {
+        response = await fetch(url);
+      } catch (err) {
+        return null;
+      }
+      if (!response.ok) {
+        return null;
+      }
+      var payload = await response.json();
+      var result = ((((payload || {}).chart || {}).result || [])[0]) || null;
+      if (!result) {
+        return null;
+      }
+      var closeSeries = (((result.indicators || {}).quote || [])[0] || {}).close || [];
+      var latestClose = null;
+      for (var i = closeSeries.length - 1; i >= 0; i -= 1) {
+        var closeValue = safePositiveNumber(closeSeries[i]);
+        if (closeValue !== null) {
+          latestClose = closeValue;
+          break;
+        }
+      }
+      if (latestClose === null) {
+        return null;
+      }
+      var normalizedCurrency = normalizeQuoteCurrency((result.meta || {}).currency || null);
+      return {
+        resolvedTicker: String(symbol || "").trim().toUpperCase(),
+        rawPrice: latestClose,
+        price: latestClose * normalizedCurrency.unitScale,
+        rawQuoteCurrency: normalizedCurrency.rawQuoteCurrency,
+        quoteCurrency: normalizedCurrency.quoteCurrency,
+        unitScale: normalizedCurrency.unitScale
+      };
+    }
+
+    async function fetchLiveQuoteDetails(symbol, quoteRecordsBySymbol) {
+      var clean = String(symbol || "").trim().toUpperCase();
+      if (!clean) {
+        return null;
+      }
+      var quoteRecord = quoteRecordsBySymbol[clean] || null;
+      var quotePrice = extractPriceFromQuoteRecord(quoteRecord);
+      if (quotePrice !== null) {
+        var normalizedCurrency = normalizeQuoteCurrency(
+          quoteRecord.currency || quoteRecord.financialCurrency || quoteRecord.currencyCode || null
+        );
+        return {
+          resolvedTicker: String(quoteRecord.symbol || clean).trim().toUpperCase(),
+          rawPrice: quotePrice,
+          price: quotePrice * normalizedCurrency.unitScale,
+          rawQuoteCurrency: normalizedCurrency.rawQuoteCurrency,
+          quoteCurrency: normalizedCurrency.quoteCurrency,
+          unitScale: normalizedCurrency.unitScale
+        };
+      }
+      try {
+        return await fetchYahooChartDetails(clean);
+      } catch (err) {
+        return null;
+      }
+    }
+
+    async function fetchLiveFxToUsdMap(currencyKeys, warnings) {
+      var fxMap = {};
+      var fetchedFxKeys = new Set();
+      fxMap.USD = 1.0;
+
+      var fxRequests = [];
+      currencyKeys.forEach(function (currencyKey) {
+        if (currencyKey === "USD") {
+          return;
+        }
+        var code = getRowCurrencyMeta(currencyKey).code;
+        fxRequests.push({ currencyKey: currencyKey, symbol: code + "USD=X" });
+      });
+
+      if (!fxRequests.length) {
+        return { fxMap: fxMap, fetchedFxKeys: fetchedFxKeys };
+      }
+
+      var quoteRecords;
+      try {
+        quoteRecords = await fetchYahooQuoteRecords(
+          fxRequests.map(function (request) { return request.symbol; })
+        );
+      } catch (err) {
+        warnings.push(
+          "Live FX request failed; using fallback FX rates. (" + String(err && err.message || err) + ")"
+        );
+        return { fxMap: fxMap, fetchedFxKeys: fetchedFxKeys };
+      }
+
+      fxRequests.forEach(function (request) {
+        var record = quoteRecords[String(request.symbol).toUpperCase()];
+        var liveRate = extractPriceFromQuoteRecord(record);
+        if (liveRate !== null) {
+          fxMap[request.currencyKey] = liveRate;
+          fetchedFxKeys.add(request.currencyKey);
+        } else {
+          var fallback = getFallbackFxToUsd(request.currencyKey);
+          warnings.push(
+            "Live FX unavailable for " + request.currencyKey + "; using fallback rate " + fallback.toFixed(4) + "."
+          );
+        }
+      });
+
+      return { fxMap: fxMap, fetchedFxKeys: fetchedFxKeys };
+    }
+
+    function setRunningState(running, statusMessage) {
+      isRunning = running;
+      rebalanceBtn.disabled = running;
+      if (running && statusMessage) {
+        validationNode.textContent = statusMessage;
+      }
     }
 
     function escapeHtml(value) {
@@ -427,6 +678,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
         var targetWeight = readNumberInput(row.querySelector(".target-weight-input"));
         var currencyKey = row.querySelector(".row-currency-select").value;
         var fxToReporting = getFxToReporting(currencyKey);
+        var fxLive = isLiveFxPair(currencyKey, reportingCurrencySelect.value);
 
         var localValue = Number.isFinite(shares) && Number.isFinite(price) && shares >= 0 && price > 0
           ? shares * price
@@ -435,7 +687,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
         var ticker = row.querySelector(".ticker-input").value.trim().toUpperCase();
         var tickerHint = buildTickerInputHint(ticker, currencyKey);
 
-        row.querySelector(".fx-rate-cell").textContent = formatFx(fxToReporting);
+        row.querySelector(".fx-rate-cell").textContent = formatFx(fxToReporting, fxLive);
         row.querySelector(".current-value-cell").textContent = formatCurrency(reportingValue);
         row.querySelector(".ticker-hint").textContent = tickerHint;
         currentTotal += reportingValue;
@@ -448,7 +700,8 @@ Use the browser version below to run the same rebalancing workflow directly on t
       document.getElementById("liveWeightTotal").textContent = "Target weight total: " + formatPct(weightTotal);
     }
 
-    function parsePositionsFromTable() {
+    function parsePositionsFromTable(requirePrice) {
+      var needsPrice = requirePrice !== false;
       var rows = Array.prototype.slice.call(inputRowsNode.querySelectorAll("tr"));
       if (!rows.length) {
         throw new Error("Add at least one security row.");
@@ -458,6 +711,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
         var ticker = row.querySelector(".ticker-input").value.trim().toUpperCase();
         var shares = readNumberInput(row.querySelector(".shares-input"));
         var price = readNumberInput(row.querySelector(".price-input"));
+        var priceValue = Number.isFinite(price) ? price : null;
         var targetWeight = readNumberInput(row.querySelector(".target-weight-input"));
         var currencyKey = row.querySelector(".row-currency-select").value;
         var fxToReporting = getFxToReporting(currencyKey);
@@ -468,22 +722,26 @@ Use the browser version below to run the same rebalancing workflow directly on t
         if (!Number.isFinite(shares) || shares < 0) {
           throw new Error("Row " + (idx + 1) + ": shares/units must be a non-negative number.");
         }
-        if (!Number.isFinite(price) || price <= 0) {
+        if (needsPrice && (!Number.isFinite(price) || price <= 0)) {
           throw new Error("Row " + (idx + 1) + ": price must be greater than 0.");
+        }
+        if (!needsPrice && priceValue !== null && priceValue <= 0) {
+          throw new Error("Row " + (idx + 1) + ": manual price must be greater than 0 when provided.");
         }
         if (!Number.isFinite(targetWeight) || targetWeight < 0) {
           throw new Error("Row " + (idx + 1) + ": target weight must be 0 or greater.");
         }
 
         return {
+          rowIndex: idx,
           ticker: ticker,
           shares: shares,
-          price: price,
+          price: priceValue,
           currencyKey: currencyKey,
           currencyLabel: getRowCurrencyMeta(currencyKey).label,
           fxToReporting: fxToReporting,
-          currentValueLocal: shares * price,
-          currentValue: shares * price * fxToReporting,
+          currentValueLocal: shares * (priceValue || 0),
+          currentValue: shares * (priceValue || 0) * fxToReporting,
           targetWeight: targetWeight
         };
       });
@@ -525,6 +783,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
 
     function summaryHtml(data) {
       return "<div class='summary-grid'>" +
+        "<div class='summary-item'><span>Live Data Used</span><strong>" + (data.liveDataUsed ? "Yes" : "No") + "</strong></div>" +
         "<div class='summary-item'><span>Total Current</span><strong>" + formatCurrency(data.totalCurrent) + "</strong></div>" +
         "<div class='summary-item'><span>Net Flow</span><strong>" + formatCurrency(data.netFlow) + "</strong></div>" +
         "<div class='summary-item'><span>Target Ending Value</span><strong>" + formatCurrency(data.endingValue) + "</strong></div>" +
@@ -538,7 +797,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
         return "";
       }
       return "<div class='muted' style='margin-top:12px;'>" +
-        "<strong>Ticker/Currency Checks</strong><br />" +
+        "<strong>Warnings</strong><br />" +
         warnings.map(function (w) { return "• " + escapeHtml(w); }).join("<br />") +
         "</div>";
     }
@@ -550,18 +809,191 @@ Use the browser version below to run the same rebalancing workflow directly on t
       document.getElementById("currentValueCurrencyLabel").textContent = meta.label;
     }
 
-    function calculateRebalance() {
+    async function applyLiveFetchToPositions(positions, warnings) {
+      var allCandidates = [];
+      positions.forEach(function (position) {
+        buildTickerCandidates(position.ticker, position.currencyKey).forEach(function (candidate) {
+          if (allCandidates.indexOf(candidate) === -1) {
+            allCandidates.push(candidate);
+          }
+        });
+      });
+
+      var quoteRecordsBySymbol = {};
+      try {
+        quoteRecordsBySymbol = await fetchYahooQuoteRecords(allCandidates);
+      } catch (err) {
+        warnings.push(
+          "Live quote request failed; using manual prices where available. (" + String(err && err.message || err) + ")"
+        );
+      }
+
+      for (var i = 0; i < positions.length; i += 1) {
+        var position = positions[i];
+        var ticker = position.ticker;
+        var selectedCurrencyCode = getRowCurrencyMeta(position.currencyKey).code;
+        var manualPrice = position.price;
+        var bestMatchingQuote = null;
+        var firstFallbackQuote = null;
+        var candidates = buildTickerCandidates(ticker, position.currencyKey);
+
+        for (var c = 0; c < candidates.length; c += 1) {
+          var candidate = candidates[c];
+          var quoteDetails = await fetchLiveQuoteDetails(candidate, quoteRecordsBySymbol);
+          if (!quoteDetails) {
+            continue;
+          }
+          var quoteCode = quoteDetails.quoteCurrency;
+          if (quoteCode === selectedCurrencyCode) {
+            bestMatchingQuote = quoteDetails;
+            break;
+          }
+          if (!firstFallbackQuote) {
+            firstFallbackQuote = quoteDetails;
+          }
+        }
+
+        var chosenQuote = bestMatchingQuote || firstFallbackQuote;
+        if (!chosenQuote) {
+          if (manualPrice === null) {
+            throw new Error(
+              "Live price unavailable for " + ticker + " and no manual price is provided."
+            );
+          }
+          warnings.push(
+            "Live price unavailable for " + ticker + "; using manual entry " + manualPrice.toFixed(4) + "."
+          );
+          continue;
+        }
+
+        var resolvedTicker = String(chosenQuote.resolvedTicker || ticker).toUpperCase();
+        var quoteCurrencyCode = chosenQuote.quoteCurrency;
+        var quoteCurrencyKey = quoteCurrencyCode ? (
+          Object.keys(currencyOptions).find(function (key) {
+            return getRowCurrencyMeta(key).code === quoteCurrencyCode;
+          }) || null
+        ) : null;
+        var chosenPrice = Number(chosenQuote.price);
+
+        if (quoteCurrencyCode && quoteCurrencyCode !== selectedCurrencyCode) {
+          if (quoteCurrencyKey && manualPrice === null) {
+            position.currencyKey = quoteCurrencyKey;
+            position.currencyLabel = getRowCurrencyMeta(quoteCurrencyKey).label;
+            position.price = chosenPrice;
+            warnings.push(
+              ticker + ": live quote currency " + quoteCurrencyCode + " does not match selected " +
+              selectedCurrencyCode + "; adjusted row currency to " + quoteCurrencyCode + " for this run."
+            );
+            if (resolvedTicker !== ticker) {
+              warnings.push(ticker + ": used exchange symbol " + resolvedTicker + " for live quote.");
+            }
+            continue;
+          }
+
+          if (manualPrice !== null) {
+            warnings.push(
+              ticker + ": live quote currency " + quoteCurrencyCode + " does not match selected " +
+              selectedCurrencyCode + "; keeping manual entry " + manualPrice.toFixed(4) + "."
+            );
+            continue;
+          }
+
+          throw new Error(
+            ticker + ": live quote returned unsupported quote currency " + quoteCurrencyCode +
+            " for selected " + selectedCurrencyCode + "; enter a manual price."
+          );
+        }
+
+        position.price = chosenPrice;
+        if (resolvedTicker !== ticker) {
+          warnings.push(ticker + ": used exchange symbol " + resolvedTicker + " for live quote.");
+        }
+        if (Number(chosenQuote.unitScale) !== 1.0) {
+          warnings.push(
+            ticker + ": converted sub-unit quote currency " +
+            String(chosenQuote.rawQuoteCurrency || "") + " to " + String(quoteCurrencyCode || "") + " units."
+          );
+        }
+      }
+    }
+
+    function syncPositionsToTable(positions) {
+      positions.forEach(function (position) {
+        var row = inputRowsNode.querySelectorAll("tr")[position.rowIndex];
+        if (!row) {
+          return;
+        }
+        var priceInput = row.querySelector(".price-input");
+        var currencySelect = row.querySelector(".row-currency-select");
+        if (position.price !== null && Number.isFinite(position.price)) {
+          priceInput.value = formatInputPrice(position.price);
+        }
+        if (position.currencyKey && currencyOptions[position.currencyKey]) {
+          currencySelect.value = position.currencyKey;
+        }
+      });
+    }
+
+    function buildFxToReportingMap(positions, fxToUsdMap) {
+      var reportingKey = reportingCurrencySelect.value;
+      var reportToUsd = fxToUsdMap[reportingKey] || getFallbackFxToUsd(reportingKey);
+      var fxToReportingByRow = {};
+      positions.forEach(function (position) {
+        var rowToUsd = fxToUsdMap[position.currencyKey] || getFallbackFxToUsd(position.currencyKey);
+        fxToReportingByRow[position.rowIndex] = rowToUsd / reportToUsd;
+      });
+      return fxToReportingByRow;
+    }
+
+    async function calculateRebalance() {
+      if (isRunning) {
+        return;
+      }
       validationNode.textContent = "";
 
       try {
-        var positions = parsePositionsFromTable();
+        var wantsLiveFetch = Boolean(fetchLiveInput.checked);
+        var positions = parsePositionsFromTable(!wantsLiveFetch);
+        var warnings = [];
+        var liveDataUsed = false;
+        var fxToUsdMap = {};
+        Object.keys(currencyOptions).forEach(function (key) {
+          fxToUsdMap[key] = getFallbackFxToUsd(key);
+        });
+
+        clearLiveSnapshot();
+        if (wantsLiveFetch) {
+          setRunningState(true, "Fetching live prices and FX rates...");
+          await applyLiveFetchToPositions(positions, warnings);
+          syncPositionsToTable(positions);
+
+          var currenciesInScope = new Set([reportingCurrencySelect.value]);
+          positions.forEach(function (position) {
+            currenciesInScope.add(position.currencyKey);
+          });
+          var fxResult = await fetchLiveFxToUsdMap(currenciesInScope, warnings);
+          Object.keys(fxResult.fxMap).forEach(function (currencyKey) {
+            fxToUsdMap[currencyKey] = Number(fxResult.fxMap[currencyKey]);
+          });
+          liveFxToUsd = fxToUsdMap;
+          liveFxKeys = fxResult.fetchedFxKeys;
+          liveDataUsed = true;
+        } else {
+          clearLiveSnapshot();
+        }
+
         var tickerWarnings = buildTickerCurrencyWarnings(positions);
+        warnings = warnings.concat(tickerWarnings);
         var netFlow = Number(document.getElementById("netFlowInput").value || "0");
         if (!Number.isFinite(netFlow)) {
           throw new Error("Net contribution / withdrawal must be a valid number.");
         }
 
-        var totalCurrent = positions.reduce(function (sum, p) { return sum + p.currentValue; }, 0);
+        var fxToReportingByRow = buildFxToReportingMap(positions, fxToUsdMap);
+        var totalCurrent = positions.reduce(function (sum, p) {
+          var fxToReporting = fxToReportingByRow[p.rowIndex];
+          return sum + (p.shares * p.price * fxToReporting);
+        }, 0);
         var totalWeight = positions.reduce(function (sum, p) { return sum + p.targetWeight; }, 0);
         if (totalCurrent + netFlow <= 0) {
           throw new Error("Ending portfolio value must be greater than 0.");
@@ -572,10 +1004,12 @@ Use the browser version below to run the same rebalancing workflow directly on t
         var totalSells = 0;
 
         var results = positions.map(function (p) {
+          var fxToReporting = fxToReportingByRow[p.rowIndex];
+          var currentValue = p.shares * p.price * fxToReporting;
           var targetWeightNorm = p.targetWeight / totalWeight;
           var targetValue = targetWeightNorm * endingPortfolioValue;
-          var tradeValue = targetValue - p.currentValue;
-          var tradeValueLocal = tradeValue / p.fxToReporting;
+          var tradeValue = targetValue - currentValue;
+          var tradeValueLocal = tradeValue / fxToReporting;
           var tradeShares = tradeValueLocal / p.price;
           var action = "Hold";
 
@@ -599,7 +1033,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
             currencyLabel: p.currencyLabel,
             shares: p.shares,
             price: p.price,
-            currentValue: p.currentValue,
+            currentValue: currentValue,
             targetWeightNorm: targetWeightNorm,
             targetValue: targetValue,
             tradeValue: tradeValue,
@@ -611,6 +1045,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
         });
 
         var summaryData = {
+          liveDataUsed: liveDataUsed,
           totalCurrent: totalCurrent,
           netFlow: netFlow,
           endingValue: endingPortfolioValue,
@@ -618,12 +1053,17 @@ Use the browser version below to run the same rebalancing workflow directly on t
           totalSells: totalSells
         };
 
-        resultsNode.innerHTML = summaryHtml(summaryData) + buildResultTable(results) + warningsHtml(tickerWarnings);
+        updateLiveTotals();
+        resultsNode.innerHTML = summaryHtml(summaryData) + buildResultTable(results) + warningsHtml(warnings);
         hasCalculated = true;
       } catch (err) {
+        clearLiveSnapshot();
+        updateLiveTotals();
         resultsNode.textContent = "Output will appear here after you run rebalancing.";
-        validationNode.textContent = err.message;
+        validationNode.textContent = String(err && err.message || err);
         hasCalculated = false;
+      } finally {
+        setRunningState(false);
       }
     }
 
@@ -695,7 +1135,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
       }
     });
 
-    document.getElementById("rebalanceBtn").addEventListener("click", calculateRebalance);
+    rebalanceBtn.addEventListener("click", calculateRebalance);
     document.getElementById("sampleBtn").addEventListener("click", function () {
       rowCountInput.value = String(samplePortfolio.length);
       setRows(samplePortfolio.length, samplePortfolio);
