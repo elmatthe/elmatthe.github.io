@@ -54,7 +54,7 @@ BRAND_NAVY_ARGB = "FF1A2E4A"
 HOLD_THRESHOLD = 0.005
 
 EXCHANGE_SUFFIX_HINTS = {
-    "USD": ["", ".US"],
+    "USD": [""],
     "CAD": [".TO", ".V", ""],
     "JPN": [".T", ""],
     "EUR": [".DE", ".AS", ".PA", ".MI", ".BR", ""],
@@ -63,7 +63,7 @@ EXCHANGE_SUFFIX_HINTS = {
 }
 
 EXCHANGE_PREFIX_HINTS = {
-    "USD": "Use plain symbol (AAPL) or optional .US suffix.",
+    "USD": "Use plain symbol (AAPL).",
     "CAD": "TSX/TSXV: use .TO / .V (e.g., XIC.TO, VEQT.TO).",
     "JPN": "Tokyo: use .T suffix (example: 7203.T).",
     "EUR": "Use exchange suffix (.DE, .AS, .PA, .MI, .BR).",
@@ -106,7 +106,7 @@ SAMPLE_PORTFOLIO = [
     {"ticker": "VTI", "shares": 120, "price": 250, "targetWeight": 10, "currencyKey": "USD"},
     {"ticker": "XIC", "shares": 320, "price": 36, "targetWeight": 10, "currencyKey": "CAD"},
     {"ticker": "VEQT", "shares": 410, "price": 42, "targetWeight": 20, "currencyKey": "CAD"},
-    {"ticker": "EWJ", "shares": 220, "price": 2480, "targetWeight": 10, "currencyKey": "JPN"},
+    {"ticker": "EWJ", "shares": 220, "price": 64, "targetWeight": 10, "currencyKey": "USD"},
     {"ticker": "VGK", "shares": 115, "price": 64, "targetWeight": 10, "currencyKey": "EUR"},
     {"ticker": "ISF", "shares": 260, "price": 7.4, "targetWeight": 10, "currencyKey": "GBP"},
     {"ticker": "AAPL", "shares": 45, "price": 180, "targetWeight": 10, "currencyKey": "USD"},
@@ -140,15 +140,16 @@ def _safe_positive_float(raw_value: object) -> float | None:
 def _extract_yf_last_price(yf_ticker) -> float | None:
     fast_info = getattr(yf_ticker, "fast_info", None)
     if fast_info is not None:
-        for key in ("last_price", "regular_market_price", "previous_close"):
-            raw = None
+        # Touch a stable field first so we skip completely empty FastInfo payloads.
+        try:
+            _ = getattr(fast_info, "three_month_average_volume", None)
+        except Exception:
+            pass
+        for attr in ("last_price", "regular_market_price", "previous_close"):
             try:
-                if hasattr(fast_info, "get"):
-                    raw = fast_info.get(key)
-                else:
-                    raw = getattr(fast_info, key, None)
+                raw = getattr(fast_info, attr, None)
             except Exception:
-                raw = None
+                continue
             value = _safe_positive_float(raw)
             if value is not None:
                 return value
@@ -169,15 +170,15 @@ def _extract_yf_last_price(yf_ticker) -> float | None:
 def _extract_yf_quote_currency(yf_ticker) -> str | None:
     fast_info = getattr(yf_ticker, "fast_info", None)
     if fast_info is not None:
-        for key in ("currency", "currency_code"):
-            raw_value = None
+        try:
+            _ = getattr(fast_info, "three_month_average_volume", None)
+        except Exception:
+            pass
+        for attr in ("currency", "currency_code"):
             try:
-                if hasattr(fast_info, "get"):
-                    raw_value = fast_info.get(key)
-                else:
-                    raw_value = getattr(fast_info, key, None)
+                raw_value = getattr(fast_info, attr, None)
             except Exception:
-                raw_value = None
+                continue
             if isinstance(raw_value, str) and raw_value.strip():
                 return raw_value.strip()
 
@@ -256,10 +257,13 @@ def _build_ticker_candidates(ticker_symbol: str, currency_key: str) -> list[str]
 def fetch_live_quote_details(ticker_symbol: str) -> dict | None:
     if yf is None:
         return None
+    import sys
+
     try:
         ticker = yf.Ticker(ticker_symbol)
         raw_price = _extract_yf_last_price(ticker)
         if raw_price is None:
+            print(f"[yf] No price returned for {ticker_symbol}", file=sys.stderr)
             return None
 
         raw_quote_currency = _extract_yf_quote_currency(ticker)
@@ -272,7 +276,8 @@ def fetch_live_quote_details(ticker_symbol: str) -> dict | None:
             "quoteCurrency": quote_currency,
             "unitScale": unit_scale,
         }
-    except Exception:
+    except Exception as exc:
+        print(f"[yf] Exception fetching {ticker_symbol}: {exc}", file=sys.stderr)
         return None
 
 
@@ -294,23 +299,25 @@ def build_ticker_input_hint(ticker_symbol: str, currency_key: str) -> str:
             mapped_code = CURRENCY_OPTIONS[mapped_key]["code"]
             if mapped_key != expected_key:
                 return (
-                    f"{prefix} format may fail. Try {suggestion} "
-                    f"({mapped_code}) or switch row currency."
+                    f"'{prefix}' prefix not supported by Yahoo Finance. "
+                    f"Try '{suggestion}' ({mapped_code}) or switch row currency."
                 )
-            return f"{prefix} format may fail. Try {suggestion}."
+            return f"'{prefix}' prefix not supported. Try '{suggestion}'."
 
     if "." in cleaned:
         suffix = "." + cleaned.rsplit(".", 1)[1]
         mapped_key = SUFFIX_TO_CURRENCY_KEY.get(suffix)
         if mapped_key and mapped_key != expected_key:
             mapped_code = CURRENCY_OPTIONS[mapped_key]["code"]
-            return f"{suffix} implies {mapped_code}; row is {expected_code}."
+            return f"'{suffix}' implies {mapped_code} but row is {expected_code} - check row currency."
         return ""
 
-    if expected_key != "USD":
-        for candidate in _build_ticker_candidates(cleaned, expected_key):
-            if candidate != cleaned:
-                return f"Try {candidate} for {expected_code} quotes."
+    for candidate in _build_ticker_candidates(cleaned, expected_key):
+        if candidate != cleaned:
+            return (
+                f"For {expected_code} live quotes, try '{candidate}'. "
+                "Verify the exact symbol at finance.yahoo.com."
+            )
 
     return ""
 
@@ -579,6 +586,9 @@ class PortfolioRebalancerApp:
         self.live_fx_to_usd: dict[str, float] = {}
         self.live_fx_keys: set[str] = set()
         self.live_price_tickers: set[str] = set()
+        self._ticker_validate_after_ids: dict[int, str] = {}
+        self._ticker_validation_tokens: dict[int, int] = {}
+        self._ticker_validation_feedback: dict[int, dict[str, str]] = {}
 
         self._build_ui()
         self.set_rows(len(SAMPLE_PORTFOLIO), SAMPLE_PORTFOLIO)
@@ -900,6 +910,15 @@ class PortfolioRebalancerApp:
         row_count = clamp_row_count(count)
         self.row_count_var.set(str(row_count))
 
+        for after_id in self._ticker_validate_after_ids.values():
+            try:
+                self.root.after_cancel(after_id)
+            except Exception:
+                pass
+        self._ticker_validate_after_ids = {}
+        self._ticker_validation_tokens = {}
+        self._ticker_validation_feedback = {}
+
         for row in self.rows:
             row["frame"].destroy()
         self.rows = []
@@ -948,11 +967,13 @@ class PortfolioRebalancerApp:
             ticker_hint_label = ttk.Label(frame, text="", foreground="#8f5f12")
             ticker_hint_label.grid(row=1, column=1, columnspan=7, padx=2, sticky="w")
 
-            for entry in (ticker_entry, shares_entry, price_entry, target_entry):
+            ticker_entry.bind("<KeyRelease>", lambda _e, idx=idx: self._handle_ticker_or_currency_change(idx))
+            ticker_entry.bind("<FocusOut>", lambda _e, idx=idx: self._handle_ticker_or_currency_change(idx))
+            for entry in (shares_entry, price_entry, target_entry):
                 entry.bind("<KeyRelease>", lambda _e: self._handle_live_input_change())
                 entry.bind("<FocusOut>", lambda _e: self._handle_live_input_change())
 
-            currency_combo.bind("<<ComboboxSelected>>", lambda _e: self._handle_live_input_change())
+            currency_combo.bind("<<ComboboxSelected>>", lambda _e, idx=idx: self._handle_ticker_or_currency_change(idx))
 
             self.rows.append(
                 {
@@ -981,12 +1002,85 @@ class PortfolioRebalancerApp:
         if self.has_calculated and not self.is_running:
             self.recalculate_from_inputs(show_error=False)
 
+    def _handle_ticker_or_currency_change(self, row_idx: int) -> None:
+        self._ticker_validation_feedback.pop(row_idx, None)
+        self._handle_live_input_change()
+        self._schedule_ticker_validation(row_idx)
+
+    def _schedule_ticker_validation(self, row_idx: int) -> None:
+        existing = self._ticker_validate_after_ids.get(row_idx)
+        if existing:
+            try:
+                self.root.after_cancel(existing)
+            except Exception:
+                pass
+        next_token = self._ticker_validation_tokens.get(row_idx, 0) + 1
+        self._ticker_validation_tokens[row_idx] = next_token
+        after_id = self.root.after(800, lambda idx=row_idx, tok=next_token: self._validate_ticker_background(idx, tok))
+        self._ticker_validate_after_ids[row_idx] = after_id
+
+    def _validate_ticker_background(self, row_idx: int, token: int) -> None:
+        self._ticker_validate_after_ids.pop(row_idx, None)
+        if token != self._ticker_validation_tokens.get(row_idx):
+            return
+        if row_idx >= len(self.rows):
+            return
+
+        row = self.rows[row_idx]
+        ticker = row["ticker_var"].get().strip().upper()
+        currency_key = row["currency_var"].get()
+        hint_label = row["ticker_hint_label"]
+        if not ticker:
+            self._ticker_validation_feedback.pop(row_idx, None)
+            hint_label.configure(text="", foreground=STATUS_WARN)
+            return
+
+        self._ticker_validation_feedback[row_idx] = {
+            "ticker": ticker,
+            "text": f"Checking {ticker}...",
+            "color": "#3f5066",
+        }
+        self.update_live_totals()
+
+        def _apply_feedback(expected_token: int, message: str, color: str) -> None:
+            if expected_token != self._ticker_validation_tokens.get(row_idx):
+                return
+            if row_idx >= len(self.rows):
+                return
+            live_ticker = self.rows[row_idx]["ticker_var"].get().strip().upper()
+            if live_ticker != ticker:
+                return
+            self._ticker_validation_feedback[row_idx] = {
+                "ticker": live_ticker,
+                "text": message,
+                "color": color,
+            }
+            self.update_live_totals()
+
+        def worker() -> None:
+            candidates = _build_ticker_candidates(ticker, currency_key)
+            for candidate in candidates:
+                result = fetch_live_quote_details(candidate)
+                if result is not None:
+                    resolved = result["resolvedTicker"]
+                    quote_currency = result.get("quoteCurrency", "?")
+                    msg = f"\u2713 Verified: {resolved} ({quote_currency})"
+                    self.root.after(0, lambda m=msg: _apply_feedback(token, m, STATUS_SUCCESS))
+                    return
+            fallback_hint = build_ticker_input_hint(ticker, currency_key)
+            msg = "\u2717 Not found on Yahoo Finance."
+            if fallback_hint:
+                msg = f"{msg} {fallback_hint}"
+            self.root.after(0, lambda m=msg: _apply_feedback(token, m, STATUS_ERROR))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def update_live_totals(self) -> None:
         total_current = 0.0
         total_weight = 0.0
         report_key = self.reporting_currency_var.get()
 
-        for row in self.rows:
+        for idx, row in enumerate(self.rows):
             shares = self.parse_float(row["shares_var"].get())
             price = self.parse_float(row["price_var"].get())
             target = self.parse_float(row["target_var"].get())
@@ -1003,8 +1097,16 @@ class PortfolioRebalancerApp:
             row["fx_label"].configure(text=self.format_fx(fx, is_live=fx_is_live))
             row["current_label"].configure(text=self.format_currency(current_value))
             row_ticker = row["ticker_var"].get().strip().upper()
-            row_hint = build_ticker_input_hint(row_ticker, currency_key)
-            row["ticker_hint_label"].configure(text=row_hint)
+            base_hint = build_ticker_input_hint(row_ticker, currency_key)
+            hint_text = base_hint
+            hint_color = STATUS_WARN
+            feedback = self._ticker_validation_feedback.get(idx)
+            if feedback and feedback.get("ticker") == row_ticker:
+                hint_text = feedback.get("text", "")
+                hint_color = feedback.get("color", STATUS_WARN)
+            elif feedback:
+                self._ticker_validation_feedback.pop(idx, None)
+            row["ticker_hint_label"].configure(text=hint_text, foreground=hint_color)
 
             total_current += current_value
             if target is not None and target >= 0:
@@ -1254,10 +1356,11 @@ class PortfolioRebalancerApp:
                     selected_currency_key = position["currencyKey"]
                     selected_currency_code = CURRENCY_OPTIONS[selected_currency_key]["code"]
                     manual_price = position["price"]
+                    attempted_candidates = _build_ticker_candidates(ticker, selected_currency_key)
 
                     best_matching_quote = None
                     first_fallback_quote = None
-                    for candidate in _build_ticker_candidates(ticker, selected_currency_key):
+                    for candidate in attempted_candidates:
                         quote_details = fetch_live_quote_details(candidate)
                         if quote_details is None:
                             continue
@@ -1270,12 +1373,16 @@ class PortfolioRebalancerApp:
 
                     chosen_quote = best_matching_quote or first_fallback_quote
                     if chosen_quote is None:
+                        attempted_str = ", ".join(attempted_candidates) if attempted_candidates else ticker
                         if manual_price is None:
                             raise ValueError(
-                                f"Live price unavailable for {ticker} and no manual price is provided."
+                                f"Live price unavailable for {ticker} "
+                                f"(tried: {attempted_str}). "
+                                "Verify the symbol on finance.yahoo.com or enter a manual price."
                             )
                         warnings.append(
-                            f"Live price unavailable for {ticker}; using manual entry {manual_price:.4f}."
+                            f"Live price unavailable for {ticker} (tried: {attempted_str}); "
+                            f"using manual entry {manual_price:.4f}."
                         )
                         continue
 
