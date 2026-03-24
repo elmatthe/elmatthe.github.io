@@ -120,7 +120,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
 
 <script>
   (function () {
-    var HOLD_THRESHOLD = 0.005;
+    var HOLD_THRESHOLD_PCT = 0.0001; // 0.01% of ending portfolio value
     var STATUS_NEUTRAL = "#1f4f8a";
     var STATUS_WARN = "#8f5f12";
     var STATUS_SUCCESS = "#1c7550";
@@ -128,11 +128,11 @@ Use the browser version below to run the same rebalancing workflow directly on t
 
     var samplePortfolio = [
       { ticker: "VTI", shares: 120, price: 250, targetWeight: 10, currencyKey: "USD" },
-      { ticker: "XIC", shares: 320, price: 36, targetWeight: 10, currencyKey: "CAD" },
-      { ticker: "VEQT", shares: 410, price: 42, targetWeight: 20, currencyKey: "CAD" },
+      { ticker: "XIC.TO", shares: 320, price: 36, targetWeight: 10, currencyKey: "CAD" },
+      { ticker: "VEQT.TO", shares: 410, price: 42, targetWeight: 20, currencyKey: "CAD" },
       { ticker: "EWJ", shares: 220, price: 64, targetWeight: 10, currencyKey: "USD" },
-      { ticker: "VGK", shares: 115, price: 64, targetWeight: 10, currencyKey: "EUR" },
-      { ticker: "ISF", shares: 260, price: 7.4, targetWeight: 10, currencyKey: "GBP" },
+      { ticker: "VGK", shares: 115, price: 64, targetWeight: 10, currencyKey: "USD" },
+      { ticker: "ISF.L", shares: 260, price: 7.4, targetWeight: 10, currencyKey: "GBP" },
       { ticker: "AAPL", shares: 45, price: 180, targetWeight: 10, currencyKey: "USD" },
       { ticker: "BND", shares: 200, price: 72, targetWeight: 10, currencyKey: "USD" },
       { ticker: "MCHI", shares: 140, price: 40, targetWeight: 10, currencyKey: "USD" }
@@ -166,7 +166,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
       JPN: { code: "JPY", locale: "ja-JP", label: "JPN", fxToUsd: 0.0067 },
       EUR: { code: "EUR", locale: "de-DE", label: "EUR", fxToUsd: 1.09 },
       GBP: { code: "GBP", locale: "en-GB", label: "GBP", fxToUsd: 1.28 },
-      CHY_CNH: { code: "CNY", locale: "zh-CN", label: "CHY/CNH", fxToUsd: 0.14 }
+      CHY_CNH: { code: "CNY", locale: "en-US", label: "CHY/CNH", fxToUsd: 0.14 }
     };
     var currencyCodeToKey = {
       USD: "USD",
@@ -204,6 +204,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
       "LSE:": ".L",
       "JPX:": ".T"
     };
+    var crossMarketSuffixes = [".TO", ".V", ".L", ".T", ".DE", ".AS", ".PA", ".MI", ".BR", ".SS", ".SZ", ".HK", ""];
 
     function hasOwn(obj, key) {
       return Object.prototype.hasOwnProperty.call(obj, key);
@@ -457,10 +458,65 @@ Use the browser version below to run the same rebalancing workflow directly on t
       var candidates = buildTickerCandidates(cleaned, expectedKey);
       for (var c = 0; c < candidates.length; c += 1) {
         if (candidates[c] !== cleaned) {
+          if (expectedKey === "CHY_CNH") {
+            return "For CNY live quotes, use .SS/.SZ/.HK only for securities listed on Shanghai/Shenzhen/HK exchanges. Verify the exact symbol at finance.yahoo.com.";
+          }
           return "For " + expectedCode + " live quotes, try '" + candidates[c] + "'. Verify the exact symbol at finance.yahoo.com.";
         }
       }
       return "";
+    }
+
+    function extractBareTicker(tickerSymbol) {
+      var base = String(tickerSymbol || "").trim().toUpperCase();
+      if (!base) {
+        return "";
+      }
+      var prefixKeys = Object.keys(prefixToSuffix);
+      for (var i = 0; i < prefixKeys.length; i += 1) {
+        var prefix = prefixKeys[i];
+        if (base.indexOf(prefix) === 0) {
+          base = base.slice(prefix.length).trim();
+          break;
+        }
+      }
+      if (base.indexOf(".") >= 0) {
+        var stem = base.slice(0, base.lastIndexOf("."));
+        if (stem) {
+          return stem;
+        }
+      }
+      return base;
+    }
+
+    function buildCrossMarketCandidates(tickerSymbol, attemptedCandidates) {
+      var bareTicker = extractBareTicker(tickerSymbol);
+      if (!bareTicker) {
+        return [];
+      }
+      var attemptedSet = {};
+      (attemptedCandidates || []).forEach(function (candidate) {
+        attemptedSet[String(candidate).trim().toUpperCase()] = true;
+      });
+      var crossCandidates = [];
+      crossMarketSuffixes.forEach(function (suffix) {
+        var candidate = suffix ? (bareTicker + suffix) : bareTicker;
+        if (!attemptedSet[candidate] && crossCandidates.indexOf(candidate) === -1) {
+          crossCandidates.push(candidate);
+        }
+      });
+      return crossCandidates;
+    }
+
+    async function findCrossMarketQuote(tickerSymbol, attemptedCandidates) {
+      var crossCandidates = buildCrossMarketCandidates(tickerSymbol, attemptedCandidates);
+      for (var i = 0; i < crossCandidates.length; i += 1) {
+        var quote = await fetchLiveQuoteDetails(crossCandidates[i]);
+        if (quote) {
+          return quote;
+        }
+      }
+      return null;
     }
 
     function getRowIndex(rowNode) {
@@ -485,6 +541,13 @@ Use the browser version below to run the same rebalancing workflow directly on t
       }
       inputRowsNode.innerHTML = rowsHtml.join("");
       updateLiveTotals();
+      var rows = inputRowsNode.querySelectorAll("tr");
+      rows.forEach(function (row, idx) {
+        var tickerInput = row.querySelector(".ticker-input");
+        if (tickerInput && tickerInput.value.trim()) {
+          scheduleTickerValidation(idx);
+        }
+      });
     }
 
     function safePositiveNumber(rawValue) {
@@ -810,17 +873,50 @@ Use the browser version below to run the same rebalancing workflow directly on t
 
       try {
         var candidates = buildTickerCandidates(ticker, currencyKey);
+        var selectedCode = (currencyOptions[currencyKey] || currencyOptions.USD).code;
+        var firstCurrencyMismatch = null;
         for (var i = 0; i < candidates.length; i += 1) {
           var candidate = candidates[i];
           var quote = await fetchLiveQuoteDetails(candidate);
           if (quote) {
-            var okMsg = "Verified: " + quote.resolvedTicker + " (" + (quote.quoteCurrency || "?") + ")";
+            var quoteCurrency = quote.quoteCurrency || "?";
+            if (quote.quoteCurrency && quote.quoteCurrency !== selectedCode) {
+              if (!firstCurrencyMismatch) {
+                firstCurrencyMismatch = quote;
+              }
+              continue;
+            }
+            var okMsg = "Verified: " + quote.resolvedTicker + " (" + quoteCurrency + ")";
             applyTickerValidationFeedback(rowIdx, token, ticker, okMsg, STATUS_SUCCESS);
             return;
           }
         }
+        var crossMarket = await findCrossMarketQuote(ticker, candidates);
+        if (crossMarket) {
+          var crossCode = crossMarket.quoteCurrency || "?";
+          applyTickerValidationFeedback(
+            rowIdx,
+            token,
+            ticker,
+            ticker + " not found in " + selectedCode + ". Found as " + crossMarket.resolvedTicker +
+              " (" + crossCode + "). Update row currency or ticker symbol.",
+            STATUS_WARN
+          );
+          return;
+        }
+        if (firstCurrencyMismatch) {
+          applyTickerValidationFeedback(
+            rowIdx,
+            token,
+            ticker,
+            "Found " + firstCurrencyMismatch.resolvedTicker + " but quotes in " +
+              (firstCurrencyMismatch.quoteCurrency || "?") + ", not " + selectedCode + ". Check row currency.",
+            STATUS_WARN
+          );
+          return;
+        }
         var fallbackHint = buildTickerInputHint(ticker, currencyKey);
-        var failMsg = "Not found on Yahoo Finance.";
+        var failMsg = "Not found on Yahoo Finance. Verify the symbol at finance.yahoo.com.";
         if (fallbackHint) {
           failMsg += " " + fallbackHint;
         }
@@ -873,6 +969,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
       if (totalWeight <= 0) {
         throw new Error("At least one target weight must be greater than 0.");
       }
+      var relativeThreshold = endingValue * HOLD_THRESHOLD_PCT;
 
       var totalBuys = 0;
       var totalSells = 0;
@@ -884,15 +981,15 @@ Use the browser version below to run the same rebalancing workflow directly on t
         var tradeShares = tradeValueLocal / p.price;
         var action = "Hold";
 
-        if (tradeValue > HOLD_THRESHOLD) {
+        if (tradeValue > relativeThreshold) {
           action = "Buy";
           totalBuys += tradeValue;
-        } else if (tradeValue < -HOLD_THRESHOLD) {
+        } else if (tradeValue < -relativeThreshold) {
           action = "Sell";
           totalSells += Math.abs(tradeValue);
         }
 
-        if (Math.abs(tradeValue) <= HOLD_THRESHOLD) {
+        if (Math.abs(tradeValue) <= relativeThreshold) {
           tradeValue = 0;
           tradeValueLocal = 0;
           tradeShares = 0;
@@ -1076,6 +1173,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
             var attemptedCandidates = buildTickerCandidates(ticker, selectedCurrencyKey);
             var bestMatchingQuote = null;
             var firstFallbackQuote = null;
+            var crossMarketQuote = null;
 
             for (var j = 0; j < attemptedCandidates.length; j += 1) {
               var candidate = attemptedCandidates[j];
@@ -1095,19 +1193,26 @@ Use the browser version below to run the same rebalancing workflow directly on t
 
             var chosenQuote = bestMatchingQuote || firstFallbackQuote;
             if (!chosenQuote) {
+              crossMarketQuote = await findCrossMarketQuote(ticker, attemptedCandidates);
+            }
+            if (!chosenQuote && !crossMarketQuote) {
               var attemptedStr = attemptedCandidates.length ? attemptedCandidates.join(", ") : ticker;
               if (manualPrice === null) {
                 throw new Error(
                   "Live price unavailable for " + ticker + " (tried: " + attemptedStr + "). " +
-                  "Verify the symbol on finance.yahoo.com or enter a manual price."
+                  "This ticker may not trade in " + selectedCurrencyCode + ". " +
+                  "Verify the symbol and row currency, or enter a manual price."
                 );
               }
               warnings.push(
-                "Live price unavailable for " + ticker + " (tried: " + attemptedStr + "); " +
-                "using manual entry " + manualPrice.toFixed(4) + "."
+                "Live price unavailable for " + ticker + " (tried: " + attemptedStr + "). " +
+                "This ticker may not trade in " + selectedCurrencyCode + ". " +
+                "Verify the symbol and row currency, or enter a manual price " +
+                "(using manual entry " + manualPrice.toFixed(4) + ")."
               );
               continue;
             }
+            chosenQuote = chosenQuote || crossMarketQuote;
 
             var resolvedTicker = String(chosenQuote.resolvedTicker);
             var chosenQuoteCode = chosenQuote.quoteCurrency;
@@ -1120,8 +1225,9 @@ Use the browser version below to run the same rebalancing workflow directly on t
                 position.currencyLabel = getRowCurrencyMeta(quoteKey).label;
                 position.price = chosenPrice;
                 warnings.push(
-                  ticker + ": live quote currency " + chosenQuoteCode + " does not match selected " +
-                  selectedCurrencyCode + "; adjusted row currency to " + chosenQuoteCode + " for this run."
+                  ticker + ": not found in selected " + selectedCurrencyCode + " market; " +
+                  "using " + resolvedTicker + " (" + chosenQuoteCode + ") and adjusted row currency " +
+                  "to " + chosenQuoteCode + " for this run."
                 );
                 if (resolvedTicker !== ticker) {
                   warnings.push(ticker + ": used exchange symbol " + resolvedTicker + " for live quote.");
@@ -1131,8 +1237,9 @@ Use the browser version below to run the same rebalancing workflow directly on t
 
               if (manualPrice !== null) {
                 warnings.push(
-                  ticker + ": live quote currency " + chosenQuoteCode + " does not match selected " +
-                  selectedCurrencyCode + "; keeping manual entry " + manualPrice.toFixed(4) + "."
+                  ticker + ": not available in selected " + selectedCurrencyCode + " market; " +
+                  "found " + resolvedTicker + " (" + chosenQuoteCode + "). Keeping manual entry " +
+                  manualPrice.toFixed(4) + ". Verify row currency or ticker."
                 );
                 continue;
               }
