@@ -51,7 +51,7 @@ STATUS_ERROR = "#9b2f2f"
 STATUS_SUCCESS = "#1c7550"
 STATUS_WARN = "#8f5f12"
 BRAND_NAVY_ARGB = "FF1A2E4A"
-HOLD_THRESHOLD = 0.005
+HOLD_THRESHOLD_PCT = 0.0001  # 0.01% of ending portfolio value
 
 EXCHANGE_SUFFIX_HINTS = {
     "USD": [""],
@@ -68,7 +68,7 @@ EXCHANGE_PREFIX_HINTS = {
     "JPN": "Tokyo: use .T suffix (example: 7203.T).",
     "EUR": "Use exchange suffix (.DE, .AS, .PA, .MI, .BR).",
     "GBP": "London: use .L suffix (example: ISF.L).",
-    "CHY_CNH": "China/HK: use .SS / .SZ / .HK suffixes.",
+    "CHY_CNH": "Shanghai: .SS, Shenzhen: .SZ, Hong Kong: .HK. Only for securities listed on these exchanges.",
 }
 
 CURRENCY_OPTIONS = {
@@ -77,7 +77,7 @@ CURRENCY_OPTIONS = {
     "JPN": {"code": "JPY", "label": "JPN", "fx_to_usd": 0.0067, "symbol": "JPY "},
     "EUR": {"code": "EUR", "label": "EUR", "fx_to_usd": 1.09, "symbol": "EUR "},
     "GBP": {"code": "GBP", "label": "GBP", "fx_to_usd": 1.28, "symbol": "GBP "},
-    "CHY_CNH": {"code": "CNY", "label": "CHY/CNH", "fx_to_usd": 0.14, "symbol": "CNY "},
+    "CHY_CNH": {"code": "CNY", "label": "CHY/CNH", "fx_to_usd": 0.14, "symbol": "CN¥"},
 }
 
 CURRENCY_CODE_TO_KEY = {meta["code"]: key for key, meta in CURRENCY_OPTIONS.items()}
@@ -102,13 +102,24 @@ PREFIX_TO_SUFFIX = {
     "JPX:": ".T",
 }
 
+CROSS_MARKET_SUFFIXES = [".TO", ".V", ".L", ".T", ".DE", ".AS", ".PA", ".MI", ".BR", ".SS", ".SZ", ".HK", ""]
+
+EXCEL_CURRENCY_FORMATS = {
+    "USD": '"$"#,##0.00',
+    "CAD": '"C$"#,##0.00',
+    "EUR": '"€"#,##0.00',
+    "GBP": '"£"#,##0.00',
+    "JPN": '"¥"#,##0',
+    "CHY_CNH": '"CN¥"#,##0.00',
+}
+
 SAMPLE_PORTFOLIO = [
     {"ticker": "VTI", "shares": 120, "price": 250, "targetWeight": 10, "currencyKey": "USD"},
-    {"ticker": "XIC", "shares": 320, "price": 36, "targetWeight": 10, "currencyKey": "CAD"},
-    {"ticker": "VEQT", "shares": 410, "price": 42, "targetWeight": 20, "currencyKey": "CAD"},
+    {"ticker": "XIC.TO", "shares": 320, "price": 36, "targetWeight": 10, "currencyKey": "CAD"},
+    {"ticker": "VEQT.TO", "shares": 410, "price": 42, "targetWeight": 20, "currencyKey": "CAD"},
     {"ticker": "EWJ", "shares": 220, "price": 64, "targetWeight": 10, "currencyKey": "USD"},
-    {"ticker": "VGK", "shares": 115, "price": 64, "targetWeight": 10, "currencyKey": "EUR"},
-    {"ticker": "ISF", "shares": 260, "price": 7.4, "targetWeight": 10, "currencyKey": "GBP"},
+    {"ticker": "VGK", "shares": 115, "price": 64, "targetWeight": 10, "currencyKey": "USD"},
+    {"ticker": "ISF.L", "shares": 260, "price": 7.4, "targetWeight": 10, "currencyKey": "GBP"},
     {"ticker": "AAPL", "shares": 45, "price": 180, "targetWeight": 10, "currencyKey": "USD"},
     {"ticker": "BND", "shares": 200, "price": 72, "targetWeight": 10, "currencyKey": "USD"},
     {"ticker": "MCHI", "shares": 140, "price": 40, "targetWeight": 10, "currencyKey": "USD"},
@@ -314,6 +325,11 @@ def build_ticker_input_hint(ticker_symbol: str, currency_key: str) -> str:
 
     for candidate in _build_ticker_candidates(cleaned, expected_key):
         if candidate != cleaned:
+            if expected_key == "CHY_CNH":
+                return (
+                    "For CNY live quotes, use .SS/.SZ/.HK only for securities listed on "
+                    "Shanghai/Shenzhen/HK exchanges. Verify the exact symbol at finance.yahoo.com."
+                )
             return (
                 f"For {expected_code} live quotes, try '{candidate}'. "
                 "Verify the exact symbol at finance.yahoo.com."
@@ -345,6 +361,42 @@ def fetch_live_fx_to_usd(currency_code: str) -> float | None:
         return None
 
 
+def _extract_bare_ticker(ticker_symbol: str) -> str:
+    base = ticker_symbol.strip().upper()
+    if not base:
+        return ""
+    for prefix in PREFIX_TO_SUFFIX:
+        if base.startswith(prefix):
+            base = base[len(prefix):].strip()
+            break
+    if "." in base:
+        stem, _ = base.rsplit(".", 1)
+        if stem:
+            return stem
+    return base
+
+
+def _build_cross_market_candidates(ticker_symbol: str, attempted_candidates: list[str]) -> list[str]:
+    bare_ticker = _extract_bare_ticker(ticker_symbol)
+    if not bare_ticker:
+        return []
+    attempted_set = {candidate.strip().upper() for candidate in attempted_candidates}
+    candidates: list[str] = []
+    for suffix in CROSS_MARKET_SUFFIXES:
+        candidate = f"{bare_ticker}{suffix}" if suffix else bare_ticker
+        if candidate not in attempted_set and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def _find_cross_market_quote(ticker_symbol: str, attempted_candidates: list[str]) -> dict | None:
+    for candidate in _build_cross_market_candidates(ticker_symbol, attempted_candidates):
+        result = fetch_live_quote_details(candidate)
+        if result is not None:
+            return result
+    return None
+
+
 def calculate_rebalance_plan(positions: list[dict], net_flow: float) -> tuple[dict, list[dict]]:
     total_current = sum(pos["currentValue"] for pos in positions)
     total_weight = sum(pos["targetWeight"] for pos in positions)
@@ -353,6 +405,7 @@ def calculate_rebalance_plan(positions: list[dict], net_flow: float) -> tuple[di
         raise ValueError("Ending portfolio value must be greater than 0.")
     if total_weight <= 0:
         raise ValueError("At least one target weight must be greater than 0.")
+    relative_threshold = ending_value * HOLD_THRESHOLD_PCT
 
     total_buys = 0.0
     total_sells = 0.0
@@ -366,14 +419,14 @@ def calculate_rebalance_plan(positions: list[dict], net_flow: float) -> tuple[di
         trade_shares = trade_value_local / pos["price"]
 
         action = "Hold"
-        if trade_value > HOLD_THRESHOLD:
+        if trade_value > relative_threshold:
             action = "Buy"
             total_buys += trade_value
-        elif trade_value < -HOLD_THRESHOLD:
+        elif trade_value < -relative_threshold:
             action = "Sell"
             total_sells += abs(trade_value)
 
-        if abs(trade_value) <= HOLD_THRESHOLD:
+        if abs(trade_value) <= relative_threshold:
             trade_value = 0.0
             trade_value_local = 0.0
             trade_shares = 0.0
@@ -469,6 +522,7 @@ def write_excel_export(excel_path: Path, summary: dict, rows: list[dict], report
     navy_fill = PatternFill(fill_type="solid", start_color=BRAND_NAVY_ARGB, end_color=BRAND_NAVY_ARGB)
     white_bold = Font(color="FFFFFF", bold=True)
     heading_font = Font(bold=True)
+    reporting_fmt = EXCEL_CURRENCY_FORMATS.get(reporting_currency, '"$"#,##0.00')
 
     summary_sheet.merge_cells("A1:B1")
     header = summary_sheet["A1"]
@@ -480,11 +534,11 @@ def write_excel_export(excel_path: Path, summary: dict, rows: list[dict], report
     summary_rows = [
         (3, "Run Date", summary["runDate"], None),
         (4, "Reporting Currency", reporting_currency, None),
-        (5, "Total Current Value", summary["totalCurrent"], "$#,##0.00"),
-        (6, "Net Flow", summary["netFlow"], "$#,##0.00"),
-        (7, "Target Ending Value", summary["endingValue"], "$#,##0.00"),
-        (8, "Total Buy Value", summary["totalBuys"], "$#,##0.00"),
-        (9, "Total Sell Value", summary["totalSells"], "$#,##0.00"),
+        (5, "Total Current Value", summary["totalCurrent"], reporting_fmt),
+        (6, "Net Flow", summary["netFlow"], reporting_fmt),
+        (7, "Target Ending Value", summary["endingValue"], reporting_fmt),
+        (8, "Total Buy Value", summary["totalBuys"], reporting_fmt),
+        (9, "Total Sell Value", summary["totalSells"], reporting_fmt),
     ]
 
     for row_idx, label, value, number_format in summary_rows:
@@ -522,10 +576,10 @@ def write_excel_export(excel_path: Path, summary: dict, rows: list[dict], report
         trades_sheet.cell(row=row_idx, column=2, value=row["currencyLabel"])
         trades_sheet.cell(row=row_idx, column=3, value=float(row["shares"])).number_format = "#,##0.0000"
         trades_sheet.cell(row=row_idx, column=4, value=float(row["price"])).number_format = "#,##0.0000"
-        trades_sheet.cell(row=row_idx, column=5, value=float(row["currentValue"])).number_format = "$#,##0.00"
+        trades_sheet.cell(row=row_idx, column=5, value=float(row["currentValue"])).number_format = reporting_fmt
         trades_sheet.cell(row=row_idx, column=6, value=float(row["targetWeightNorm"])).number_format = "0.00%"
-        trades_sheet.cell(row=row_idx, column=7, value=float(row["targetValue"])).number_format = "$#,##0.00"
-        trades_sheet.cell(row=row_idx, column=8, value=float(row["tradeValue"])).number_format = "$#,##0.00"
+        trades_sheet.cell(row=row_idx, column=7, value=float(row["targetValue"])).number_format = reporting_fmt
+        trades_sheet.cell(row=row_idx, column=8, value=float(row["tradeValue"])).number_format = reporting_fmt
         trades_sheet.cell(row=row_idx, column=9, value=float(row["tradeValueLocal"])).number_format = "#,##0.00"
         trades_sheet.cell(row=row_idx, column=10, value=float(row["tradeShares"])).number_format = "#,##0.0000"
         action_cell = trades_sheet.cell(row=row_idx, column=11, value=row["action"])
@@ -991,6 +1045,9 @@ class PortfolioRebalancerApp:
 
         self.update_currency_ui()
         self.update_live_totals()
+        for idx, row in enumerate(self.rows):
+            if row["ticker_var"].get().strip():
+                self._schedule_ticker_validation(idx)
 
     def update_currency_ui(self) -> None:
         label = self.get_reporting_meta()["label"]
@@ -1059,16 +1116,41 @@ class PortfolioRebalancerApp:
 
         def worker() -> None:
             candidates = _build_ticker_candidates(ticker, currency_key)
+            selected_code = CURRENCY_OPTIONS.get(currency_key, CURRENCY_OPTIONS["USD"])["code"]
+            first_currency_mismatch: dict | None = None
             for candidate in candidates:
                 result = fetch_live_quote_details(candidate)
                 if result is not None:
                     resolved = result["resolvedTicker"]
                     quote_currency = result.get("quoteCurrency", "?")
+                    if quote_currency and quote_currency != selected_code:
+                        if first_currency_mismatch is None:
+                            first_currency_mismatch = result
+                        continue
                     msg = f"\u2713 Verified: {resolved} ({quote_currency})"
                     self.root.after(0, lambda m=msg: _apply_feedback(token, m, STATUS_SUCCESS))
                     return
+            cross_market = _find_cross_market_quote(ticker, candidates)
+            if cross_market is not None:
+                alt_currency = cross_market.get("quoteCurrency", "?")
+                msg = (
+                    f"\u26a0 {ticker} not found in {selected_code}. "
+                    f"Found as {cross_market['resolvedTicker']} ({alt_currency}). "
+                    "Update row currency or ticker symbol."
+                )
+                self.root.after(0, lambda m=msg: _apply_feedback(token, m, STATUS_WARN))
+                return
+            if first_currency_mismatch is not None:
+                resolved = first_currency_mismatch["resolvedTicker"]
+                quote_currency = first_currency_mismatch.get("quoteCurrency", "?")
+                msg = (
+                    f"\u26a0 Found {resolved} but quotes in {quote_currency}, "
+                    f"not {selected_code}. Check row currency."
+                )
+                self.root.after(0, lambda m=msg: _apply_feedback(token, m, STATUS_WARN))
+                return
             fallback_hint = build_ticker_input_hint(ticker, currency_key)
-            msg = "\u2717 Not found on Yahoo Finance."
+            msg = "\u2717 Not found on Yahoo Finance. Verify the symbol at finance.yahoo.com."
             if fallback_hint:
                 msg = f"{msg} {fallback_hint}"
             self.root.after(0, lambda m=msg: _apply_feedback(token, m, STATUS_ERROR))
@@ -1251,19 +1333,19 @@ class PortfolioRebalancerApp:
                 f"{self.format_shares(item['postTradeShares']):>12}"
             )
 
-        if exports:
-            lines.append("")
-            lines.append("EXPORTS")
-            lines.append("-" * 96)
-            for line in exports:
-                lines.append(f"- {line}")
-
         if warnings:
             lines.append("")
             lines.append("WARNINGS")
             lines.append("-" * 96)
             for warning in warnings:
                 lines.append(f"- {warning}")
+
+        if exports:
+            lines.append("")
+            lines.append("EXPORTS")
+            lines.append("-" * 96)
+            for line in exports:
+                lines.append(f"- {line}")
 
         return "\n".join(lines)
 
@@ -1360,6 +1442,7 @@ class PortfolioRebalancerApp:
 
                     best_matching_quote = None
                     first_fallback_quote = None
+                    cross_market_quote = None
                     for candidate in attempted_candidates:
                         quote_details = fetch_live_quote_details(candidate)
                         if quote_details is None:
@@ -1373,16 +1456,22 @@ class PortfolioRebalancerApp:
 
                     chosen_quote = best_matching_quote or first_fallback_quote
                     if chosen_quote is None:
+                        cross_market_quote = _find_cross_market_quote(ticker, attempted_candidates)
+                        chosen_quote = cross_market_quote
+                    if chosen_quote is None:
                         attempted_str = ", ".join(attempted_candidates) if attempted_candidates else ticker
                         if manual_price is None:
                             raise ValueError(
                                 f"Live price unavailable for {ticker} "
                                 f"(tried: {attempted_str}). "
-                                "Verify the symbol on finance.yahoo.com or enter a manual price."
+                                f"This ticker may not trade in {selected_currency_code}. "
+                                "Verify the symbol and row currency, or enter a manual price."
                             )
                         warnings.append(
-                            f"Live price unavailable for {ticker} (tried: {attempted_str}); "
-                            f"using manual entry {manual_price:.4f}."
+                            f"Live price unavailable for {ticker} (tried: {attempted_str}). "
+                            f"This ticker may not trade in {selected_currency_code}. "
+                            f"Verify the symbol and row currency, or enter a manual price "
+                            f"(using manual entry {manual_price:.4f})."
                         )
                         continue
 
@@ -1400,8 +1489,9 @@ class PortfolioRebalancerApp:
                             live_price_updates[row_idx] = chosen_price
                             live_price_tickers.add(ticker)
                             warnings.append(
-                                f"{ticker}: live quote currency {quote_code} does not match selected "
-                                f"{selected_currency_code}; adjusted row currency to {quote_code} for this run."
+                                f"{ticker}: not found in selected {selected_currency_code} market; "
+                                f"using {resolved_ticker} ({quote_code}) and adjusted row currency "
+                                f"to {quote_code} for this run."
                             )
                             if resolved_ticker != ticker:
                                 warnings.append(
@@ -1411,8 +1501,9 @@ class PortfolioRebalancerApp:
 
                         if manual_price is not None:
                             warnings.append(
-                                f"{ticker}: live quote currency {quote_code} does not match selected "
-                                f"{selected_currency_code}; keeping manual entry {manual_price:.4f}."
+                                f"{ticker}: not available in selected {selected_currency_code} market; "
+                                f"found {resolved_ticker} ({quote_code}). Keeping manual entry "
+                                f"{manual_price:.4f}. Verify row currency or ticker."
                             )
                             continue
 
