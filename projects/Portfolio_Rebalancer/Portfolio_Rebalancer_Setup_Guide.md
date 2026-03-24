@@ -87,6 +87,7 @@ When launched, the script opens a window with:
    - **Shares / Units**
    - **Price (local)**
    - **Row Currency** (`USD`, `CAD`, `JPN`, `EUR`, `GBP`, `CHY/CNH`)
+   - For `CHY/CNH` rows, CNY values display as `CN¥` in outputs
    - **Target Weight %**
 3. Set **Reporting currency**.
 4. Enter **Net contribution / withdrawal**:
@@ -119,6 +120,8 @@ Fallback behavior:
 - If fetched quote currency mismatches the selected row currency:
   - the app keeps manual price when available, or
   - auto-adjusts to the fetched quote currency for that run and warns you
+- If a ticker is not available in the selected row currency market, the app warns with a message like:
+  - `ISF not found in CNY. Found as ISF.L (GBP). Update row currency or ticker symbol.`
 
 Notes:
 
