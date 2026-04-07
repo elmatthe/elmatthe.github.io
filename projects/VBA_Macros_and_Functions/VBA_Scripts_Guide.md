@@ -28,6 +28,7 @@ All scripts are provided as `.bas` files. Here's how to get them into your workb
 | [BUBBLESORTUNIQUE](#bubblesortunique) | Custom Function | Sorts a column range A→Z, removing duplicates |
 | [Multi-Select_Data_Validation_List](#multi-select_data_validation_list) | Worksheet Event | Allows picking multiple items from a dropdown list |
 | [Paste_Absolute_Values](#paste_absolute_values) | Macro | Replaces formulas with their calculated values, with undo backup |
+| [Print_from_excel_to_fit_page](#print_from_excel_to_fit_page) | Macro | Exports summary ranges to one-page PDFs with auto orientation |
 | [SIMILAR_ID](#similar_id) | Custom Function | Returns a value based on whether a cell contains any of your keywords |
 | [TRANSPOSE_EXC_BLANK](#transpose_exc_blank) | Custom Function | Transposes a range into a column, skipping blank cells |
 | [TRANSPOSE_EXC_DUP](#transpose_exc_dup) | Custom Function | Transposes a range into a column, skipping duplicates and blanks |
@@ -163,6 +164,36 @@ Undo_Last_PasteValues  →  restores whichever range was most recently locked
 - Backups are stored in hidden sheets named `BAK_XXXX` — do not delete these if you may need to undo
 - Only the **most recent** paste operation can be undone with the single undo button
 - To customise the ranges for your own workbook, edit the range strings in each `Year_XXXX_PasteValues` sub
+
+---
+
+## Print_from_excel_to_fit_page
+
+**Type:** Macro module (run via button macros)
+
+**What it does:** Exports summary sections to PDF and forces each export to fit on a single page. The helper macro compares portrait and landscape scale and picks the better fit automatically.
+
+**Public button macros:**
+- `PrintMedicalSummary` -> prints `MEDICAL!A1:I30` to `Summary_of_medical.pdf`
+- `PrintDonationSummary` -> prints `DONATIONS!A1:H30` to `Summary_of_donations.pdf`
+
+**How to use:**
+1. Import `Print_from_excel_to_fit_page.bas` into your workbook.
+2. Create one or more buttons (Insert -> Shapes, or Developer -> Insert -> Button).
+3. Assign `PrintMedicalSummary` or `PrintDonationSummary` to each button.
+4. Save the workbook, then run the button macro to generate the PDF in the same folder as the workbook.
+
+**How to customise:**
+- Edit `sheetName` if your tab names differ from `MEDICAL` / `DONATIONS`.
+- Edit `printRange` to change what gets exported.
+- Edit `fileName` to change the PDF output file names.
+- Adjust margins in `ExportSheetToPDF` if you need tighter or wider print spacing.
+
+**Note:** If a target PDF file already exists, the macro prompts before replacing it.
+
+For a dedicated walkthrough and macro-by-macro breakdown, see:
+- Rendered page: [/scripts/print-from-excel-to-fit-page-guide/]({{ '/scripts/print-from-excel-to-fit-page-guide/' | relative_url }})
+- Downloadable Markdown: [Print_from_excel_to_fit_page_Guide.md]({{ '/projects/VBA_Macros_and_Functions/Print_from_excel_to_fit_page_Guide.md' | relative_url }})
 
 ---
 
