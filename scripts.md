@@ -56,6 +56,12 @@ permalink: /scripts/
 {% endfor %}
 </ul>
 
+### VBA Macro Documentation
+<ul class="link-list">
+  <li><a href="{{ '/scripts/vba-scripts-guide/' | relative_url }}">VBA Scripts Guide (rendered page)</a> - <a href="{{ '/projects/VBA_Macros_and_Functions/VBA_Scripts_Guide.md' | relative_url }}" download>Download .md</a></li>
+  <li><a href="{{ '/scripts/print-from-excel-to-fit-page-guide/' | relative_url }}">Print from Excel to Fit Page Guide (rendered page)</a> - <a href="{{ '/projects/VBA_Macros_and_Functions/Print_from_excel_to_fit_page_Guide.md' | relative_url }}" download>Download .md</a></li>
+</ul>
+
 ## Notes
 <ul class="link-list">
   <li>Scripts are provided as implementation examples and can be adapted into client reporting or internal operational workflows.</li>
