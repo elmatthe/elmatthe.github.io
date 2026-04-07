@@ -191,10 +191,6 @@ Undo_Last_PasteValues  →  restores whichever range was most recently locked
 
 **Note:** If a target PDF file already exists, the macro prompts before replacing it.
 
-For a dedicated walkthrough and macro-by-macro breakdown, see:
-- Rendered page: [/scripts/print-from-excel-to-fit-page-guide/]({{ '/scripts/print-from-excel-to-fit-page-guide/' | relative_url }})
-- Downloadable Markdown: [Print_from_excel_to_fit_page_Guide.md]({{ '/projects/VBA_Macros_and_Functions/Print_from_excel_to_fit_page_Guide.md' | relative_url }})
-
 ---
 
 ## SIMILAR_ID
