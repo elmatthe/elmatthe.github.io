@@ -42,10 +42,13 @@ Install optional packages if you want live data and Excel export:
 
 ```bash
 pip install openpyxl yfinance
+pip install --upgrade yfinance
 ```
 
 - `openpyxl` - required for Excel export
 - `yfinance` - required for live ticker/FX fetch
+- Upgrading `yfinance` is recommended to keep Yahoo Finance live quote support stable
+  (especially for `fast_info` and non-US exchange symbols such as `.TO`)
 
 If you only need manual inputs and on-screen output, no extra install is required.
 

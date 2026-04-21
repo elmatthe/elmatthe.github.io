@@ -20,7 +20,6 @@ last_updated: 2026-03-19
 
 ## Guides
 <ul class="link-list">
-  <li><a href="{{ '/projects/Portfolio_Rebalancer/Portfolio_Rebalancer_Setup_Guide.md' | relative_url }}" download="Portfolio_Rebalancer_Setup_Guide.md">Download Portfolio Rebalancer Setup Guide (.md)</a></li>
   <li><a href="{{ '/projects/portfolio-rebalancer-guide/' | relative_url }}">Open Portfolio Rebalancer Setup Guide (Web Page)</a></li>
 </ul>
 
@@ -205,6 +204,10 @@ Use the browser version below to run the same rebalancing workflow directly on t
       "JPX:": ".T"
     };
     var crossMarketSuffixes = [".TO", ".V", ".L", ".T", ".DE", ".AS", ".PA", ".MI", ".BR", ".SS", ".SZ", ".HK", ""];
+    var yahooHosts = [
+      "https://query2.finance.yahoo.com",
+      "https://query1.finance.yahoo.com"
+    ];
 
     function hasOwn(obj, key) {
       return Object.prototype.hasOwnProperty.call(obj, key);
@@ -713,56 +716,53 @@ Use the browser version below to run the same rebalancing workflow directly on t
       return null;
     }
 
-    function parseRjinaYahooPayload(rawText) {
-      if (typeof rawText !== "string") {
-        return null;
-      }
-      var marker = "Markdown Content:";
-      var markerIdx = rawText.indexOf(marker);
-      if (markerIdx === -1) {
-        return null;
-      }
-      var jsonText = rawText.slice(markerIdx + marker.length).trim();
-      if (!jsonText) {
-        return null;
-      }
-      try {
-        return JSON.parse(jsonText);
-      } catch (_err) {
-        return null;
-      }
-    }
-
     async function fetchYahooChartPayload(tickerSymbol) {
-      var directUrl = "https://query1.finance.yahoo.com/v8/finance/chart/" +
-        encodeURIComponent(tickerSymbol) + "?range=5d&interval=1d";
-      var proxyUrl = "https://r.jina.ai/http://query1.finance.yahoo.com/v8/finance/chart/" +
-        encodeURIComponent(tickerSymbol) + "?range=5d&interval=1d";
+      var encoded = encodeURIComponent(tickerSymbol);
+      var path = "/v8/finance/chart/" + encoded + "?interval=1d&range=5d&includePrePost=false";
 
-      // Try direct Yahoo fetch first. If CORS/network blocks this in browser context,
-      // fall back to a read-only CORS-friendly proxy.
-      try {
-        var directResponse = await fetch(directUrl, { method: "GET" });
-        if (directResponse.ok) {
-          return await directResponse.json();
+      for (var hostIdx = 0; hostIdx < yahooHosts.length; hostIdx += 1) {
+        var host = yahooHosts[hostIdx];
+        var url = host + path;
+        var controller = typeof AbortController === "function" ? new AbortController() : null;
+        var timeoutId = null;
+        if (controller && typeof setTimeout === "function") {
+          timeoutId = setTimeout(function () {
+            controller.abort();
+          }, 8000);
         }
-        console.warn("[yf] Direct HTTP " + directResponse.status + " for " + tickerSymbol);
-      } catch (errDirect) {
-        console.warn("[yf] Direct fetch failed for " + tickerSymbol + ": " + (errDirect && errDirect.message ? errDirect.message : errDirect));
-      }
 
-      try {
-        var proxyResponse = await fetch(proxyUrl, { method: "GET" });
-        if (!proxyResponse.ok) {
-          console.warn("[yf] Proxy HTTP " + proxyResponse.status + " for " + tickerSymbol);
-          return null;
+        try {
+          var response = await fetch(url, {
+            method: "GET",
+            headers: { Accept: "application/json" },
+            signal: controller ? controller.signal : undefined
+          });
+          if (timeoutId !== null) {
+            clearTimeout(timeoutId);
+          }
+          if (!response.ok) {
+            console.warn("[YF fetch] HTTP " + response.status + " for " + tickerSymbol + " via " + host);
+            continue;
+          }
+          var data = await response.json();
+          var result = data && data.chart && Array.isArray(data.chart.result) ? data.chart.result[0] : null;
+          if (!result) {
+            console.warn("[YF fetch] Empty chart result for " + tickerSymbol + " via " + host);
+            continue;
+          }
+          return data;
+        } catch (err) {
+          if (timeoutId !== null) {
+            clearTimeout(timeoutId);
+          }
+          if (err instanceof TypeError && String(err.message || "").toLowerCase().indexOf("fetch") >= 0) {
+            console.error("[YF CORS] Possible CORS block for " + tickerSymbol + " via " + host);
+          } else {
+            console.warn("[YF fetch] " + tickerSymbol + " via " + host + ":", err);
+          }
         }
-        var proxyBody = await proxyResponse.text();
-        return parseRjinaYahooPayload(proxyBody);
-      } catch (errProxy) {
-        console.warn("[yf] Proxy fetch failed for " + tickerSymbol + ": " + (errProxy && errProxy.message ? errProxy.message : errProxy));
-        return null;
       }
+      return null;
     }
 
     async function fetchLiveQuoteDetails(tickerSymbol) {
@@ -1071,6 +1071,16 @@ Use the browser version below to run the same rebalancing workflow directly on t
         "</div>";
     }
 
+    function notesHtml(notes) {
+      if (!notes.length) {
+        return "";
+      }
+      return "<div class='muted' style='margin-top:12px;'>" +
+        "<strong>Notes</strong><br />" +
+        notes.map(function (n) { return "• " + escapeHtml(n); }).join("<br />") +
+        "</div>";
+    }
+
     function updateCurrencyUi() {
       var meta = getReportingCurrencyMeta();
       document.getElementById("netFlowLabel").textContent = "Net contribution / withdrawal (" + meta.label + ")";
@@ -1157,6 +1167,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
         }
 
         var warnings = [];
+        var notes = [];
         var fxToUsdMap = {};
         Object.keys(currencyOptions).forEach(function (key) {
           fxToUsdMap[key] = fallbackFxToUsd(key);
@@ -1200,15 +1211,16 @@ Use the browser version below to run the same rebalancing workflow directly on t
               if (manualPrice === null) {
                 throw new Error(
                   "Live price unavailable for " + ticker + " (tried: " + attemptedStr + "). " +
-                  "This ticker may not trade in " + selectedCurrencyCode + ". " +
-                  "Verify the symbol and row currency, or enter a manual price."
+                  "Could not find a " + selectedCurrencyCode + "-quoted price on Yahoo Finance. " +
+                  "Verify the exact symbol at finance.yahoo.com, or confirm the row currency. " +
+                  "Enter a manual price to continue."
                 );
               }
               warnings.push(
                 "Live price unavailable for " + ticker + " (tried: " + attemptedStr + "). " +
-                "This ticker may not trade in " + selectedCurrencyCode + ". " +
-                "Verify the symbol and row currency, or enter a manual price " +
-                "(using manual entry " + manualPrice.toFixed(4) + ")."
+                "Could not find a " + selectedCurrencyCode + "-quoted price on Yahoo Finance. " +
+                "Verify the exact symbol at finance.yahoo.com, or confirm the row currency. " +
+                "Using manual entry " + manualPrice.toFixed(4) + " for this run."
               );
               continue;
             }
@@ -1255,9 +1267,10 @@ Use the browser version below to run the same rebalancing workflow directly on t
               warnings.push(ticker + ": used exchange symbol " + resolvedTicker + " for live quote.");
             }
             if (chosenQuote.unitScale !== 1.0) {
-              warnings.push(
-                ticker + ": converted sub-unit quote currency " +
-                chosenQuote.rawQuoteCurrency + " to " + chosenQuoteCode + " units."
+              notes.push(
+                ticker + ": Yahoo Finance quotes in sub-units (" +
+                chosenQuote.rawQuoteCurrency + "); automatically converted to " +
+                chosenQuoteCode + " (÷100). No action needed."
               );
             }
           }
@@ -1294,7 +1307,7 @@ Use the browser version below to run the same rebalancing workflow directly on t
 
         var enrichedPositions = attachFxValues(positions, fxToUsdMap);
         var plan = calculateRebalancePlan(enrichedPositions, netFlow);
-        resultsNode.innerHTML = summaryHtml(plan.summary) + buildResultTable(plan.results) + warningsHtml(warnings);
+        resultsNode.innerHTML = summaryHtml(plan.summary) + buildResultTable(plan.results) + notesHtml(notes) + warningsHtml(warnings);
         hasCalculated = true;
         updateLiveTotals();
 
