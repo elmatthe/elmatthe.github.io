@@ -166,6 +166,16 @@ def _extract_yf_last_price(yf_ticker) -> float | None:
                 return value
 
     try:
+        info = yf_ticker.get_info()
+        if isinstance(info, dict):
+            raw = info.get("regularMarketPrice") or info.get("previousClose")
+            value = _safe_positive_float(raw)
+            if value is not None:
+                return value
+    except Exception:
+        pass
+
+    try:
         history = yf_ticker.history(period="5d", interval="1d")
         if not history.empty:
             raw = history["Close"].dropna().iloc[-1]
@@ -1296,6 +1306,7 @@ class PortfolioRebalancerApp:
         summary: dict,
         rows: list[dict],
         warnings: list[str] | None = None,
+        notes: list[str] | None = None,
         exports: list[str] | None = None,
         live_data_used: bool = False,
     ) -> str:
@@ -1339,6 +1350,13 @@ class PortfolioRebalancerApp:
             lines.append("-" * 96)
             for warning in warnings:
                 lines.append(f"- {warning}")
+
+        if notes:
+            lines.append("")
+            lines.append("NOTES")
+            lines.append("-" * 96)
+            for note in notes:
+                lines.append(f"- {note}")
 
         if exports:
             lines.append("")
@@ -1417,6 +1435,7 @@ class PortfolioRebalancerApp:
     def _run_worker(self, payload: dict) -> None:
         try:
             warnings = list(payload["pre_warnings"])
+            notes: list[str] = []
             positions = [dict(position) for position in payload["positions"]]
             net_flow = float(payload["net_flow"])
             reporting_currency = str(payload["reporting_currency"])
@@ -1464,14 +1483,15 @@ class PortfolioRebalancerApp:
                             raise ValueError(
                                 f"Live price unavailable for {ticker} "
                                 f"(tried: {attempted_str}). "
-                                f"This ticker may not trade in {selected_currency_code}. "
-                                "Verify the symbol and row currency, or enter a manual price."
+                                f"Could not find a {selected_currency_code}-quoted price on Yahoo Finance. "
+                                "Verify the exact symbol at finance.yahoo.com, or confirm the row currency. "
+                                "Enter a manual price to continue."
                             )
                         warnings.append(
                             f"Live price unavailable for {ticker} (tried: {attempted_str}). "
-                            f"This ticker may not trade in {selected_currency_code}. "
-                            f"Verify the symbol and row currency, or enter a manual price "
-                            f"(using manual entry {manual_price:.4f})."
+                            f"Could not find a {selected_currency_code}-quoted price on Yahoo Finance. "
+                            "Verify the exact symbol at finance.yahoo.com, or confirm the row currency. "
+                            f"Using manual entry {manual_price:.4f} for this run."
                         )
                         continue
 
@@ -1518,9 +1538,10 @@ class PortfolioRebalancerApp:
                     if resolved_ticker != ticker:
                         warnings.append(f"{ticker}: used exchange symbol {resolved_ticker} for live quote.")
                     if chosen_quote.get("unitScale", 1.0) != 1.0:
-                        warnings.append(
-                            f"{ticker}: converted sub-unit quote currency "
-                            f"{chosen_quote.get('rawQuoteCurrency')} to {quote_code} units."
+                        notes.append(
+                            f"{ticker}: Yahoo Finance quotes in sub-units "
+                            f"({chosen_quote.get('rawQuoteCurrency')}); automatically converted "
+                            f"to {quote_code} (\u00f7100). No action needed."
                         )
 
                 self.worker_events.put(("status", "Fetching live FX rates..."))
@@ -1559,6 +1580,7 @@ class PortfolioRebalancerApp:
                         "summary": summary,
                         "results": results,
                         "warnings": warnings,
+                        "notes": notes,
                         "exports": export_lines,
                         "live_data_used": use_live_fetch,
                         "live_fx_to_usd": fx_to_usd_map if use_live_fetch else {},
@@ -1601,6 +1623,7 @@ class PortfolioRebalancerApp:
                     summary=data["summary"],
                     rows=data["results"],
                     warnings=data["warnings"],
+                    notes=data.get("notes"),
                     exports=data["exports"],
                     live_data_used=bool(data["live_data_used"]),
                 )
