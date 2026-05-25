@@ -6,4 +6,5 @@ plugins:
 header_pages:
   - projects.md
   - scripts.md
+  - software.md
   - about.md
