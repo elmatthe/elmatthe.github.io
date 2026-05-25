@@ -93,14 +93,14 @@ Use the browser version below to run the rebalancing workflow directly on this s
       <button class="btn" id="rebalanceBtn" type="button">Run Rebalance</button>
       <button class="btn btn-secondary" id="sampleBtn" type="button">Load Sample Portfolio</button>
     </div>
-    <div class="field" style="margin-top: 8px;">
-      <label style="display:flex; align-items:center; gap:8px;">
+    <div class="rebalancer-checkbox-row">
+      <label class="rebalancer-checkbox-label">
         <input id="fetchLiveDataInput" type="checkbox" />
         <span>Fetch live prices and FX rates from Yahoo Finance (browser network required)</span>
       </label>
     </div>
-    <div class="field" style="margin-top: 4px;">
-      <label style="display:flex; align-items:center; gap:8px;">
+    <div class="rebalancer-checkbox-row">
+      <label class="rebalancer-checkbox-label">
         <input id="showAccountTypeInput" type="checkbox" />
         <span>Show Account Type column (for cross-account funding checks)</span>
       </label>
@@ -199,7 +199,11 @@ Use the browser version below to run the rebalancing workflow directly on this s
     };
     var prefixToSuffix = { "TSE:": ".TO", "TSX:": ".TO", "LSE:": ".L", "JPX:": ".T" };
     var crossMarketSuffixes = [".TO", ".V", ".L", ".T", ".DE", ".AS", ".PA", ".MI", ".BR", ".SS", ".SZ", ".HK", ""];
-    var yahooHosts = ["https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com"];
+    var CORS_PROXIES = [
+      function (url) { return "https://corsproxy.io/?" + encodeURIComponent(url); },
+      function (url) { return "https://api.allorigins.win/raw?url=" + encodeURIComponent(url); }
+    ];
+    var yahooBaseUrls = ["https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com"];
 
     function hasOwn(obj, key) { return Object.prototype.hasOwnProperty.call(obj, key); }
     function clampRowCount(value) { return Math.max(1, Math.min(50, Math.floor(Number(value) || 1))); }
@@ -552,27 +556,59 @@ Use the browser version below to run the rebalancing workflow directly on this s
       return null;
     }
 
+    var _workingFetchMethod = null; // cache: "direct", 0 (proxy index), 1, etc.
+
+    function _buildFetchUrl(directUrl, methodKey) {
+      if (methodKey === "direct") return directUrl;
+      return CORS_PROXIES[methodKey](directUrl);
+    }
+
+    async function _tryFetchChart(url) {
+      var controller = typeof AbortController === "function" ? new AbortController() : null;
+      var timeoutId = null;
+      if (controller) { timeoutId = setTimeout(function () { controller.abort(); }, 10000); }
+      try {
+        var response = await fetch(url, { method: "GET", headers: { Accept: "application/json" }, signal: controller ? controller.signal : undefined });
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        if (!response.ok) return null;
+        var text = await response.text();
+        if (!text || text.charAt(0) !== '{') return null;
+        var data = JSON.parse(text);
+        var result = data && data.chart && Array.isArray(data.chart.result) ? data.chart.result[0] : null;
+        return result ? data : null;
+      } catch (err) {
+        if (timeoutId !== null) clearTimeout(timeoutId);
+        return null;
+      }
+    }
+
     async function fetchYahooChartPayload(tickerSymbol) {
       var encoded = encodeURIComponent(tickerSymbol);
       var path = "/v8/finance/chart/" + encoded + "?interval=1d&range=5d&includePrePost=false";
-      for (var hostIdx = 0; hostIdx < yahooHosts.length; hostIdx += 1) {
-        var host = yahooHosts[hostIdx];
-        var url = host + path;
-        var controller = typeof AbortController === "function" ? new AbortController() : null;
-        var timeoutId = null;
-        if (controller && typeof setTimeout === "function") {
-          timeoutId = setTimeout(function () { controller.abort(); }, 8000);
-        }
-        try {
-          var response = await fetch(url, { method: "GET", headers: { Accept: "application/json" }, signal: controller ? controller.signal : undefined });
-          if (timeoutId !== null) clearTimeout(timeoutId);
-          if (!response.ok) { continue; }
-          var data = await response.json();
-          var result = data && data.chart && Array.isArray(data.chart.result) ? data.chart.result[0] : null;
-          if (!result) { continue; }
-          return data;
-        } catch (err) {
-          if (timeoutId !== null) clearTimeout(timeoutId);
+      var directUrl = yahooBaseUrls[0] + path;
+
+      // If we already found a working method, try it first
+      if (_workingFetchMethod !== null) {
+        var cachedUrl = _buildFetchUrl(directUrl, _workingFetchMethod);
+        var cachedResult = await _tryFetchChart(cachedUrl);
+        if (cachedResult) return cachedResult;
+        // cached method failed for this ticker — might be a bad ticker, try others
+      }
+
+      // Try all methods: direct, then each proxy, for each Yahoo base URL
+      var methods = ["direct"];
+      for (var pi = 0; pi < CORS_PROXIES.length; pi++) methods.push(pi);
+
+      for (var baseIdx = 0; baseIdx < yahooBaseUrls.length; baseIdx++) {
+        var baseDirectUrl = yahooBaseUrls[baseIdx] + path;
+        for (var mi = 0; mi < methods.length; mi++) {
+          var method = methods[mi];
+          var fetchUrl = _buildFetchUrl(baseDirectUrl, method);
+          var result = await _tryFetchChart(fetchUrl);
+          if (result) {
+            _workingFetchMethod = method; // remember what works
+            return result;
+          }
         }
       }
       return null;
