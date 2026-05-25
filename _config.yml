@@ -1,8 +1,9 @@
 title: Elijah Matthew | Wealth Management Portfolio
-description: Professional portfolio of wealth management projects, notes, and advisory tools.
+description: Professional portfolio of wealth management projects and advisory tools.
 theme: minima
+plugins:
+  - jekyll-redirect-from
 header_pages:
   - projects.md
   - scripts.md
-  - notes/index.md
   - about.md
