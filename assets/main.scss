@@ -471,6 +471,42 @@ table.sheet-table tbody tr:nth-child(even) {
   background: #f8fbff;
 }
 
+.rebalancer-theme {
+  max-width: 1400px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.rebalancer-checkbox-row {
+  margin-top: 6px;
+  margin-bottom: 2px;
+}
+
+.rebalancer-checkbox-label {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400 !important;
+  cursor: pointer;
+}
+
+.rebalancer-checkbox-label input[type="checkbox"] {
+  width: auto !important;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.ticker-hint {
+  font-size: 0.82em;
+  line-height: 1.3;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.ticker-hint:not(:empty) {
+  background: rgba(143, 95, 18, 0.07);
+}
+
 .summary-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
