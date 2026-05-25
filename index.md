@@ -1,6 +1,11 @@
 ---
 layout: page
 title: Home
+redirect_from:
+  - /notes/
+  - /notes/financial-news-updates/
+  - /notes/financial-knowledge/
+  - /notes/advisor-analyst-resources/
 ---
 
 <section class="hero-panel">
@@ -32,21 +37,15 @@ title: Home
   </article>
 </div>
 
-## Knowledge Hub Highlights
-Use the finance knowledge hub for topic-based market updates, reference knowledge, and advisor resources.
-<ul class="link-list">
-{% assign all = site.pages | sort: "last_updated" | reverse %}
-{% assign note_count = 0 %}
-{% for p in all %}
-  {% if p.path contains 'notes/' and p.name != 'index.md' %}
-    {% assign note_count = note_count | plus: 1 %}
-    <li><a href="{{ p.url | relative_url }}">{{ p.title | escape }}</a></li>
-  {% endif %}
-{% endfor %}
-{% if note_count == 0 %}
-  <li>No knowledge hub topics published yet.</li>
-{% endif %}
-</ul>
+
+## Featured Application
+<div class="card-grid">
+  <article class="card">
+    <h3><a href="{{ '/software/portfolio-dashboard/' | relative_url }}">Portfolio Dashboard</a></h3>
+    <p>Local-first multi-broker portfolio tracker — 11 brokers, 10 currencies. Desktop app with analytics, tax reporting, and rebalancing tools.</p>
+    <p class="muted">Early release v0.5.3</p>
+  </article>
+</div>
 
 ## Featured Projects
 <ul class="link-list">

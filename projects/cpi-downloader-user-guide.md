@@ -11,4 +11,4 @@ last_updated: 2026-03-13
   <p><a href="{{ '/projects/CPI_Automation/CPI_Downloader_User_Guide.md' | relative_url }}" download>Download raw guide (.md)</a></p>
 </section>
 
-{% include_relative CPI_Automation/CPI_Downloader_User_Guide.md %}
+{% include_relative CPI_Automation/README.md %}
