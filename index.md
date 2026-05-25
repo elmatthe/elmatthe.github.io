@@ -38,6 +38,15 @@ redirect_from:
 </div>
 
 
+## Featured Application
+<div class="card-grid">
+  <article class="card">
+    <h3><a href="{{ '/software/portfolio-dashboard/' | relative_url }}">Portfolio Dashboard</a></h3>
+    <p>Local-first multi-broker portfolio tracker — 11 brokers, 10 currencies. Desktop app with analytics, tax reporting, and rebalancing tools.</p>
+    <p class="muted">Early release v0.5.3</p>
+  </article>
+</div>
+
 ## Featured Projects
 <ul class="link-list">
   <li><a href="{{ '/projects/monte-carlo-simulator/' | relative_url }}">Monte Carlo Retirement Simulator</a></li>
