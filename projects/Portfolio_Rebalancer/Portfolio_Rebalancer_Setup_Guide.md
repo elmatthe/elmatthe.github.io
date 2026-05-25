@@ -5,103 +5,106 @@
 The Portfolio Rebalancer project has two ways to run the same rebalancing workflow:
 
 1. **Interactive web tool** on the project page.
-2. **Desktop Python script** (`portfolio_rebalancer_desktop.py`) that opens its own window and performs the same calculations.
+2. **Desktop program** (Python package with batch-file launcher) that opens its own window and performs the same calculations.
 
 Both versions support:
 
-- Multi-row position inputs
-- Per-row currency selection with built-in FX conversion
-- Reporting currency totals
-- Net contribution/withdrawal input
-- Buy/Sell/Hold trade instructions with post-trade share counts
-- Optional live ticker price + FX snapshot fetch on run
-- Optional CSV + Excel export
+- **Two rebalancing modes:** New Money (buy-only with budget cap) and Rebalance (pure sell-funds-buys)
+- **Three invariants:** budget cap, sell-proceeds ceiling, cross-account funding warnings
+- Multi-row position inputs with per-row currency selection and FX conversion
+- Optional Account Type column for cross-account funding checks
+- Optional live ticker price and FX snapshot fetch via Yahoo Finance
+- Ticker-helper messaging for exchange symbol disambiguation
+- Optional CSV and Excel export
 
 ---
 
-## Download files
+## Quick Start (Windows)
 
-From the Portfolio Rebalancer project page:
+1. **Download** the Portfolio Rebalancer program folder.
+2. **Double-click `setup.bat`** once — this checks Python, creates a virtual environment, and installs dependencies.
+3. **Double-click `run.bat`** to start the program.
 
-- Download **Portfolio Rebalancer (.py)** to run the desktop app.
-- Download **Portfolio Rebalancer Setup Guide (.md)** for offline instructions.
-- Open **Portfolio Rebalancer Setup Guide (Web Page)** for a rendered browser view.
+If the virtual environment is missing, `run.bat` will call `setup.bat` automatically.
 
 ---
 
-## Run the desktop Python script
+## Prerequisites
 
-### 1) Prerequisites
+- **Python 3.9+** with `tkinter` (included with most Python installs)
+- **Windows** for the batch-file launcher (the Python code also runs on macOS/Linux via `python main.py`)
 
-- Python **3.9+** recommended
-- `tkinter` available (included with most Python installs)
+### What the batch files do
 
-### Before You Use It - One-Time Setup
+- **`setup.bat`** — checks Python is installed, creates a `.venv` virtual environment, upgrades pip, and installs `openpyxl` and `yfinance` from `requirements.txt`.
+- **`run.bat`** — activates the venv and launches `main.py`. If `.venv` is missing, calls `setup.bat` first.
 
-Install optional packages if you want live data and Excel export:
+Both use relative paths and do not require admin rights.
 
-```bash
-pip install openpyxl yfinance
-pip install --upgrade yfinance
+---
+
+## Program folder structure
+
 ```
-
-- `openpyxl` - required for Excel export
-- `yfinance` - required for live ticker/FX fetch
-- Upgrading `yfinance` is recommended to keep Yahoo Finance live quote support stable
-  (especially for `fast_info` and non-US exchange symbols such as `.TO`)
-
-If you only need manual inputs and on-screen output, no extra install is required.
-
-### 2) Run command
-
-Open terminal in the folder containing the downloaded script and run:
-
-```bash
-python3 portfolio_rebalancer_desktop.py
+Portfolio_Rebalancer/
+  portfolio_rebalancer/      # Python package
+    __init__.py
+    core.py                  # Pure rebalancing logic (two modes + three invariants)
+    fx.py                    # Currency options and FX conversion
+    pricing.py               # Yahoo Finance live price and FX lookup
+    ticker_helper.py         # Ticker disambiguation and messaging
+    ui.py                    # Tkinter GUI
+    export.py                # CSV and Excel export
+  tests/
+    test_core.py             # Unit tests for the invariants
+  main.py                    # Entry point
+  requirements.txt           # openpyxl, yfinance
+  setup.bat                  # First-time setup (Windows)
+  run.bat                    # Everyday launcher (Windows)
 ```
-
-If `python3` is not available, try:
-
-```bash
-python portfolio_rebalancer_desktop.py
-```
-
-### 3) Desktop window behavior
-
-When launched, the script opens a window with:
-
-- Row controls: **Apply Rows**, **Add Row**, **Remove Last Row**
-- Inputs per row: ticker, shares, price, row currency, target weight
-- Live FX and current value columns
-- **Run Rebalance** button for final trade output
-- **Load Sample Portfolio** button for quick testing
-- Run options:
-  - **Fetch live prices and FX rates** (optional)
-  - **Also export to CSV** with file picker
-  - **Also export to Excel** with file picker
 
 ---
 
 ## How to use (web or desktop)
 
-1. Set **Number of securities**.
-2. Fill each row:
-   - **Ticker** (example: `VTI`, `AAPL`)
-   - **Shares / Units**
-   - **Price (local)**
-   - **Row Currency** (`USD`, `CAD`, `JPN`, `EUR`, `GBP`, `CHY/CNH`)
-   - For `CHY/CNH` rows, CNY values display as `CN¥` in outputs
-   - **Target Weight %**
-3. Set **Reporting currency**.
-4. Enter **Net contribution / withdrawal**:
-   - Positive value = contribution
-   - Negative value = withdrawal
-5. Optional:
-   - Enable **Fetch live prices and FX rates**
-   - Enable **Also export to CSV** and choose output file
-   - Enable **Also export to Excel** and choose output file
-6. Click **Run Rebalance**.
-7. Review summary totals, trade instructions, and warnings.
+### 1. Choose a mode
+
+- **New Money** — you are adding cash. Only buy recommendations are produced. Total buys will not exceed your budget.
+- **Rebalance (Pure)** — no new cash. Sells fund buys. Total buy cost will not exceed total sell proceeds.
+
+### 2. Fill the input table
+
+- **Ticker** (e.g. `VTI`, `XIC.TO`, `ISF.L`)
+- **Shares / Units** (0 is allowed for new positions)
+- **Price (local)** — leave blank when using live fetch for new positions
+- **Row Currency** (USD, CAD, JPN, EUR, GBP, CHY/CNH)
+- **Target Weight %** — relative weights; the tool normalizes them
+
+### 3. Set reporting currency and budget
+
+- **Reporting currency** — all values are converted to this currency
+- **New money budget** (New Money mode only) — the cash you are adding
+
+### 4. Optional settings
+
+- **Account Type column** — enable to track account types (TFSA, RRSP, Margin, etc.) for cross-account funding warnings
+- **Fetch live prices and FX rates** — pulls current data from Yahoo Finance
+- **Export to CSV / Excel** — saves results to a file
+
+### 5. Run and review
+
+Click **Run Rebalance** and review:
+- Summary totals (mode, pool, total buys/sells)
+- Per-row trade plan (action, trade value, trade shares, post-trade shares)
+- Warnings (budget scaling, cross-account funding, ticker resolution)
+
+---
+
+## The Three Invariants
+
+1. **New-Money Budget Cap** — In New Money mode, if the raw buy recommendations exceed the budget, all buys are scaled down proportionally and a warning is shown.
+2. **Rebalance Self-Funding** — In Rebalance mode, if total buys exceed total sell proceeds, buys are scaled down proportionally.
+3. **Cross-Account Funding** — When Account Type is enabled, the tool flags when buys in one account type (e.g. Margin) would require funds from another (e.g. TFSA).
 
 ---
 
@@ -109,82 +112,37 @@ When launched, the script opens a window with:
 
 When **Fetch live prices and FX rates** is checked:
 
-- The app attempts to fetch current ticker prices from Yahoo Finance
-- The app attempts to fetch FX rates for every currency used in the portfolio and reporting currency
-- Fetched prices overwrite row **Price (local)** fields for visibility
-- Fetched FX values are shown with a `~` prefix in the FX column (example: `~0.6971`)
-- For non-USD rows, the app auto-tries exchange ticker suffixes (example: `.TO`, `.L`, `.T`) to find local-market quotes
-- The app validates fetched quote currency against your selected row currency before using it
+- The app fetches current ticker prices from Yahoo Finance
+- Auto-tries exchange ticker suffixes (`.TO`, `.L`, `.T`, etc.) to find local-market quotes
+- Validates fetched quote currency against your selected row currency
+- Fetches FX rates for all currencies in scope
 
 Fallback behavior:
-
-- If a ticker live price fails, the app uses the manual row price and shows a warning
-- If a currency live FX fetch fails, the app falls back to built-in FX constants and shows a warning
-- If fetched quote currency mismatches the selected row currency:
-  - the app keeps manual price when available, or
-  - auto-adjusts to the fetched quote currency for that run and warns you
-- If a ticker is not available in the selected row currency market, the app warns with a message like:
-  - `ISF not found in CNY. Found as ISF.L (GBP). Update row currency or ticker symbol.`
-
-Notes:
-
-- Yahoo Finance free data is often delayed by ~15-20 minutes
-- Always verify execution prices at your broker before placing orders
+- If a ticker fetch fails, the manual price is used (with a warning)
+- If FX fetch fails, built-in fallback rates are used (with a warning)
+- If a ticker is found in a different market, the app warns with guidance like:
+  `ISF not found in CNY. Found as ISF.L (GBP). Update row currency or ticker symbol.`
 
 ---
 
 ## Validation rules
 
-- Ticker is required in every row.
-- Shares/units must be numeric and non-negative.
-- Price must be numeric and greater than 0.
-- Target weight must be numeric and 0 or greater.
-- At least one target weight must be greater than 0.
-- Ending portfolio value must remain greater than 0.
-- If live fetch is off, each row price must be valid manually.
-- If live fetch is on and a ticker fetch fails, a manual row price is required for fallback.
+- Ticker is required in every row
+- Shares must be numeric and non-negative (0 allowed for new positions)
+- Price must be > 0 (or provided via live fetch)
+- Target weight must be >= 0, with at least one > 0
+- In New Money mode, budget must be > 0
+- Portfolio value must be > 0
 
 ---
 
 ## Exporting results
 
 ### CSV export
-
-1. Check **Also export to CSV**
-2. Click **Browse...** and choose a `.csv` file path
-3. Run rebalance
-4. CSV is written automatically with:
-   - Summary block
-   - Per-ticker trade table
+Check **Export CSV**, choose a file path, and run. The CSV includes summary, trade plan, warnings, and notes.
 
 ### Excel export
-
-1. Check **Also export to Excel**
-2. Click **Browse...** and choose a `.xlsx` file path
-3. Run rebalance
-4. Workbook is written automatically with:
-   - `RB_Summary` sheet
-   - `RB_TradePlan` sheet
-
----
-
-## Output fields
-
-The results include:
-
-- Total current portfolio value
-- Net flow
-- Target ending value
-- Total buy value
-- Total sell value
-- Per-ticker trade plan:
-  - Current value
-  - Target value
-  - Trade value (reporting currency)
-  - Trade value (local row currency)
-  - Trade shares/units
-  - Action (Buy / Sell / Hold)
-  - Post-trade shares/units
+Check **Export Excel**, choose a file path, and run. The workbook includes `RB_Summary` and `RB_TradePlan` sheets with formatting.
 
 ---
 
