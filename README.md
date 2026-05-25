@@ -5,21 +5,20 @@ Professional GitHub Pages portfolio for wealth management projects, software app
 ## Site Structure
 - `index.md` - Homepage with advisory focus and quick navigation
 - `projects.md` - Project landing page
-- `projects/` - Individual project pages (includes Portfolio Rebalancer)
+- `projects/` - Individual project pages (Monte Carlo, CPI, Portfolio Rebalancer)
 - `software.md` - Software and applications landing page
-- `software/` - Individual application pages (includes Portfolio Dashboard)
-- `scripts.md` - Script and automation catalog
+- `software/` - Individual application pages (Portfolio Dashboard)
+- `scripts.md` - Script and automation catalog (Python tools)
 - `about.md` - Professional profile
 - `assets/main.scss` - Global visual styling
 
 ## Featured Tool
-- `projects/monte-carlo-simulator.md` - Monte Carlo retirement simulator page with browser scenario tool, downloadable desktop app, and setup guide links.
-- `projects/Monte_Carlo_Simulator/monte_carlo_simulator.py` - Desktop GUI simulator with threaded runs, Excel report writing, and chart embedding.
-- `projects/portfolio-rebalancer.md` - Portfolio rebalancer project page with browser tool, downloadable desktop script, and setup guide links.
-- `projects/Portfolio_Rebalancer/portfolio_rebalancer_desktop.py` - Standalone desktop GUI script that mirrors the website rebalancer workflow.
+- **Monte Carlo Retirement Simulator** — browser scenario tool, downloadable desktop app, and setup guide.
+- **Portfolio Rebalancer** — browser tool and desktop program with two modes (New Money / Rebalance), three invariants (budget cap, sell-funds-buys, cross-account funding), optional live Yahoo Finance data, and CSV/Excel export. Desktop program uses a Python package structure with `setup.bat` / `run.bat` for one-click Windows setup.
+- **CPI Webscraper** — automated CPI data pipeline with dashboard and setup guide.
 
 ## Featured Application
-- `software/portfolio-dashboard.md` - Portfolio Dashboard app page with feature overview, download links, and tech stack details.
+- **Portfolio Dashboard** (v0.5.3, early release) — local-first multi-broker portfolio tracker with 11 brokers, 10 currencies, analytics, tax reporting, and rebalancing tools.
 
 ## Run Locally (optional)
 If you use Jekyll locally:
