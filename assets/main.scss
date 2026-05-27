@@ -477,25 +477,6 @@ table.sheet-table tbody tr:nth-child(even) {
   margin-right: auto;
 }
 
-.rebalancer-checkbox-row {
-  margin-top: 6px;
-  margin-bottom: 2px;
-}
-
-.rebalancer-checkbox-label {
-  display: inline-flex !important;
-  align-items: center;
-  gap: 8px;
-  font-weight: 400 !important;
-  cursor: pointer;
-}
-
-.rebalancer-checkbox-label input[type="checkbox"] {
-  width: auto !important;
-  margin: 0;
-  flex-shrink: 0;
-}
-
 .ticker-hint {
   font-size: 0.82em;
   line-height: 1.3;
