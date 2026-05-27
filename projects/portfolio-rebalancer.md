@@ -93,16 +93,16 @@ Use the browser version below to run the rebalancing workflow directly on this s
       <button class="btn" id="rebalanceBtn" type="button">Run Rebalance</button>
       <button class="btn btn-secondary" id="sampleBtn" type="button">Load Sample Portfolio</button>
     </div>
-    <div class="field" style="margin-top: 8px;">
-      <label style="display:flex; align-items:center; gap:8px;">
-        <input id="fetchLiveDataInput" type="checkbox" />
-        <span>Fetch live prices and FX rates from Yahoo Finance (browser network required)</span>
+    <div style="margin:8px 0 4px;">
+      <label style="display:inline-flex !important; align-items:center; gap:8px; font-weight:400; cursor:pointer; width:auto;">
+        <input id="fetchLiveDataInput" type="checkbox" style="width:auto !important; margin:0; flex-shrink:0;" />
+        <span style="display:inline;">Fetch live prices and FX rates from Yahoo Finance (browser network required)</span>
       </label>
     </div>
-    <div class="field" style="margin-top: 4px;">
-      <label style="display:flex; align-items:center; gap:8px;">
-        <input id="showAccountTypeInput" type="checkbox" />
-        <span>Show Account Type column (for cross-account funding checks)</span>
+    <div style="margin:4px 0;">
+      <label style="display:inline-flex !important; align-items:center; gap:8px; font-weight:400; cursor:pointer; width:auto;">
+        <input id="showAccountTypeInput" type="checkbox" style="width:auto !important; margin:0; flex-shrink:0;" />
+        <span style="display:inline;">Show Account Type column (for cross-account funding checks)</span>
       </label>
     </div>
     <div id="runStatusMessage" class="muted">Ready.</div>
@@ -199,7 +199,12 @@ Use the browser version below to run the rebalancing workflow directly on this s
     };
     var prefixToSuffix = { "TSE:": ".TO", "TSX:": ".TO", "LSE:": ".L", "JPX:": ".T" };
     var crossMarketSuffixes = [".TO", ".V", ".L", ".T", ".DE", ".AS", ".PA", ".MI", ".BR", ".SS", ".SZ", ".HK", ""];
-    var yahooHosts = ["https://query2.finance.yahoo.com", "https://query1.finance.yahoo.com"];
+    var CORS_PROXIES = [
+      function (url) { return "https://corsproxy.io/?" + encodeURIComponent(url); },
+      function (url) { return "https://api.allorigins.win/raw?url=" + encodeURIComponent(url); },
+      function (url) { return "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(url); }
+    ];
+    var yahooBaseUrls = ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"];
 
     function hasOwn(obj, key) { return Object.prototype.hasOwnProperty.call(obj, key); }
     function clampRowCount(value) { return Math.max(1, Math.min(50, Math.floor(Number(value) || 1))); }
@@ -552,28 +557,86 @@ Use the browser version below to run the rebalancing workflow directly on this s
       return null;
     }
 
+    var _workingProxyIdx = -1; // -1 = not yet determined, 0+ = index into CORS_PROXIES
+    var _yahooCrumb = null;
+
+    async function _fetchWithTimeout(url, opts, ms) {
+      var controller = new AbortController();
+      var tid = setTimeout(function () { controller.abort(); }, ms || 12000);
+      try {
+        var merged = Object.assign({}, opts || {}, { signal: controller.signal });
+        var res = await fetch(url, merged);
+        clearTimeout(tid);
+        return res;
+      } catch (e) {
+        clearTimeout(tid);
+        throw e;
+      }
+    }
+
+    async function _proxyFetch(url, proxyIdx) {
+      var proxied = CORS_PROXIES[proxyIdx](url);
+      return _fetchWithTimeout(proxied, { headers: { Accept: "application/json" } }, 12000);
+    }
+
+    async function _findWorkingProxy() {
+      if (_workingProxyIdx >= 0) return _workingProxyIdx;
+      var testUrl = "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?interval=1d&range=1d";
+      for (var i = 0; i < CORS_PROXIES.length; i++) {
+        try {
+          var res = await _proxyFetch(testUrl, i);
+          if (res.ok) {
+            var text = await res.text();
+            if (text && text.indexOf('"chart"') > -1) {
+              _workingProxyIdx = i;
+              return i;
+            }
+          }
+        } catch (e) { /* try next */ }
+      }
+      return -1;
+    }
+
+    async function _ensureCrumb(proxyIdx) {
+      if (_yahooCrumb) return _yahooCrumb;
+      try {
+        var crumbUrl = "https://query1.finance.yahoo.com/v1/test/getcrumb";
+        var res = await _proxyFetch(crumbUrl, proxyIdx);
+        if (res.ok) {
+          var crumb = await res.text();
+          if (crumb && crumb.length < 40 && crumb.indexOf("<") === -1) {
+            _yahooCrumb = crumb.trim();
+            return _yahooCrumb;
+          }
+        }
+      } catch (e) { /* crumb not available, proceed without */ }
+      return null;
+    }
+
     async function fetchYahooChartPayload(tickerSymbol) {
       var encoded = encodeURIComponent(tickerSymbol);
-      var path = "/v8/finance/chart/" + encoded + "?interval=1d&range=5d&includePrePost=false";
-      for (var hostIdx = 0; hostIdx < yahooHosts.length; hostIdx += 1) {
-        var host = yahooHosts[hostIdx];
-        var url = host + path;
-        var controller = typeof AbortController === "function" ? new AbortController() : null;
-        var timeoutId = null;
-        if (controller && typeof setTimeout === "function") {
-          timeoutId = setTimeout(function () { controller.abort(); }, 8000);
-        }
+      var proxyIdx = await _findWorkingProxy();
+      if (proxyIdx < 0) return null;
+
+      var crumb = await _ensureCrumb(proxyIdx);
+      var crumbParam = crumb ? "&crumb=" + encodeURIComponent(crumb) : "";
+
+      for (var baseIdx = 0; baseIdx < yahooBaseUrls.length; baseIdx++) {
+        var url = yahooBaseUrls[baseIdx] + "/v8/finance/chart/" + encoded +
+          "?interval=1d&range=5d&includePrePost=false" + crumbParam;
         try {
-          var response = await fetch(url, { method: "GET", headers: { Accept: "application/json" }, signal: controller ? controller.signal : undefined });
-          if (timeoutId !== null) clearTimeout(timeoutId);
-          if (!response.ok) { continue; }
-          var data = await response.json();
+          var res = await _proxyFetch(url, proxyIdx);
+          if (!res.ok) continue;
+          var text = await res.text();
+          if (!text || text.charAt(0) !== "{") continue;
+          var data = JSON.parse(text);
           var result = data && data.chart && Array.isArray(data.chart.result) ? data.chart.result[0] : null;
-          if (!result) { continue; }
-          return data;
-        } catch (err) {
-          if (timeoutId !== null) clearTimeout(timeoutId);
-        }
+          if (result) return data;
+          if (data && data.chart && data.chart.error) {
+            var errDesc = (data.chart.error.description || "").toLowerCase();
+            if (errDesc.indexOf("no data found") > -1 || errDesc.indexOf("not found") > -1) return null;
+          }
+        } catch (e) { continue; }
       }
       return null;
     }
@@ -626,8 +689,28 @@ Use the browser version below to run the rebalancing workflow directly on this s
       var ticker = row.querySelector(".ticker-input").value.trim().toUpperCase();
       var currencyKey = row.querySelector(".row-currency-select").value;
       if (!ticker) { delete tickerValidationFeedback[rowIdx]; updateLiveTotals(); return; }
+
+      // Show the static hint immediately while we check
+      var staticHint = buildTickerInputHint(ticker, currencyKey);
+      if (staticHint) {
+        tickerValidationFeedback[rowIdx] = { ticker: ticker, text: staticHint, color: STATUS_WARN };
+        updateLiveTotals();
+      }
+
+      // Check if proxy is reachable before attempting full validation
+      var proxyIdx = await _findWorkingProxy();
+      if (proxyIdx < 0) {
+        // No proxy available — just show the static hint, no "Not found" error
+        if (!staticHint) {
+          delete tickerValidationFeedback[rowIdx];
+          updateLiveTotals();
+        }
+        return;
+      }
+
       tickerValidationFeedback[rowIdx] = { ticker: ticker, text: "Checking " + ticker + "...", color: "#3f5066" };
       updateLiveTotals();
+
       try {
         var candidates = buildTickerCandidates(ticker, currencyKey);
         var selectedCode = (currencyOptions[currencyKey] || currencyOptions.USD).code;
@@ -659,7 +742,13 @@ Use the browser version below to run the rebalancing workflow directly on this s
         if (fallbackHint) failMsg += " " + fallbackHint;
         applyTickerValidationFeedback(rowIdx, token, ticker, failMsg, STATUS_ERROR);
       } catch (_err) {
-        applyTickerValidationFeedback(rowIdx, token, ticker, "Ticker validation failed. Try again.", STATUS_ERROR);
+        // On error, fall back to static hint rather than showing scary error
+        if (staticHint) {
+          applyTickerValidationFeedback(rowIdx, token, ticker, staticHint, STATUS_WARN);
+        } else {
+          delete tickerValidationFeedback[rowIdx];
+          updateLiveTotals();
+        }
       }
     }
 
