@@ -7,8 +7,7 @@ Professional GitHub Pages portfolio for wealth management projects, software app
 - `projects.md` - Project landing page
 - `projects/` - Individual project pages (Monte Carlo, CPI, Portfolio Rebalancer)
 - `software.md` - Software and applications landing page
-- `software/` - Individual application pages (Portfolio Dashboard)
-- `scripts.md` - Script and automation catalog (Python tools)
+- `software/` - Individual application pages (Portfolio Dashboard, Audiobook Creation Tool)
 - `about.md` - Professional profile
 - `assets/main.scss` - Global visual styling
 
@@ -17,8 +16,9 @@ Professional GitHub Pages portfolio for wealth management projects, software app
 - **Portfolio Rebalancer** — browser tool and desktop program with two modes (New Money / Rebalance), three invariants (budget cap, sell-funds-buys, cross-account funding), optional live Yahoo Finance data, and CSV/Excel export. Desktop program uses a Python package structure with `setup.bat` / `run.bat` for one-click Windows setup.
 - **CPI Webscraper** — automated CPI data pipeline with dashboard and setup guide.
 
-## Featured Application
+## Featured Applications
 - **Portfolio Dashboard** (v0.5.3, early release) — local-first multi-broker portfolio tracker with 11 brokers, 10 currencies, analytics, tax reporting, and rebalancing tools.
+- **Audiobook Creation Tool** (v0.4.0) — cross-platform desktop app that turns ebooks, PDFs, and text into tagged audiobooks using cloud-based (Edge TTS) or local (Kokoro-82M) AI voices.
 
 ## Run Locally (optional)
 If you use Jekyll locally:

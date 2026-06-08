@@ -5,6 +5,5 @@ plugins:
   - jekyll-redirect-from
 header_pages:
   - projects.md
-  - scripts.md
   - software.md
   - about.md

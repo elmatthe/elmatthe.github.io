@@ -6,6 +6,7 @@ redirect_from:
   - /notes/financial-news-updates/
   - /notes/financial-knowledge/
   - /notes/advisor-analyst-resources/
+  - /scripts/
 ---
 
 <section class="hero-panel">
@@ -38,12 +39,17 @@ redirect_from:
 </div>
 
 
-## Featured Application
+## Featured Applications
 <div class="card-grid">
   <article class="card">
     <h3><a href="{{ '/software/portfolio-dashboard/' | relative_url }}">Portfolio Dashboard</a></h3>
     <p>Local-first multi-broker portfolio tracker — 11 brokers, 10 currencies. Desktop app with analytics, tax reporting, and rebalancing tools.</p>
     <p class="muted">Early release v0.5.3</p>
+  </article>
+  <article class="card">
+    <h3><a href="{{ '/software/audiobook-creation-tool/' | relative_url }}">Audiobook Creation Tool</a></h3>
+    <p>Turn ebooks, PDFs, and text into tagged audiobooks with cloud-based (Edge TTS) or local (Kokoro-82M) AI voices.</p>
+    <p class="muted">Release v0.4.0</p>
   </article>
 </div>
 
@@ -52,9 +58,4 @@ redirect_from:
   <li><a href="{{ '/projects/monte-carlo-simulator/' | relative_url }}">Monte Carlo Retirement Simulator</a></li>
   <li><a href="{{ '/projects/cpi-webscraper/' | relative_url }}">CPI Webscraper Project</a></li>
   <li><a href="{{ '/projects/portfolio-rebalancer/' | relative_url }}">Portfolio Rebalancer Tool</a></li>
-</ul>
-
-## Scripts
-<ul class="link-list">
-  <li><a href="{{ '/scripts/' | relative_url }}">View Script Catalog</a></li>
 </ul>
