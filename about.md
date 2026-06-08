@@ -56,4 +56,4 @@ This portfolio is meant to function as my advisory toolkit: a collection of proj
 
 I'm building my career in wealth management with a long-term goal of working in the Toronto financial space. I'm especially interested in roles where I can support portfolio managers and advisors by combining financial analysis, process design, and practical software tools to help them serve clients more effectively.
 
-<a href="{{ '/assets/uploads/Elijah_Matthew-resume.pdf' | relative_url }}" target="_blank" rel="noopener">Download my resume</a>
+<a href="{{ '/assets/uploads/Elijah_Matthew_Resume.pdf' | relative_url }}" target="_blank" rel="noopener">Download my resume</a>
