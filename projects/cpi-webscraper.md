@@ -14,14 +14,12 @@ last_updated: 2026-03-19
 
 ## Downloads
 <div class="btn-row">
-  <a class="btn" href="{{ '/projects/CPI_Automation/CPI.xlsx' | relative_url }}" download>Download CPI Template (.xlsx)</a>
-  <a class="btn" href="{{ '/projects/CPI_Automation/cpi_dashboard_downloader-v7.py' | relative_url }}" download>Download CPI Downloader (.py)</a>
+  <a class="btn" href="{{ '/projects/cpi-automation.zip' | relative_url }}" download="cpi-automation.zip">Download cpi-automation.zip</a>
 </div>
 
 ## Guides
 <ul class="link-list">
-  <li><a href="{{ '/projects/CPI_Automation/CPI_Downloader_User_Guide.md' | relative_url }}" download="CPI_Downloader_User_Guide.md">Download CPI Setup Guide (.md)</a></li>
-  <li><a href="{{ '/projects/cpi-downloader-user-guide/' | relative_url }}">Open CPI Setup Guide (Web Page)</a></li>
+  <li><a href="{{ '/projects/cpi-downloader-user-guide/' | relative_url }}">Open CPI Setup &amp; Run Guide (Web Page)</a></li>
 </ul>
 
 ## Workflow Snapshot
