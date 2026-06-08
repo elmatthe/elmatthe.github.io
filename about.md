@@ -30,4 +30,4 @@ This repository is meant to function as my advisory toolkit: a collection of pro
 
 I'm building my career in wealth management and financial planning, and I'm currently working through credentials such as the Canadian Securities Course and the Certified Financial Planner designation. I'm especially interested in roles where I can support portfolio managers and advisors by combining analysis, process design, and practical tools to help them serve clients more effectively.
 
-[Download my resume](/assets/uploads/Elijah_Matthew_Resume.pdf)
+<a href="{{ '/assets/uploads/Elijah_Matthew-resume.pdf' | relative_url }}" target="_blank" rel="noopener">Download my resume</a>
