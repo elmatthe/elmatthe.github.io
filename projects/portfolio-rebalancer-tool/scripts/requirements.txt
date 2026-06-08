@@ -1,0 +1,6 @@
+# Pinned dependencies for the Portfolio Rebalancer tool.
+# The setup launcher installs these into a local .venv (never system-wide).
+
+openpyxl==3.1.5      # CSV/Excel export of the trade plan
+yfinance==0.2.51     # optional live price + FX snapshot from Yahoo Finance
+pytest==8.3.4        # test runner used by the verify/test step

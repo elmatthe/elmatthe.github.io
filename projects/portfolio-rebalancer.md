@@ -14,8 +14,8 @@ last_updated: 2026-05-25
 
 ## Downloads
 <div class="btn-row">
-  <a class="btn" href="{{ '/projects/Portfolio_Rebalancer/main.py' | relative_url }}" download>Download Portfolio Rebalancer (program folder)</a>
-  <a class="btn" href="{{ '/projects/Portfolio_Rebalancer/Portfolio_Rebalancer_Setup_Guide.md' | relative_url }}" download="Portfolio_Rebalancer_Setup_Guide.md">Download Setup &amp; Usage Guide (.md)</a>
+  <a class="btn" href="{{ '/projects/portfolio-rebalancer.zip' | relative_url }}" download="portfolio-rebalancer.zip">Download portfolio-rebalancer.zip</a>
+  <a class="btn" href="{{ '/projects/portfolio-rebalancer-tool/README.md' | relative_url }}" download="README.md">Download Setup &amp; Usage Guide (.md)</a>
 </div>
 
 ## Guides
