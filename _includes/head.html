@@ -1,0 +1,33 @@
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {%- seo -%}
+  <link rel="stylesheet" href="{{ "/assets/main.css" | relative_url }}">
+  {%- feed_meta -%}
+  {%- if jekyll.environment == 'production' and site.google_analytics -%}
+    {%- include google-analytics.html -%}
+  {%- endif -%}
+  <script>
+    // Open any link that leaves this site (elmatthe.github.io) in a new tab.
+    // Internal navigation stays in the same tab.
+    document.addEventListener('DOMContentLoaded', function () {
+      var host = window.location.hostname;
+      var anchors = document.querySelectorAll('a[href]');
+      Array.prototype.forEach.call(anchors, function (a) {
+        var href = a.getAttribute('href');
+        if (!href || /^(#|mailto:|tel:|javascript:)/i.test(href)) return;
+        var url;
+        try { url = new URL(a.href, window.location.href); } catch (e) { return; }
+        if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+        if (url.hostname && url.hostname !== host) {
+          a.setAttribute('target', '_blank');
+          var rel = (a.getAttribute('rel') || '').split(/\s+/).filter(Boolean);
+          if (rel.indexOf('noopener') === -1) rel.push('noopener');
+          if (rel.indexOf('noreferrer') === -1) rel.push('noreferrer');
+          a.setAttribute('rel', rel.join(' '));
+        }
+      });
+    });
+  </script>
+</head>
