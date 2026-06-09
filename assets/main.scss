@@ -929,10 +929,13 @@ table.sheet-table tbody tr:nth-child(even) {
 }
 
 /* ---- Stock Data Dashboard theme (dark) ---- */
+/* Break the dashboard out of Minima's narrow content column so the
+   stacked panels and charts can use a much wider, easier-to-read band. */
 .sdd-theme {
-  max-width: 1400px;
-  margin-left: auto;
-  margin-right: auto;
+  position: relative;
+  width: min(1180px, 94vw);
+  margin-left: 50%;
+  transform: translateX(-50%);
 }
 
 .sdd-theme.tool-grid {
@@ -999,8 +1002,10 @@ table.sdd-corr-table td {
 }
 
 .sdd-disclaimer {
-  max-width: 1400px;
-  margin: 0.4rem auto 1rem;
+  position: relative;
+  width: min(1180px, 94vw);
+  margin: 0.4rem 0 1rem 50%;
+  transform: translateX(-50%);
 }
 
 @media (max-width: 900px) {
