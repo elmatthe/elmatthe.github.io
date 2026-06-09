@@ -929,14 +929,17 @@ table.sheet-table tbody tr:nth-child(even) {
 }
 
 /* ---- Stock Data Dashboard theme (dark) ---- */
+/* Break the dashboard out of Minima's narrow content column so the
+   stacked panels and charts can use a much wider, easier-to-read band. */
 .sdd-theme {
-  max-width: 1400px;
-  margin-left: auto;
-  margin-right: auto;
+  position: relative;
+  width: min(1180px, 94vw);
+  margin-left: 50%;
+  transform: translateX(-50%);
 }
 
 .sdd-theme.tool-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 1.15rem;
 }
 
@@ -983,7 +986,7 @@ table.sheet-table tbody tr:nth-child(even) {
   border-radius: 10px;
   background: #101f34;
   padding: 0.5rem;
-  height: 320px;
+  height: 380px;
 }
 
 .sdd-chart-wrap canvas {
@@ -998,18 +1001,35 @@ table.sdd-corr-table td {
   min-width: 0;
 }
 
+/* Dashboard tables fit their panel — no forced min-width, so cells wrap
+   instead of forcing a horizontal scrollbar. */
+.sdd-theme table.sheet-table {
+  min-width: 0;
+  width: 100%;
+}
+
+.sdd-theme .table-wrap {
+  overflow-x: visible;
+}
+
+.sdd-theme table.sheet-table th,
+.sdd-theme table.sheet-table td {
+  padding: 0.45rem 0.5rem;
+  font-size: 0.88rem;
+  white-space: normal;
+  word-break: break-word;
+}
+
 .sdd-disclaimer {
-  max-width: 1400px;
-  margin: 0.4rem auto 1rem;
+  position: relative;
+  width: min(1180px, 94vw);
+  margin: 0.4rem 0 1rem 50%;
+  transform: translateX(-50%);
 }
 
 @media (max-width: 900px) {
-  .sdd-theme.tool-grid {
-    grid-template-columns: 1fr;
-  }
-
   .sdd-chart-wrap {
-    height: 280px;
+    height: 300px;
   }
 }
 
