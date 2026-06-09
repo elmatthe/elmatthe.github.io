@@ -936,7 +936,7 @@ table.sheet-table tbody tr:nth-child(even) {
 }
 
 .sdd-theme.tool-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 1.15rem;
 }
 
@@ -983,7 +983,7 @@ table.sheet-table tbody tr:nth-child(even) {
   border-radius: 10px;
   background: #101f34;
   padding: 0.5rem;
-  height: 320px;
+  height: 380px;
 }
 
 .sdd-chart-wrap canvas {
@@ -1004,12 +1004,8 @@ table.sdd-corr-table td {
 }
 
 @media (max-width: 900px) {
-  .sdd-theme.tool-grid {
-    grid-template-columns: 1fr;
-  }
-
   .sdd-chart-wrap {
-    height: 280px;
+    height: 300px;
   }
 }
 

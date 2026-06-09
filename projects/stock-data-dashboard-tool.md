@@ -37,7 +37,7 @@ The browser version below mirrors the desktop workflow for quick analysis direct
 ## Interactive Web Dashboard
 <div class="tool-grid sdd-theme">
   <section class="tool-card">
-    <h3>Analysis Inputs</h3>
+    <h3>Inputs</h3>
     <div class="field">
       <label for="sddTickers">Tickers (comma separated)</label>
       <input id="sddTickers" type="text" value="AAPL, MSFT, SPY" placeholder="e.g. AAPL, MSFT, SPY, QQQ" />
