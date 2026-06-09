@@ -1001,6 +1001,25 @@ table.sdd-corr-table td {
   min-width: 0;
 }
 
+/* Dashboard tables fit their panel — no forced min-width, so cells wrap
+   instead of forcing a horizontal scrollbar. */
+.sdd-theme table.sheet-table {
+  min-width: 0;
+  width: 100%;
+}
+
+.sdd-theme .table-wrap {
+  overflow-x: visible;
+}
+
+.sdd-theme table.sheet-table th,
+.sdd-theme table.sheet-table td {
+  padding: 0.45rem 0.5rem;
+  font-size: 0.88rem;
+  white-space: normal;
+  word-break: break-word;
+}
+
 .sdd-disclaimer {
   position: relative;
   width: min(1180px, 94vw);
