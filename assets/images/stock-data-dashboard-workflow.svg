@@ -1,0 +1,29 @@
+<svg width="1200" height="260" viewBox="0 0 1200 260" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Stock Data Dashboard workflow overview</title>
+  <desc id="desc">Three-step flow: Select Securities to Fetch and Analyze to Review and Export.</desc>
+  <rect width="1200" height="260" fill="#F5F8FC"/>
+
+  <rect x="40" y="44" width="320" height="172" rx="14" fill="#1A2E4A"/>
+  <text x="200" y="94" text-anchor="middle" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="28" font-weight="700">Select Securities</text>
+  <text x="200" y="132" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">Stocks, ETFs, indexes</text>
+  <text x="200" y="158" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">Yahoo Finance or CSV</text>
+  <text x="200" y="184" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">Date range and currency</text>
+
+  <rect x="440" y="44" width="320" height="172" rx="14" fill="#1A2E4A"/>
+  <text x="600" y="94" text-anchor="middle" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="28" font-weight="700">Fetch &amp; Analyze</text>
+  <text x="600" y="132" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">Returns and risk metrics</text>
+  <text x="600" y="158" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">Correlation and regression</text>
+  <text x="600" y="184" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">Charts and heatmaps</text>
+
+  <rect x="840" y="44" width="320" height="172" rx="14" fill="#1A2E4A"/>
+  <text x="1000" y="94" text-anchor="middle" fill="#FFFFFF" font-family="Arial, sans-serif" font-size="28" font-weight="700">Review &amp; Export</text>
+  <text x="1000" y="132" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">Dashboard metrics</text>
+  <text x="1000" y="158" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">Diversification summary</text>
+  <text x="1000" y="184" text-anchor="middle" fill="#D7E4FB" font-family="Arial, sans-serif" font-size="20">Excel, CSV, and JPG</text>
+
+  <path d="M368 130H430" stroke="#2C4D77" stroke-width="8" stroke-linecap="round"/>
+  <path d="M430 130L412 115V145L430 130Z" fill="#2C4D77"/>
+
+  <path d="M768 130H830" stroke="#2C4D77" stroke-width="8" stroke-linecap="round"/>
+  <path d="M830 130L812 115V145L830 130Z" fill="#2C4D77"/>
+</svg>

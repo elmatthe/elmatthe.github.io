@@ -928,6 +928,91 @@ table.sheet-table tbody tr:nth-child(even) {
   font-weight: 600;
 }
 
+/* ---- Stock Data Dashboard theme (dark) ---- */
+.sdd-theme {
+  max-width: 1400px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.sdd-theme.tool-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.15rem;
+}
+
+.sdd-theme .tool-card {
+  border: 1px solid #2f4a72;
+  background: linear-gradient(165deg, #15273f 0%, #19304f 100%);
+  color: var(--text-main);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+}
+
+.sdd-theme .tool-card h3 {
+  color: #cfe0f7;
+}
+
+.sdd-theme .muted {
+  color: #9db2d2;
+}
+
+.sdd-theme .field label {
+  color: #b7cbe9;
+}
+
+.sdd-theme .field input,
+.sdd-theme .field select,
+.sdd-theme .sheet-select {
+  border: 1px solid #38557e;
+  background: #0f1d31;
+  color: var(--text-main);
+}
+
+.sdd-input-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 0.7rem 0.9rem;
+}
+
+.sdd-status-line {
+  margin-top: 0.2rem;
+  font-weight: 600;
+}
+
+.sdd-chart-wrap {
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: #101f34;
+  padding: 0.5rem;
+  height: 320px;
+}
+
+.sdd-chart-wrap canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
+table.sdd-corr-table,
+table.sdd-corr-table th,
+table.sdd-corr-table td {
+  min-width: 0;
+}
+
+.sdd-disclaimer {
+  max-width: 1400px;
+  margin: 0.4rem auto 1rem;
+}
+
+@media (max-width: 900px) {
+  .sdd-theme.tool-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .sdd-chart-wrap {
+    height: 280px;
+  }
+}
+
 table.input-sheet th:nth-child(1),
 table.input-sheet td:nth-child(1) {
   min-width: 28px;
