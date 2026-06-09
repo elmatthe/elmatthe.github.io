@@ -17,4 +17,8 @@ permalink: /Projects/
     <a href="{{ '/projects/portfolio-rebalancer/' | relative_url }}">Portfolio Rebalancer Project</a>
     <div class="muted">Interactive web rebalancing tool, downloadable desktop Python app, and setup guide.</div>
   </li>
+  <li>
+    <a href="{{ '/projects/stock-data-dashboard-tool/' | relative_url }}">Stock Data Dashboard Tool</a>
+    <div class="muted">Interactive stock comparison dashboard, downloadable cross-platform Python app, and setup guide.</div>
+  </li>
 </ul>
