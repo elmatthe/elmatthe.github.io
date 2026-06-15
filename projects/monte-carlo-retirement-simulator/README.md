@@ -67,9 +67,9 @@ re-uses the environment it built, so day-to-day starts are quick.
 
 ### Windows
 1. Double-click **`setup_and_run.bat`**.
-2. The first time, if Windows shows *"Windows protected your PC"*, click
-   **More info → Run anyway** (this only happens once because the file came from the
-   internet).
+2. Because the file was downloaded from the internet, Windows or your security software
+   may flag it the first time. If you are unsure whether it is safe to run, or if this is
+   a work computer, check with your IT department before continuing.
 3. If Python isn't installed, it will ask before installing it. Everything else is set up
    automatically inside the folder.
 4. The simulator window opens. To run it again later, just double-click
@@ -77,8 +77,9 @@ re-uses the environment it built, so day-to-day starts are quick.
 
 ### macOS
 1. Double-click **`setup_and_run.command`**.
-2. The first time, if macOS blocks it, go to **System Settings → Privacy & Security**,
-   scroll down, and click **Open Anyway** (this only happens once).
+2. Because the file was downloaded from the internet, macOS or your security software may
+   block it the first time. If you are unsure whether it is safe to run, or if this is a
+   work computer, check with your IT department before continuing.
 3. If Python isn't installed, it will ask before installing it (no admin password needed
    for the "just for me" option).
 4. The simulator window opens. To run it again later, just double-click

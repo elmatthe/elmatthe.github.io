@@ -12,11 +12,11 @@ echo   Setup keeps everything inside this project folder where it can:
 echo   all Python packages go into a local .venv, nothing is installed
 echo   system-wide unless Python itself is completely missing from this PC.
 echo.
-echo   NOTE: The first time you run this, Windows (or your work
-echo   security software) may show a warning because this file came
-echo   from the internet. If you see "Windows protected your PC",
-echo   click "More info" then "Run anyway" to continue. This is
-echo   normal and only happens once.
+echo   NOTE: Because this file was downloaded from the internet,
+echo   Windows or your security software may flag it the first time
+echo   you run it. If you are unsure whether it is safe to run, or
+echo   if this is a work computer, check with your IT department
+echo   before continuing.
 echo.
 
 :: ========================================
@@ -59,7 +59,7 @@ if %errorlevel% neq 0 (
         exit /b 1
     )
 
-    :: Re-check after attempted install
+    REM Re-check after attempted install
     python --version >nul 2>&1
     if !errorlevel! neq 0 (
         echo.

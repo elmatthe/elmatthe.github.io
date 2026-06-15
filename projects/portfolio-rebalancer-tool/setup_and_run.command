@@ -16,11 +16,11 @@ echo "  Setup keeps everything inside this project folder where it can:"
 echo "  all Python packages go into a local .venv, and nothing is"
 echo "  installed system-wide unless Python itself is completely missing."
 echo
-echo "  NOTE: The first time you open this, macOS (or your work"
-echo "  security software) may block it because it came from the"
-echo "  internet. If you see \"cannot be opened\", go to"
-echo "  System Settings > Privacy & Security, scroll down, and click"
-echo "  \"Open Anyway\". This is normal and only happens once."
+echo "  NOTE: Because this file was downloaded from the internet,"
+echo "  macOS or your security software may block it the first time"
+echo "  you open it. If you are unsure whether it is safe to run, or"
+echo "  if this is a work computer, check with your IT department"
+echo "  before continuing."
 echo
 
 # ========================================
