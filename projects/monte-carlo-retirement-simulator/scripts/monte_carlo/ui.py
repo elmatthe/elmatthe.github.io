@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import queue
+import random
 import threading
 from pathlib import Path
 
@@ -111,6 +112,14 @@ class MonteCarloApp:
         self.progress.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(8, 6))
         row += 1
 
+        self.sample_button = ttk.Button(
+            frame,
+            text="Load Sample Scenario",
+            command=self._load_sample_scenario,
+        )
+        self.sample_button.grid(row=row, column=0, columnspan=3, sticky="ew", pady=(2, 2))
+        row += 1
+
         self.run_button = ttk.Button(
             frame,
             text="Run Simulation",
@@ -136,6 +145,46 @@ class MonteCarloApp:
         self.csv_button.config(state=state)
         if not enabled:
             self.csv_path_var.set("")
+
+    def _load_sample_scenario(self) -> None:
+        """Fill the inputs with a fresh, plausible, randomized sample each click.
+
+        Ranges mirror the web simulator and always satisfy input validation.
+        """
+        if self.is_running:
+            return
+
+        def rand_step(low: float, high: float, step: float) -> float:
+            steps = int(round((high - low) / step))
+            return round(low + step * random.randint(0, steps), 2)
+
+        def put(key: str, value: str) -> None:
+            entry = self.entries[key]
+            entry.delete(0, tk.END)
+            entry.insert(0, value)
+
+        def money(value: float) -> str:
+            return str(int(round(value)))
+
+        def trim(value: float) -> str:
+            text = f"{value:.2f}".rstrip("0").rstrip(".")
+            return text or "0"
+
+        put("current_portfolio", money(rand_step(25000, 750000, 5000)))
+        put("annual_contribution", money(rand_step(0, 40000, 1000)))
+        put("contribution_growth_rate", trim(rand_step(0, 5, 0.5)))
+        put("years_to_retirement", str(random.randint(5, 40)))
+        put("years_in_retirement", str(random.randint(15, 35)))
+        put("expected_return", trim(rand_step(4, 9, 0.5)))
+        put("volatility", trim(rand_step(8, 20, 0.5)))
+        put("inflation_rate", trim(rand_step(1.5, 3.5, 0.5)))
+        put("annual_spending", money(rand_step(30000, 120000, 5000)))
+        put("pension_income", money(rand_step(0, 40000, 1000)))
+        put("simulations", str(random.choice([1000, 2000, 5000])))
+        self._set_status(
+            "Random sample scenario loaded. Select a target workbook, then Run Simulation.",
+            STATUS_NEUTRAL,
+        )
 
     def _browse_workbook(self) -> None:
         path = filedialog.asksaveasfilename(
@@ -270,6 +319,7 @@ class MonteCarloApp:
         run_state = "disabled" if running else "normal"
         browse_state = "disabled" if running else "normal"
         self.run_button.config(state=run_state)
+        self.sample_button.config(state=run_state)
         self.workbook_button.config(state=browse_state)
         self.workbook_entry.config(state=("disabled" if running else "normal"))
 

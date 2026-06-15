@@ -144,19 +144,34 @@ This web version is designed for quick scenario analysis in-browser while matchi
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
 <script>
   (function () {
-    var sampleScenario = {
-      currentPortfolio: 150000,
-      annualContribution: 10000,
-      contributionGrowth: 0,
-      yearsToRetirement: 30,
-      yearsInRetirement: 25,
-      expectedReturn: 7,
-      volatility: 12,
-      inflation: 2.5,
-      annualSpending: 60000,
-      pensionIncome: 18000,
-      simulationCount: 1000
-    };
+    // Build a fresh, plausible sample scenario with randomized values each time
+    // the "Load Sample Scenario" button is clicked. Ranges are chosen to stay
+    // realistic and to always pass the input validation below.
+    function randStep(min, max, step) {
+      var steps = Math.round((max - min) / step);
+      var value = min + step * Math.round(Math.random() * steps);
+      return Math.round(value * 100) / 100;
+    }
+
+    function randChoice(options) {
+      return options[Math.floor(Math.random() * options.length)];
+    }
+
+    function buildRandomSampleScenario() {
+      return {
+        currentPortfolio: randStep(25000, 750000, 5000),
+        annualContribution: randStep(0, 40000, 1000),
+        contributionGrowth: randStep(0, 5, 0.5),
+        yearsToRetirement: randStep(5, 40, 1),
+        yearsInRetirement: randStep(15, 35, 1),
+        expectedReturn: randStep(4, 9, 0.5),
+        volatility: randStep(8, 20, 0.5),
+        inflation: randStep(1.5, 3.5, 0.5),
+        annualSpending: randStep(30000, 120000, 5000),
+        pensionIncome: randStep(0, 40000, 1000),
+        simulationCount: randChoice([500, 1000, 2000])
+      };
+    }
 
     var messageNode = document.getElementById("mcValidationMessage");
     var runMetaNode = document.getElementById("mcRunMeta");
@@ -209,6 +224,7 @@ This web version is designed for quick scenario analysis in-browser while matchi
     }
 
     function setSampleInputs() {
+      var sampleScenario = buildRandomSampleScenario();
       document.getElementById("mcCurrentPortfolio").value = String(sampleScenario.currentPortfolio);
       document.getElementById("mcAnnualContribution").value = String(sampleScenario.annualContribution);
       document.getElementById("mcContributionGrowth").value = String(sampleScenario.contributionGrowth);
@@ -220,7 +236,7 @@ This web version is designed for quick scenario analysis in-browser while matchi
       document.getElementById("mcAnnualSpending").value = String(sampleScenario.annualSpending);
       document.getElementById("mcPensionIncome").value = String(sampleScenario.pensionIncome);
       document.getElementById("mcSimulationCount").value = String(sampleScenario.simulationCount);
-      setStatus("Sample scenario loaded. Click Run Simulation to calculate results.", "neutral");
+      setStatus("Random sample scenario loaded. Click Run Simulation to calculate results.", "neutral");
     }
 
     function parseRequiredNumber(id, invalidMessage) {

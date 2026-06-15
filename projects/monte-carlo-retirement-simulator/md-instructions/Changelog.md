@@ -1,5 +1,19 @@
 # Monte Carlo Retirement Simulator — Changelog
 
+## v1.0.1 — Mon 06/15/2026
+- Fixed the Windows launcher: `setup_and_run.bat` failed at `Checking for Python...`
+  with `: was unexpected at this time.` Literal parentheses inside parenthesized
+  `if (...)` blocks were parsed by cmd as command groups; replaced/removed them so the
+  block parses correctly. Also replaced security-prompt-bypass wording with neutral
+  guidance in the launchers and README.
+- Fixed dependency install on current Python versions: bumped `numpy` `2.1.3` -> `2.4.6`
+  and `matplotlib` `3.9.2` -> `3.10.9`. The older pins had no prebuilt wheels for newer
+  Python, so pip tried to compile numpy from source and failed (no C compiler / Visual
+  Studio). The new versions ship wheels (same stack the Stock Data Dashboard uses).
+- Added a "Load Sample Scenario" button to the desktop app, matching the web simulator.
+  Both now fill the inputs with randomized-but-plausible values on each click instead of
+  one fixed scenario.
+
 ## v1.0.0 — Mon 06/08/2026
 - Restructured the simulator into a clean, downloadable repo
   (`monte-carlo-retirement-simulator`) matching the Portfolio Rebalancer tool, with a minimal

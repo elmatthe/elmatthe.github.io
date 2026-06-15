@@ -1,7 +1,7 @@
 # Pinned dependencies for the Monte Carlo Retirement Simulator.
 # The setup launcher installs these into a local .venv (never system-wide).
 
-numpy==2.1.3         # vectorized simulation math and percentiles
+numpy==2.4.6         # vectorized simulation math and percentiles (wheels available for current Python)
 openpyxl==3.1.5      # writes the .xlsx report (summary, percentiles, chart)
-matplotlib==3.9.2    # renders the fan chart embedded in the workbook
+matplotlib==3.10.9   # renders the fan chart embedded in the workbook (wheels available for current Python)
 pytest==8.3.4        # test runner used by the verify/test step
