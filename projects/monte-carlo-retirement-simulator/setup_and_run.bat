@@ -45,7 +45,7 @@ if %errorlevel% neq 0 (
     echo   onto the computer itself - everything else stays in this folder.
     echo.
     set "do_py="
-    set /p do_py=Install Python now? (Y/N):
+    set /p do_py=Install Python now? [Y/N]:
     if /i "!do_py!"=="Y" (
         call :choose_scope
         call :install_python
@@ -146,7 +146,7 @@ set "scope_choice="
 set /p scope_choice=Enter 1 or 2 (default 1):
 if "%scope_choice%"=="2" (
     set "INSTALL_SCOPE=machine"
-    echo   Installing system-wide (all users). Admin may be requested.
+    echo   Installing system-wide for all users. Admin may be requested.
 ) else (
     set "INSTALL_SCOPE=user"
     echo   Installing for the current user only. No admin needed.
@@ -161,7 +161,7 @@ goto :eof
 echo   Installing Python (%INSTALL_SCOPE% scope)...
 where winget >nul 2>&1
 if %errorlevel% neq 0 (
-    echo   Windows Package Manager (winget) is not available.
+    echo   The Windows Package Manager "winget" is not available.
     echo   Please install Python manually from:
     echo     https://www.python.org/downloads/
     echo   During install, check "Add python.exe to PATH".
