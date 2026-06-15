@@ -1,5 +1,18 @@
 # Portfolio Rebalancer — Changelog
 
+## v1.0.1 — Mon 06/15/2026
+- Fixed the Windows launcher: `setup_and_run.bat` failed at `Checking for Python...`
+  with `: was unexpected at this time.` Literal parentheses inside parenthesized
+  `if (...)` blocks (`(Y/N):`, `(all users)`, `(winget)`) were parsed by cmd as command
+  groups; replaced/removed them so the block parses correctly.
+- Fixed Yahoo Finance data fetching: bumped `yfinance` from `0.2.51` to `1.3.0` (the same
+  version the Stock Data Dashboard fetches with successfully). The old version no longer
+  performs Yahoo's required crumb/cookie handshake, so every request returned
+  `429 Too Many Requests` / `Expecting value: line 1 column 1 (char 0)`. Pinned
+  `pandas==3.0.3` and `numpy==2.4.6` to match the Dashboard's validated stack.
+- Replaced security-prompt-bypass wording in the launchers and README with neutral
+  guidance to consult IT if unsure.
+
 ## v1.0.0 — Mon 06/08/2026
 - Restructured the program into a clean, downloadable repo (`portfolio-rebalancer-tool`)
   with a minimal root: `README.md`, `setup_and_run.bat`, `setup_and_run.command`, plus
