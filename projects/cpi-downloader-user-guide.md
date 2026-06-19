@@ -3,7 +3,7 @@ layout: page
 title: CPI Downloader User Guide
 permalink: /projects/cpi-downloader-user-guide/
 summary: Step-by-step setup and usage instructions for the CPI downloader workflow.
-last_updated: 2026-03-13
+last_updated: 2026-06-19
 ---
 
 <section class="callout">

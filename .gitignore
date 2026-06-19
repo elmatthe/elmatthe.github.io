@@ -8,3 +8,8 @@ _site/
 __pycache__/
 *.pyc
 .venv/
+.pytest_cache/
+
+# Secrets — never commit personal FRED API keys (created/kept locally only)
+projects/CPI_Automation/files/config.json
+projects/CPI_Automation/files/fred_api_key.md
