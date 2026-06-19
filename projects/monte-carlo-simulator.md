@@ -15,12 +15,10 @@ last_updated: 2026-03-19
 ## Downloads
 <div class="btn-row">
   <a class="btn" href="{{ '/projects/monte-carlo-retirement-simulator.zip' | relative_url }}" download="monte-carlo-retirement-simulator.zip">Download monte-carlo-retirement-simulator.zip</a>
-  <a class="btn" href="{{ '/projects/monte-carlo-retirement-simulator/README.md' | relative_url }}" download="README.md">Download Setup &amp; Usage Guide (.md)</a>
 </div>
 
 ## Guides
 <ul class="link-list">
-  <li><a href="{{ '/projects/monte-carlo-retirement-simulator/README.md' | relative_url }}" download="README.md">Download Monte Carlo Setup &amp; Usage Guide (.md)</a></li>
   <li><a href="{{ '/projects/monte-carlo-guide/' | relative_url }}">Open Monte Carlo Setup Guide (Web Page)</a></li>
 </ul>
 
