@@ -3,7 +3,7 @@ layout: page
 title: CPI Webscraper Project
 permalink: /projects/cpi-webscraper/
 summary: CPI data webscraper workflow with direct downloads and setup guides.
-last_updated: 2026-03-19
+last_updated: 2026-06-19
 ---
 
 <section class="hero-panel">
