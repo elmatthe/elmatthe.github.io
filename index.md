@@ -17,7 +17,7 @@ redirect_from:
     cleaner operations, and disciplined portfolio management.
   </p>
   <div class="hero-actions">
-    <a class="button button-primary" href="{{ '/Projects/' | relative_url }}">View Projects</a>
+    <a class="button button-primary" href="{{ '/projects/' | relative_url }}">View Projects</a>
     <a class="button" href="{{ '/about/' | relative_url }}">About Me</a>
   </div>
 </section>
@@ -56,7 +56,7 @@ redirect_from:
 ## Featured Projects
 <ul class="link-list">
   <li><a href="{{ '/projects/monte-carlo-simulator/' | relative_url }}">Monte Carlo Retirement Simulator</a></li>
-  <li><a href="{{ '/projects/cpi-webscraper/' | relative_url }}">CPI Webscraper Project</a></li>
-  <li><a href="{{ '/projects/portfolio-rebalancer/' | relative_url }}">Portfolio Rebalancer Tool</a></li>
-  <li><a href="{{ '/projects/stock-data-dashboard-tool/' | relative_url }}">Stock Data Dashboard Tool</a></li>
+  <li><a href="{{ '/projects/cpi-webscraper/' | relative_url }}">CPI Webscraper</a></li>
+  <li><a href="{{ '/projects/portfolio-rebalancer/' | relative_url }}">Portfolio Rebalancer</a></li>
+  <li><a href="{{ '/projects/stock-data-dashboard-tool/' | relative_url }}">Stock Comparison &amp; Analytics Tool</a></li>
 </ul>

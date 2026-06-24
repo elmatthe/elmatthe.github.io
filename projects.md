@@ -1,7 +1,9 @@
 ---
 title: Projects
 layout: page
-permalink: /Projects/
+permalink: /projects/
+redirect_from:
+  - /Projects/
 ---
 
 <ul class="project-list">
@@ -10,15 +12,15 @@ permalink: /Projects/
     <div class="muted">Retirement Monte Carlo workflow with browser simulator, downloadable desktop Python app, and setup guide resources.</div>
   </li>
   <li>
-    <a href="{{ '/projects/cpi-webscraper/' | relative_url }}">CPI Webscraper Project</a>
+    <a href="{{ '/projects/cpi-webscraper/' | relative_url }}">CPI Webscraper</a>
     <div class="muted">Python CPI webscraper workflow, setup guide, and workbook template downloads.</div>
   </li>
   <li>
-    <a href="{{ '/projects/portfolio-rebalancer/' | relative_url }}">Portfolio Rebalancer Project</a>
+    <a href="{{ '/projects/portfolio-rebalancer/' | relative_url }}">Portfolio Rebalancer</a>
     <div class="muted">Interactive web rebalancing tool, downloadable desktop Python app, and setup guide.</div>
   </li>
   <li>
-    <a href="{{ '/projects/stock-data-dashboard-tool/' | relative_url }}">Stock Data Dashboard Tool</a>
+    <a href="{{ '/projects/stock-data-dashboard-tool/' | relative_url }}">Stock Comparison &amp; Analytics Tool</a>
     <div class="muted">Interactive stock comparison dashboard, downloadable cross-platform Python app, and setup guide.</div>
   </li>
 </ul>

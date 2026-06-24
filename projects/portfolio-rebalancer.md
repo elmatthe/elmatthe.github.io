@@ -1,9 +1,9 @@
 ---
 layout: page
-title: Portfolio Rebalancer Project
+title: Portfolio Rebalancer
 permalink: /projects/portfolio-rebalancer/
 summary: Portfolio rebalancer workflow with interactive web tool, downloadable desktop program, and setup guide.
-last_updated: 2026-05-25
+last_updated: 2026-06-19
 ---
 
 <section class="hero-panel">
@@ -15,7 +15,6 @@ last_updated: 2026-05-25
 ## Downloads
 <div class="btn-row">
   <a class="btn" href="{{ '/projects/portfolio-rebalancer.zip' | relative_url }}" download="portfolio-rebalancer.zip">Download portfolio-rebalancer.zip</a>
-  <a class="btn" href="{{ '/projects/portfolio-rebalancer-tool/README.md' | relative_url }}" download="README.md">Download Setup &amp; Usage Guide (.md)</a>
 </div>
 
 ## Guides
@@ -114,6 +113,8 @@ Use the browser version below to run the rebalancing workflow directly on this s
     <div id="rebalanceResults" class="result-box">Output will appear here after you run rebalancing.</div>
   </section>
 </div>
+
+<p class="muted rebalancer-disclaimer"><strong>Disclaimer:</strong> This tool is for illustrative and educational planning use only. It is not financial, investment, or trading advice. Always verify prices at your broker before placing any orders.</p>
 
 ## Workflow Snapshot
 <div class="card-grid">

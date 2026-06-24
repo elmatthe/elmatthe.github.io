@@ -1,26 +1,25 @@
 ---
 layout: page
-title: Stock Data Dashboard Tool
+title: Stock Comparison & Analytics Tool
 permalink: /projects/stock-data-dashboard-tool/
 summary: Stock comparison and analytics workflow with an interactive in-browser dashboard, downloadable cross-platform Python desktop app, and setup guide.
-last_updated: 2026-06-09
+last_updated: 2026-06-19
 ---
 
 <section class="hero-panel">
   <div class="eyebrow">Market Analytics Project</div>
-  <h1>Stock Data Dashboard Tool</h1>
+  <h1>Stock Comparison &amp; Analytics Tool</h1>
   <p class="lede">A cross-platform Python GUI tool for comparing stocks, ETFs, and indexes using historical returns, risk metrics, correlation analysis, regression analytics, and exportable chart outputs. Use the interactive web dashboard below, or download the desktop program to run the same workflow locally.</p>
 </section>
 
 ## Downloads
 <div class="btn-row">
   <a class="btn" href="{{ '/projects/stock-data-dashboard-tool-v0.2.5.zip' | relative_url }}" download="stock-data-dashboard-tool-v0.2.5.zip">Download stock-data-dashboard-tool-v0.2.5.zip</a>
-  <a class="btn" href="{{ '/projects/Stock-Data-Dashboard-Tool/README.md' | relative_url }}" download="README.md">Download Setup &amp; Usage Guide (.md)</a>
 </div>
 
 ## Guides
 <ul class="link-list">
-  <li><a href="{{ '/projects/stock-data-dashboard-guide/' | relative_url }}">Open Stock Data Dashboard Setup Guide (Web Page)</a></li>
+  <li><a href="{{ '/projects/stock-data-dashboard-guide/' | relative_url }}">Open Stock Comparison &amp; Analytics Tool Setup Guide (Web Page)</a></li>
 </ul>
 
 ## Workflow Snapshot

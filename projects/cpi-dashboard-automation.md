@@ -21,7 +21,6 @@ last_updated: 2026-06-19
 
 ## Guides
 <ul class="link-list">
-  <li><a href="{{ '/projects/CPI_Automation/README.md' | relative_url }}" download="CPI_Downloader_User_Guide.md">Download CPI Setup Guide (.md)</a></li>
   <li><a href="{{ '/projects/cpi-downloader-user-guide/' | relative_url }}">Open CPI Setup Guide (Web Page)</a></li>
 </ul>
 
@@ -48,6 +47,6 @@ last_updated: 2026-06-19
   </section>
   <section class="card">
     <h3>Step-by-Step Setup Guide</h3>
-    <p class="muted">A practical setup guide in both downloadable markdown format and rendered web page format.</p>
+    <p class="muted">A practical setup guide available as a rendered web page, and also bundled inside the download.</p>
   </section>
 </div>

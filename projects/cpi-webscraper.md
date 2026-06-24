@@ -1,6 +1,6 @@
 ---
 layout: page
-title: CPI Webscraper Project
+title: CPI Webscraper
 permalink: /projects/cpi-webscraper/
 summary: CPI data webscraper workflow with direct downloads and setup guides.
 last_updated: 2026-06-19
@@ -8,7 +8,7 @@ last_updated: 2026-06-19
 
 <section class="hero-panel">
   <div class="eyebrow">Research Automation Project</div>
-  <h1>CPI Webscraper Project</h1>
+  <h1>CPI Webscraper</h1>
   <p class="lede">This project supports a practical inflation-monitoring workflow for research and advisory prep, combining Python webscraping automation with downloadable spreadsheet templates.</p>
 </section>
 
@@ -45,6 +45,6 @@ last_updated: 2026-06-19
   </section>
   <section class="card">
     <h3>Step-by-Step Setup Guide</h3>
-    <p class="muted">A practical setup guide in both downloadable markdown format and rendered web page format.</p>
+    <p class="muted">A practical setup guide available as a rendered web page, and also bundled inside the download.</p>
   </section>
 </div>
