@@ -1,6 +1,6 @@
 ---
 layout: page
-title: Stock Comparison &amp; Analytics Tool Setup Guide
+title: Stock Comparison & Analytics Tool Setup Guide
 permalink: /projects/stock-data-dashboard-guide/
 summary: Step-by-step setup and usage instructions for the Stock Comparison & Analytics Tool.
 last_updated: 2026-06-19

@@ -1,6 +1,6 @@
 ---
 layout: page
-title: Stock Comparison &amp; Analytics Tool
+title: Stock Comparison & Analytics Tool
 permalink: /projects/stock-data-dashboard-tool/
 summary: Stock comparison and analytics workflow with an interactive in-browser dashboard, downloadable cross-platform Python desktop app, and setup guide.
 last_updated: 2026-06-19
