@@ -114,6 +114,8 @@ Use the browser version below to run the rebalancing workflow directly on this s
   </section>
 </div>
 
+<p class="muted rebalancer-disclaimer"><strong>Disclaimer:</strong> This tool is for illustrative and educational planning use only. It is not financial, investment, or trading advice. Always verify prices at your broker before placing any orders.</p>
+
 ## Workflow Snapshot
 <div class="card-grid">
   <section class="card">
