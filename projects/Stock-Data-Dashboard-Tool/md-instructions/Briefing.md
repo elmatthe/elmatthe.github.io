@@ -39,7 +39,7 @@ v0.2.5
 ## Known Issues
 - Alpha Vantage and Twelve Data are provider stubs only.
 - FX normalization is not implemented; multi-currency comparisons warn users.
-- Website project page is future work.
+- An interactive in-browser version is live on the GitHub Pages project page; the desktop app adds Excel/CSV/JPG exports and additional charts.
 - The app is intentionally a one-time analysis/export utility and does not save comparison profiles.
 
 ## Next Steps

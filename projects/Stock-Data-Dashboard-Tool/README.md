@@ -67,9 +67,9 @@ The v0.2.5 analytics compute returns and correlations in each security's listing
 The dashboard shows total return, annualized return, annualized volatility, Sharpe ratio, max drawdown, observations, completeness, and currency. The app also produces a correlation matrix, diversification summary, regression table, PNG plots, website asset copies, and Excel/CSV exports.
 
 ## Limitations
-- FX normalization is not implemented yet.
-- Alpha Vantage and Twelve Data are still stubs.
-- A browser-based website version is future work.
+- FX normalization is not implemented yet; returns and correlations are computed in each security's listing currency.
+- Alpha Vantage and Twelve Data are still provider stubs; Yahoo Finance and Offline CSV are the supported data sources.
+- An interactive in-browser version of this tool is available on the project page at <https://elmatthe.github.io/projects/stock-data-dashboard-tool/>.
 
 ## Saving Work
 This tool is designed as a one-time analysis utility. It does not save comparison profiles; users can export results to a manually selected folder when they want to keep outputs.
@@ -79,12 +79,9 @@ For a clean user download, include the setup launchers, README, workspace instru
 
 Exclude `.venv/`, `.python_runtime/`, `__pycache__/`, `.pytest_cache/`, `.run-temp/`, `screenshots/`, generated exports, generated plots, generated website assets, test logs, and temporary planning files.
 
-## Screenshots
-Screenshots can be added here after portfolio capture.
-
 ## Project Structure
 ```text
-StockComparisonAnalyticsTool/
+Stock-Data-Dashboard-Tool/
   README.md
   CLAUDE.md
   CODEX.md
