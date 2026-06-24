@@ -33,7 +33,7 @@ Rules of engagement:
 
 ## 1. Current state snapshot (verify first)
 
-Top-level pages: `index.md`, `projects.md` (→ `/Projects/`), `scripts.md` (→ `/scripts/`),
+Top-level pages: `index.md`, `projects.md` (→ `/projects/`), `scripts.md` (→ `/scripts/`),
 `about.md` / `about.html`, plus `notes/` and `projects/` directories.
 
 Known issues to keep in mind:
