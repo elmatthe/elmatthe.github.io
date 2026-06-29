@@ -19,6 +19,7 @@ from analytics import (
     compute_dashboard_metrics,
     compute_returns,
     find_diversification_flags,
+    normalize_price_frames_to_currency,
     run_all_pairwise_regressions,
     run_benchmark_regressions,
 )
@@ -26,12 +27,14 @@ from config import (
     DEFAULT_CURRENCY,
     DEFAULT_RISK_FREE_RATE,
     MAX_TICKERS,
+    NORMALIZE_CURRENCY_OPTIONS,
     SUPPORTED_CURRENCIES,
     get_exports_dir,
     get_periods_per_year,
     get_plots_dir,
     get_website_assets_dir,
     ensure_directory,
+    parse_normalization_choice,
 )
 from data_sources import DataSourceError, OfflineCsvSource, get_data_source
 from exports import export_plot_images, export_results_to_csv_folder, export_results_to_excel
@@ -47,12 +50,24 @@ from plots import (
 )
 
 
-APP_VERSION = "v0.2.5"
+APP_VERSION = "v0.3.0"
 
 MULTI_CURRENCY_WARNING = (
     "Multiple listing currencies were detected. Returns and correlations are currently computed in each security's "
     "local currency. Cross-currency comparisons may be distorted without FX normalization."
 )
+
+
+def format_fx_normalization_note(target_currency: str, source_name: str) -> str:
+    if source_name == "Offline CSV":
+        return (
+            f"FX normalization ON - all series converted to {target_currency} using bundled "
+            "Offline CSV FX rates (test-files/fx_rates.csv)."
+        )
+    return (
+        f"FX normalization ON - all series converted to {target_currency} using daily "
+        "Yahoo Finance FX rates."
+    )
 
 
 def _normalize_currency(value: str | None) -> str:
@@ -189,6 +204,7 @@ class StockAnalyticsApp(tk.Tk):
         self.price_type_var = tk.StringVar(value="Adjusted Close")
         self.return_type_var = tk.StringVar(value="Simple returns")
         self.risk_free_var = tk.StringVar(value=str(DEFAULT_RISK_FREE_RATE))
+        self.normalize_currency_var = tk.StringVar(value=NORMALIZE_CURRENCY_OPTIONS[0])
         self.regression_mode_var = tk.StringVar(value="Each vs chosen benchmark")
         self.benchmark_var = tk.StringVar(value="")
         self.offline_folder_var = tk.StringVar(value=str(Path(__file__).resolve().parents[1] / "test-files"))
@@ -244,6 +260,16 @@ class StockAnalyticsApp(tk.Tk):
             ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
             ttk.Entry(parent, textvariable=variable, width=26).grid(row=row, column=1, columnspan=2, sticky="ew", pady=2)
             row += 1
+
+        ttk.Label(parent, text="Normalize to currency").grid(row=row, column=0, sticky="w", pady=2)
+        ttk.Combobox(
+            parent,
+            textvariable=self.normalize_currency_var,
+            values=NORMALIZE_CURRENCY_OPTIONS,
+            state="readonly",
+            width=24,
+        ).grid(row=row, column=1, columnspan=2, sticky="ew", pady=2)
+        row += 1
 
         ttk.Label(parent, text="Offline folder").grid(row=row, column=0, sticky="w", pady=2)
         ttk.Entry(parent, textvariable=self.offline_folder_var, width=26).grid(row=row, column=1, sticky="ew", pady=2)
@@ -424,6 +450,7 @@ class StockAnalyticsApp(tk.Tk):
             "price_type": self.price_type_var.get(),
             "return_type": self.return_type_var.get(),
             "risk_free_rate": risk_free_rate,
+            "normalize_to": parse_normalization_choice(self.normalize_currency_var.get()),
             "regression_mode": self.regression_mode_var.get(),
             "benchmark": self.benchmark_var.get().strip().upper(),
             "offline_folder": self.offline_folder_var.get().strip(),
@@ -491,13 +518,25 @@ class StockAnalyticsApp(tk.Tk):
                 warnings.append(mismatch_summary)
                 messagebox.showwarning("Currency mismatch detected", mismatch_summary)
 
-            detected = {currency for currency in currencies.values() if currency}
-            if len(detected) > 1:
-                warnings.append(MULTI_CURRENCY_WARNING)
+            target_currency = settings["normalize_to"]
+            effective_currencies = dict(currencies)
+            if target_currency:
+                def _fx_provider(native: str, target: str) -> object:
+                    return source.fetch_fx_rate(native, target, settings["start"], settings["end"], settings["frequency"])
+
+                price_frames, fx_warnings, effective_currencies = normalize_price_frames_to_currency(
+                    price_frames, currencies, target_currency, _fx_provider
+                )
+                warnings.extend(fx_warnings)
+                warnings.append(format_fx_normalization_note(target_currency, settings["source"]))
+            else:
+                detected = {currency for currency in currencies.values() if currency}
+                if len(detected) > 1:
+                    warnings.append(MULTI_CURRENCY_WARNING)
 
             price_column = "Adj Close" if settings["price_type"].startswith("Adjusted") else "Close"
             prices = align_price_series(price_frames, price_column)
-            prices.attrs["currencies"] = currencies
+            prices.attrs["currencies"] = effective_currencies
             returns = compute_returns(prices, settings["return_type"])
             periods_per_year = get_periods_per_year(settings["frequency"])
             metrics = compute_dashboard_metrics(prices, returns, periods_per_year, settings["risk_free_rate"])

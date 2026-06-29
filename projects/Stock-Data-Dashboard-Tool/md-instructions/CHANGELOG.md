@@ -1,5 +1,15 @@
 # Stock Comparison & Analytics Tool - Changelog
 
+## v0.3.0 - 2026-06-29
+- Added user-selectable **Currency Normalization** ("Normalize to currency": Off / USD / CAD / EUR / GBP) in both the desktop app and the in-browser web dashboard, with identical behavior, labels, and an Off default.
+- Prices are now converted into one common currency **before** any returns, total/annualized return, volatility, Sharpe, drawdown, indexed price, cumulative return, correlation, or regression are computed, so cross-currency comparisons reflect true performance instead of USD/CAD FX drift.
+- FX rates are pulled from the existing Yahoo Finance path as `<native><target>=X` pairs (e.g. `CADUSD=X`), forward-filled and aligned to each security's price dates. Conversion fails soft: an unavailable pair leaves that security in its native currency with a clear message instead of crashing.
+- When normalization is active, the currency note changes to confirm the active mode (e.g. "FX normalization ON - all series converted to USD using daily Yahoo Finance FX rates"); when Off, the existing multi-currency warning is kept.
+- Offline Sample mode demonstrates normalization using a small bundled FX rate file (`test-files/fx_rates.csv`; the web dashboard embeds the same rates), so the feature works offline without a network call.
+- Reused the existing data layer for FX; no new third-party dependency was added (Yahoo via `yfinance` desktop, public proxy on web).
+- Added pytest regression tests for FX conversion (`tests/test_fx_normalization.py`): known prices + known FX rate assert converted metrics, forward/back-fill alignment, no-op when already in target currency, fail-soft on missing rates, and the bundled offline FX loader/inverse derivation.
+- Bug pass: investigated the INTC USD vs INTC.TO/INTC.NE divergence and the implausible short-window annualized figures. Findings recorded in `handoff.md`; the cross-currency portion is resolved by normalization, and the common-window/short-window annualization items are flagged there for review rather than silently changed.
+
 ## v0.2.5 - 2026-06-09
 - Fixed Regression Analysis dropdown so selected regression details and scatterplot update correctly.
 - Improved rolling volatility and rolling correlation chart calculations for cleaner visuals.

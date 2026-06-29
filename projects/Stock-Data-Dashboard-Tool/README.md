@@ -1,7 +1,7 @@
 # Stock Comparison & Analytics Tool
 
 ## What It Does
-Stock Comparison & Analytics Tool v0.2.5 is a small Python desktop app for comparing stocks, ETFs, indexes, and funds. It fetches or loads historical prices, computes performance and risk metrics, builds a correlation matrix, runs regression analytics, displays charts in the GUI, and exports data plus visuals.
+Stock Comparison & Analytics Tool v0.3.0 is a small Python desktop app for comparing stocks, ETFs, indexes, and funds. It fetches or loads historical prices, optionally normalizes every security into one common currency, computes performance and risk metrics, builds a correlation matrix, runs regression analytics, displays charts in the GUI, and exports data plus visuals.
 
 ## Why I Built It
 This is a finance and analytics portfolio project designed to show practical market-data handling, statistical analysis, export workflows, and a simple GUI that a non-technical user can launch.
@@ -10,6 +10,7 @@ This is a finance and analytics portfolio project designed to show practical mar
 - Multi-ticker comparison
 - Yahoo Finance data
 - Offline CSV mode
+- Currency normalization (convert all securities to USD/CAD/EUR/GBP before metrics)
 - Dashboard metrics
 - Correlation matrix
 - Diversification summary
@@ -61,13 +62,23 @@ Use the Export folder field to choose where results are saved. The app creates t
 After running an analysis, chart images are generated in `files/plots/`. A copy of the main portfolio-friendly visuals is also saved in `files/website-assets/`. These generated PNGs are ignored by default, while the folder remains in the repo through `.gitkeep`.
 
 ## Currency Notes
-The v0.2.5 analytics compute returns and correlations in each security's listing currency. If multiple listing currencies are detected, the app warns that cross-currency comparisons may be distorted without FX normalization. If the user-selected currency differs from the data-source currency, the app shows a non-blocking mismatch warning.
+By default the analytics compute returns and correlations in each security's listing currency, and the app warns when multiple listing currencies are detected.
+
+### Currency Normalization (v0.3.0)
+Use the **Normalize to currency** selector in the Inputs panel to convert every security into one common currency (USD, CAD, EUR, or GBP) before any metrics or charts are computed, so cross-currency comparisons reflect true performance instead of FX drift. Choose **Off (native listing currency)** to keep the original behavior (the default).
+
+- FX rates are pulled from the same Yahoo Finance path as prices (`<native><target>=X`, e.g. `CADUSD=X`), forward-filled and aligned to each security's price dates. Prices are converted first, then returns are derived.
+- Securities already in the target currency are left unchanged.
+- If FX rates for a pair are unavailable, that security stays in its native currency and a clear message is shown — the app never crashes.
+- **Offline CSV mode** demonstrates normalization using the bundled `test-files/fx_rates.csv` (columns `Date,Pair,Rate`, where `Pair` is `<FROM><TO>` and `Rate` is target-per-native). If no FX file is present in the selected folder, conversion fails soft and shows native currency.
+
+If the user-selected currency differs from the data-source currency, the app still shows a non-blocking mismatch warning.
 
 ## Outputs
 The dashboard shows total return, annualized return, annualized volatility, Sharpe ratio, max drawdown, observations, completeness, and currency. The app also produces a correlation matrix, diversification summary, regression table, PNG plots, website asset copies, and Excel/CSV exports.
 
 ## Limitations
-- FX normalization is not implemented yet; returns and correlations are computed in each security's listing currency.
+- FX normalization is Off by default; when Off, returns and correlations are computed in each security's listing currency.
 - Alpha Vantage and Twelve Data are still provider stubs; Yahoo Finance and Offline CSV are the supported data sources.
 - An interactive in-browser version of this tool is available on the project page at <https://elmatthe.github.io/projects/stock-data-dashboard-tool/>.
 
