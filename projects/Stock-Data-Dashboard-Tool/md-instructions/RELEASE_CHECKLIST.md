@@ -15,6 +15,7 @@
 - `files/plots/.gitkeep`
 - `files/website-assets/.gitkeep`
 - `test-files/sample_prices.csv`
+- `test-files/fx_rates.csv`
 
 ## Exclude
 - `.venv/`

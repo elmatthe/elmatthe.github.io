@@ -3,7 +3,7 @@ layout: page
 title: Stock Comparison & Analytics Tool
 permalink: /projects/stock-data-dashboard-tool/
 summary: Stock comparison and analytics workflow with an interactive in-browser dashboard, downloadable cross-platform Python desktop app, and setup guide.
-last_updated: 2026-06-19
+last_updated: 2026-06-29
 ---
 
 <section class="hero-panel">
@@ -14,7 +14,7 @@ last_updated: 2026-06-19
 
 ## Downloads
 <div class="btn-row">
-  <a class="btn" href="{{ '/projects/stock-data-dashboard-tool-v0.2.5.zip' | relative_url }}" download="stock-data-dashboard-tool-v0.2.5.zip">Download stock-data-dashboard-tool-v0.2.5.zip</a>
+  <a class="btn" href="{{ '/projects/stock-data-dashboard-tool-v0.3.0.zip' | relative_url }}" download="stock-data-dashboard-tool-v0.3.0.zip">Download stock-data-dashboard-tool-v0.3.0.zip</a>
 </div>
 
 ## Guides
@@ -31,7 +31,7 @@ last_updated: 2026-06-19
 ## About This Tool
 This project compares multiple securities side by side using historical price data. It computes per-security performance and risk metrics, a correlation matrix, regression analytics against a chosen benchmark, and a set of comparison charts.
 
-The browser version below mirrors the desktop workflow for quick analysis directly on this site. It supports an **Offline Sample** mode (built-in `sample_prices.csv` demo data) and a **Yahoo Finance** mode that fetches live historical prices. The downloadable desktop app adds Excel, CSV, and JPG image exports plus additional charts.
+The browser version below mirrors the desktop workflow for quick analysis directly on this site. It supports an **Offline Sample** mode (built-in `sample_prices.csv` demo data) and a **Yahoo Finance** mode that fetches live historical prices. An optional **Currency Normalization** control converts every security into one common currency (USD/CAD/EUR/GBP) before metrics and charts are computed, so cross-currency comparisons reflect true performance rather than FX drift. The downloadable desktop app adds Excel, CSV, and JPG image exports plus additional charts.
 
 ## Interactive Web Dashboard
 <div class="tool-grid sdd-theme">
@@ -62,6 +62,16 @@ The browser version below mirrors the desktop workflow for quick analysis direct
       <div class="field">
         <label for="sddRiskFree">Risk-free rate (% / yr)</label>
         <input id="sddRiskFree" type="number" step="0.01" value="0" min="0" />
+      </div>
+      <div class="field">
+        <label for="sddNormalize">Normalize to currency</label>
+        <select id="sddNormalize" class="sheet-select">
+          <option value="off" selected>Off (native listing currency)</option>
+          <option value="USD">USD</option>
+          <option value="CAD">CAD</option>
+          <option value="EUR">EUR</option>
+          <option value="GBP">GBP</option>
+        </select>
       </div>
     </div>
     <div class="btn-row">
@@ -169,6 +179,7 @@ The browser version below mirrors the desktop workflow for quick analysis direct
 <ul class="link-list">
   <li>Multi-ticker Yahoo Finance analysis</li>
   <li>Offline CSV mode with sample data</li>
+  <li>Currency normalization (USD/CAD/EUR/GBP) before metrics</li>
   <li>Dashboard metrics</li>
   <li>Correlation matrix and heatmap</li>
   <li>Regression analytics</li>
@@ -196,6 +207,13 @@ The browser version below mirrors the desktop workflow for quick analysis direct
       "2024-01-04,XIU.TO,30.25,30.25,CAD"
     ].join("\n");
 
+    // Bundled FX rates so Offline Sample mode can still demonstrate normalization.
+    // Each entry is target-per-native: SAMPLE_FX["CADUSD"] is USD per 1 CAD.
+    var SAMPLE_FX = {
+      "CADUSD": [["2024-01-02", 0.75], ["2024-01-03", 0.752], ["2024-01-04", 0.749]],
+      "USDCAD": [["2024-01-02", 1.3333], ["2024-01-03", 1.3298], ["2024-01-04", 1.3351]]
+    };
+
     var PALETTE = ["#5f9ae6", "#5ef0ab", "#f2c14e", "#ff8fa3", "#b98cff", "#4fd6d6", "#ff9f55", "#9db2d2"];
 
     var tickersInput = document.getElementById("sddTickers");
@@ -203,6 +221,7 @@ The browser version below mirrors the desktop workflow for quick analysis direct
     var rangeSelect = document.getElementById("sddRange");
     var rangeField = document.getElementById("sddRangeField");
     var riskFreeInput = document.getElementById("sddRiskFree");
+    var normalizeSelect = document.getElementById("sddNormalize");
     var runBtn = document.getElementById("sddRunBtn");
     var sampleBtn = document.getElementById("sddSampleBtn");
     var statusNode = document.getElementById("sddStatus");
@@ -517,6 +536,60 @@ The browser version below mirrors the desktop workflow for quick analysis direct
       return { alpha: alpha, beta: beta, r2: r2, t: t, p: p, n: n };
     }
 
+    /* ---------- FX normalization ---------- */
+    function parseNormalize(value) {
+      var v = String(value || "").trim();
+      if (!v || /^off/i.test(v)) return null;
+      return v.toUpperCase();
+    }
+    // Build a forward-fill aligner from sorted FX points: returns the rate at or
+    // before a date, back-filling the leading edge from the earliest known rate.
+    function buildFxAligner(fxPoints) {
+      if (!fxPoints || !fxPoints.length) return function () { return null; };
+      var sorted = fxPoints.slice().sort(function (a, b) { return a.date - b.date; });
+      return function (d) {
+        var rate = null;
+        for (var i = 0; i < sorted.length; i++) {
+          if (sorted[i].date <= d) rate = sorted[i].price; else break;
+        }
+        if (rate === null) rate = sorted[0].price;
+        return isFinite(rate) ? rate : null;
+      };
+    }
+    // Resolve sample FX points for native->target, deriving the inverse if needed.
+    function sampleFxPoints(native, target) {
+      function toPoints(rows) {
+        return rows.map(function (r) { return { date: new Date(r[0] + "T00:00:00Z"), price: r[1] }; });
+      }
+      if (SAMPLE_FX[native + target]) return toPoints(SAMPLE_FX[native + target]);
+      if (SAMPLE_FX[target + native]) {
+        return toPoints(SAMPLE_FX[target + native]).map(function (p) {
+          return { date: p.date, price: p.price ? 1 / p.price : null };
+        });
+      }
+      return null;
+    }
+    // Convert each security's price points into the target currency before any
+    // returns/metrics/charts are computed. Fails soft per security with a warning.
+    function normalizeSeries(seriesByTicker, tickers, target, alignerByCurrency) {
+      var warnings = [];
+      tickers.forEach(function (t) {
+        var s = seriesByTicker[t];
+        if (!s) return;
+        var native = String(s.currency || "").toUpperCase();
+        if (!native) { warnings.push(t + ": listing currency unknown; left unconverted."); return; }
+        if (native === target) { s.currency = target; return; }
+        var aligner = alignerByCurrency[native];
+        if (!aligner) { warnings.push("FX rates unavailable for " + native + "→" + target + "; " + t + " shown in " + native + "."); return; }
+        s.points = s.points.map(function (p) {
+          var r = aligner(p.date);
+          return (r && isFinite(r)) ? { date: p.date, price: p.price * r } : p;
+        });
+        s.currency = target;
+      });
+      return warnings;
+    }
+
     /* ---------- rendering ---------- */
     function heatColor(v) {
       if (v === null || v === undefined || !isFinite(v)) return "#16273f";
@@ -560,7 +633,17 @@ The browser version below mirrors the desktop workflow for quick analysis direct
     function tile(label, value) {
       return "<div class='summary-item'><span>" + esc(label) + "</span><strong>" + esc(value) + "</strong></div>";
     }
-    function renderCurrencyWarning(metrics) {
+    function renderCurrencyWarning(metrics, normInfo) {
+      if (normInfo && normInfo.target) {
+        var src = normInfo.source === "offline" ? "bundled Offline Sample FX rates" : "daily Yahoo Finance FX rates";
+        var html = "<strong style='color:#5ef0ab;'>FX normalization ON</strong> — all series converted to " +
+          esc(normInfo.target) + " using " + src + ".";
+        if (normInfo.warnings && normInfo.warnings.length) {
+          html += "<br><span style='color:#f2c14e;'>" + esc(normInfo.warnings.join(" ")) + "</span>";
+        }
+        currencyWarning.innerHTML = html;
+        return;
+      }
       var currencies = {};
       metrics.forEach(function (m) { if (m.currency) currencies[m.currency] = true; });
       var keys = Object.keys(currencies);
@@ -736,7 +819,7 @@ The browser version below mirrors the desktop workflow for quick analysis direct
       runBtn.disabled = running;
       sampleBtn.disabled = running;
     }
-    function processSeries(seriesByTicker, requested) {
+    function processSeries(seriesByTicker, requested, normInfo) {
       var tickers = requested.filter(function (t) { return seriesByTicker[t] && seriesByTicker[t].points.length >= 2; });
       if (!tickers.length) {
         setStatus("No usable price history was returned for those tickers.", "#ff8fa3");
@@ -758,7 +841,7 @@ The browser version below mirrors the desktop workflow for quick analysis direct
       var maxObs = metrics.reduce(function (a, m) { return Math.max(a, m.observations); }, 0);
 
       renderMetrics(metrics, dateLabel, maxObs);
-      renderCurrencyWarning(metrics);
+      renderCurrencyWarning(metrics, normInfo);
       renderCorrelation(tickers, retMaps);
       populateBenchmark(tickers);
       renderRegression(benchmarkSelect.value || tickers[tickers.length - 1], tickers, retMaps, rfPer);
@@ -769,6 +852,28 @@ The browser version below mirrors the desktop workflow for quick analysis direct
       setStatus("Analysis complete — " + tickers.length + " securities, " + maxObs + " return observations (assumed " + ppy + " periods/yr).", "#5ef0ab");
     }
 
+    function nativeCurrenciesNeeding(seriesByTicker, tickers, target) {
+      var natives = {};
+      tickers.forEach(function (t) {
+        var c = String((seriesByTicker[t] && seriesByTicker[t].currency) || "").toUpperCase();
+        if (c && c !== target) natives[c] = true;
+      });
+      return Object.keys(natives);
+    }
+    function applyOfflineNormalization(seriesByTicker, tickers) {
+      var target = parseNormalize(normalizeSelect.value);
+      if (!target) return null;
+      var aligners = {};
+      var warnings = [];
+      nativeCurrenciesNeeding(seriesByTicker, tickers, target).forEach(function (nc) {
+        var pts = sampleFxPoints(nc, target);
+        if (pts) aligners[nc] = buildFxAligner(pts);
+        else warnings.push("FX rates unavailable for " + nc + "→" + target + ".");
+      });
+      warnings = normalizeSeries(seriesByTicker, tickers, target, aligners).concat(warnings);
+      return { target: target, warnings: warnings, source: "offline" };
+    }
+
     function run() {
       if (isRunning) return;
       var source = dataSourceSelect.value;
@@ -777,7 +882,10 @@ The browser version below mirrors the desktop workflow for quick analysis direct
         var requested = Object.keys(offline);
         setRunning(true);
         setStatus("Loading offline sample data…");
-        try { processSeries(offline, requested); }
+        try {
+          var normInfo = applyOfflineNormalization(offline, requested);
+          processSeries(offline, requested, normInfo);
+        }
         catch (e) { setStatus("Could not process sample data: " + e.message, "#ff8fa3"); }
         setRunning(false);
         return;
@@ -797,8 +905,30 @@ The browser version below mirrors the desktop workflow for quick analysis direct
           setRunning(false);
           return;
         }
-        processSeries(res.series, ok);
-        setRunning(false);
+        var target = parseNormalize(normalizeSelect.value);
+        if (!target) {
+          processSeries(res.series, ok);
+          setRunning(false);
+          return;
+        }
+        var pairs = nativeCurrenciesNeeding(res.series, ok, target);
+        var aligners = {};
+        var fxWarnings = [];
+        var fchain = Promise.resolve();
+        pairs.forEach(function (nc) {
+          fchain = fchain.then(function () {
+            setStatus("Fetching FX " + nc + "→" + target + "…");
+            return fetchYahooSeries(nc + target + "=X", rangeSelect.value, workingProxyIdx).then(function (fx) {
+              if (fx && fx.points && fx.points.length) aligners[nc] = buildFxAligner(fx.points);
+              else fxWarnings.push("FX rates unavailable for " + nc + "→" + target + "; left in native currency.");
+            });
+          });
+        });
+        fchain.then(function () {
+          var warnings = normalizeSeries(res.series, ok, target, aligners).concat(fxWarnings);
+          processSeries(res.series, ok, { target: target, warnings: warnings, source: "yahoo" });
+          setRunning(false);
+        });
       }).catch(function (e) {
         setStatus(e.message || "Live data fetch failed. Try Offline Sample mode.", "#ff8fa3");
         setRunning(false);

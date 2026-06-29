@@ -37,6 +37,81 @@ def align_price_series(price_frames: dict[str, pd.DataFrame], price_column: str)
     return pd.concat(series_by_ticker, axis=1).sort_index().dropna(how="all")
 
 
+def align_fx_rate(fx_series: pd.Series, target_index: pd.Index) -> pd.Series:
+    """Align an FX-rate series to price dates, forward-filling missing days.
+
+    Leading gaps are back-filled so an early price date that predates the first
+    available FX quote still receives the nearest known rate instead of NaN.
+    """
+    rate = pd.to_numeric(pd.Series(fx_series), errors="coerce")
+    rate.index = pd.to_datetime(rate.index)
+    rate = rate.sort_index().dropna()
+    target_index = pd.to_datetime(pd.Index(target_index))
+    if rate.empty:
+        return pd.Series([float("nan")] * len(target_index), index=target_index)
+    union_index = rate.index.union(target_index)
+    aligned = rate.reindex(union_index).sort_index().ffill().bfill()
+    return aligned.reindex(target_index)
+
+
+def convert_price_frame(frame: pd.DataFrame, fx_rate: pd.Series) -> pd.DataFrame:
+    """Multiply a price frame's price columns by an aligned FX rate.
+
+    `fx_rate` is expressed as target-currency units per one unit of the security's
+    native currency (Yahoo `<native><target>=X`), so multiplying converts prices
+    into the target currency before any returns are derived.
+    """
+    converted = frame.copy()
+    rate = align_fx_rate(fx_rate, converted.index)
+    for column in ("Close", "Adj Close"):
+        if column in converted.columns:
+            converted[column] = pd.to_numeric(converted[column], errors="coerce") * rate.to_numpy()
+    return converted
+
+
+def normalize_price_frames_to_currency(
+    price_frames: dict[str, pd.DataFrame],
+    currencies: dict[str, str],
+    target_currency: str,
+    fx_rate_provider,
+) -> tuple[dict[str, pd.DataFrame], list[str], dict[str, str]]:
+    """Convert every security's price series into `target_currency`.
+
+    `fx_rate_provider(native, target)` returns a pd.Series of target-per-native
+    rates, or None when the pair is unavailable. Securities already in the target
+    currency (or with unknown currency) are passed through unchanged. Conversion
+    fails soft: an unavailable pair leaves the security in its native currency and
+    appends a clear warning rather than raising.
+
+    Returns (converted_frames, warnings, result_currencies) where
+    result_currencies maps each ticker to the currency it is now expressed in.
+    """
+    target = str(target_currency or "").strip().upper()
+    converted: dict[str, pd.DataFrame] = {}
+    warnings: list[str] = []
+    result_currencies: dict[str, str] = {}
+    for ticker, frame in price_frames.items():
+        native = str(currencies.get(ticker) or "").strip().upper()
+        if not native:
+            converted[ticker] = frame
+            result_currencies[ticker] = ""
+            warnings.append(f"{ticker}: listing currency unknown; left unconverted for {target} normalization.")
+            continue
+        if native == target:
+            converted[ticker] = frame
+            result_currencies[ticker] = target
+            continue
+        rate = fx_rate_provider(native, target)
+        if rate is None or pd.Series(rate).dropna().empty:
+            converted[ticker] = frame
+            result_currencies[ticker] = native
+            warnings.append(f"FX rates unavailable for {native}->{target}; {ticker} shown in {native}.")
+            continue
+        converted[ticker] = convert_price_frame(frame, pd.Series(rate))
+        result_currencies[ticker] = target
+    return converted, warnings, result_currencies
+
+
 def compute_returns(prices: pd.DataFrame, return_type: str = "simple") -> pd.DataFrame:
     """Compute simple or log returns."""
     cleaned = prices.astype(float).replace([np.inf, -np.inf], np.nan)

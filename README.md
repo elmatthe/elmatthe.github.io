@@ -12,6 +12,7 @@ Professional GitHub Pages portfolio for wealth management projects, software app
 - `assets/main.scss` - Global visual styling
 
 ## Featured Tool
+- **Stock Comparison & Analytics Tool** (v0.3.0) — browser dashboard and downloadable cross-platform Python desktop app for comparing stocks/ETFs/indexes with performance and risk metrics, correlation, and regression. v0.3.0 **adds FX (currency) normalization** — convert every security to one common currency (USD/CAD/EUR/GBP) before metrics so cross-currency comparisons reflect true performance instead of FX drift — and fixes/flags bugs found during a focused review (see the tool's CHANGELOG and handoff log).
 - **Monte Carlo Retirement Simulator** — browser scenario tool, downloadable desktop app, and setup guide.
 - **Portfolio Rebalancer** — browser tool and desktop program with two modes (New Money / Rebalance), three invariants (budget cap, sell-funds-buys, cross-account funding), optional live Yahoo Finance data, and CSV/Excel export. Desktop program uses a Python package structure with `setup.bat` / `run.bat` for one-click Windows setup.
 - **CPI Webscraper** — automated CPI data pipeline with dashboard and setup guide.

@@ -15,6 +15,21 @@ DEFAULT_CURRENCY = "USD"
 DEFAULT_RISK_FREE_RATE = 0.0
 MAX_TICKERS = 20
 
+# FX normalization. The selector lets the user convert every security's price
+# series into one common currency before any metrics or charts are computed.
+NORMALIZATION_OFF_LABEL = "Off (native listing currency)"
+# Currencies offered for normalization. USD/CAD are the priority; EUR/GBP are
+# supported because Yahoo Finance exposes those FX pairs cleanly as `<from><to>=X`.
+NORMALIZE_CURRENCY_OPTIONS = [NORMALIZATION_OFF_LABEL, "USD", "CAD", "EUR", "GBP"]
+
+
+def parse_normalization_choice(value: str | None) -> str | None:
+    """Return the target currency code, or None when normalization is Off."""
+    text = str(value or "").strip()
+    if not text or text == NORMALIZATION_OFF_LABEL or text.lower().startswith("off"):
+        return None
+    return text.upper()
+
 DAILY_PERIODS = 252
 WEEKLY_PERIODS = 52
 MONTHLY_PERIODS = 12

@@ -10,6 +10,16 @@ __pycache__/
 .venv/
 .pytest_cache/
 
+# Stock Data Dashboard Tool — generated test/run artifacts (never commit)
+projects/Stock-Data-Dashboard-Tool/.run-temp/
+projects/Stock-Data-Dashboard-Tool/files/cache/
+projects/Stock-Data-Dashboard-Tool/files/exports/*
+!projects/Stock-Data-Dashboard-Tool/files/exports/.gitkeep
+projects/Stock-Data-Dashboard-Tool/files/plots/*
+!projects/Stock-Data-Dashboard-Tool/files/plots/.gitkeep
+projects/Stock-Data-Dashboard-Tool/files/website-assets/*
+!projects/Stock-Data-Dashboard-Tool/files/website-assets/.gitkeep
+
 # Secrets — never commit personal FRED API keys (created/kept locally only)
 projects/CPI_Automation/files/config.json
 projects/CPI_Automation/files/fred_api_key.md

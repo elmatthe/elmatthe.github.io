@@ -56,6 +56,21 @@ class BaseDataSource:
     ) -> PriceDataResult:
         raise NotImplementedError
 
+    def fetch_fx_rate(
+        self,
+        from_currency: str,
+        to_currency: str,
+        start_date: str,
+        end_date: str,
+        frequency: str,
+    ) -> Optional[pd.Series]:
+        """Return a daily FX-rate series of `to` units per one `from` unit.
+
+        Returns None when this source cannot provide FX rates so callers can
+        fail soft and keep native-currency behaviour.
+        """
+        return None
+
 
 OFFLINE_FOLDER_HELP = (
     "Expected either:\n"
@@ -159,7 +174,7 @@ def load_offline_csv_folder(folder_path: str) -> dict[str, pd.DataFrame]:
     if not folder.exists() or not folder.is_dir():
         raise DataSourceError(f"Offline CSV folder does not exist: {folder}\n\n{OFFLINE_FOLDER_HELP}")
 
-    csv_files = sorted(folder.glob("*.csv"))
+    csv_files = sorted(file for file in folder.glob("*.csv") if file.name.lower() not in FX_RATES_FILENAMES)
     if not csv_files:
         raise DataSourceError(f"No CSV files were found in the selected Offline CSV folder: {folder}\n\n{OFFLINE_FOLDER_HELP}")
 
@@ -183,6 +198,59 @@ def load_offline_csv_folder(folder_path: str) -> dict[str, pd.DataFrame]:
         combined.attrs["warnings"] = warnings
         result[ticker] = combined
     return result
+
+
+FX_RATES_FILENAMES = ("fx_rates.csv", "sample_fx_rates.csv")
+
+
+def load_offline_fx_rates(folder_path: str) -> dict[str, pd.Series]:
+    """Load bundled FX rates from an offline folder, if present.
+
+    Expected format: columns Date, Pair, Rate where Pair is a 6-letter
+    `<FROM><TO>` code and Rate is `TO` units per one `FROM` unit, e.g.
+    `2024-01-02,CADUSD,0.75`. Returns {pair: Series indexed by date}. Missing
+    file returns an empty mapping (callers fail soft).
+    """
+    folder = Path(folder_path) if folder_path else None
+    if not folder or not folder.is_dir():
+        return {}
+    fx_file = None
+    for name in FX_RATES_FILENAMES:
+        candidate = folder / name
+        if candidate.exists():
+            fx_file = candidate
+            break
+    if fx_file is None:
+        return {}
+    raw = pd.read_csv(fx_file)
+    columns = {str(col).strip().lower(): col for col in raw.columns}
+    if not {"date", "pair", "rate"}.issubset(columns):
+        return {}
+    rates: dict[str, pd.Series] = {}
+    for pair, group in raw.groupby(columns["pair"]):
+        key = normalize_currency(pair)
+        series = pd.Series(
+            pd.to_numeric(group[columns["rate"]], errors="coerce").to_numpy(),
+            index=pd.to_datetime(group[columns["date"]], errors="coerce"),
+        ).dropna().sort_index()
+        if not series.empty:
+            rates[key] = series
+    return rates
+
+
+def get_offline_fx_rate(rates: dict[str, pd.Series], from_currency: str, to_currency: str) -> Optional[pd.Series]:
+    """Resolve a `from`->`to` rate from a loaded FX map, deriving the inverse."""
+    from_code = normalize_currency(from_currency)
+    to_code = normalize_currency(to_currency)
+    if from_code == to_code:
+        return None
+    direct = rates.get(f"{from_code}{to_code}")
+    if direct is not None and not direct.empty:
+        return direct
+    inverse = rates.get(f"{to_code}{from_code}")
+    if inverse is not None and not inverse.empty:
+        return 1.0 / inverse
+    return None
 
 
 def _resample_prices(frame: pd.DataFrame, frequency: str) -> pd.DataFrame:
@@ -267,6 +335,17 @@ class OfflineCsvSource(BaseDataSource):
             warnings.extend([f"{ticker_key}: {warning}" for warning in currency_warnings])
         return PriceDataResult(ticker_key, ticker_key, currency, frame, warnings)
 
+    def fetch_fx_rate(
+        self,
+        from_currency: str,
+        to_currency: str,
+        start_date: str,
+        end_date: str,
+        frequency: str,
+    ) -> Optional[pd.Series]:
+        rates = load_offline_fx_rates(self.folder_path or "")
+        return get_offline_fx_rate(rates, from_currency, to_currency)
+
 
 class YahooFinanceSource(BaseDataSource):
     name = "Yahoo Finance"
@@ -335,6 +414,35 @@ class YahooFinanceSource(BaseDataSource):
         if _canonical_price_column(price_type) not in frame.columns or frame[_canonical_price_column(price_type)].dropna().empty:
             raise DataSourceError(f"No usable data was returned for {ticker_key}.")
         return PriceDataResult(ticker_key, display_name, currency, frame, [])
+
+    def fetch_fx_rate(
+        self,
+        from_currency: str,
+        to_currency: str,
+        start_date: str,
+        end_date: str,
+        frequency: str,
+    ) -> Optional[pd.Series]:
+        if yf is None:
+            return None
+        from_code = normalize_currency(from_currency)
+        to_code = normalize_currency(to_currency)
+        if not from_code or not to_code or from_code == to_code:
+            return None
+        # Yahoo exposes FX as `<FROM><TO>=X`, quoting TO units per one FROM unit.
+        symbol = f"{from_code}{to_code}=X"
+        try:
+            history = yf.Ticker(symbol).history(start=start_date, end=end_date, auto_adjust=False, actions=False)
+        except Exception:
+            return None
+        if history is None or history.empty or "Close" not in history.columns:
+            return None
+        rate = pd.to_numeric(history["Close"], errors="coerce").dropna()
+        if rate.empty:
+            return None
+        rate.index = pd.to_datetime(rate.index).tz_localize(None)
+        rate = _resample_prices(rate.to_frame("Close"), frequency)["Close"]
+        return rate.dropna()
 
 
 class AlphaVantageSource(BaseDataSource):
