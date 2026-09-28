@@ -39,8 +39,9 @@ sections:
 <section class="pj-section" id="web-app" aria-labelledby="web-app-h">
   <h2 id="web-app-h">Web app</h2>
   <p>Everything runs in this page: nothing to install and no account. Choose <strong>Offline demo</strong> to explore with synthetic prices when you have no network connection.</p>
-<!-- data-site-proxy: set to an https URL template containing {url} (for example a deployed
-     copy of assets/js/stock-dashboard/proxy-worker.example.js) so every visitor tries it first. -->
+<!-- data-site-proxy: optional. Leave empty unless the site owner runs their own Yahoo relay
+     (e.g. assets/js/yahoo/proxy-worker.example.js); an https template containing {url} is then
+     tried before the public relays. The page works without it. -->
 <div id="sdd-app" class="sdd-app" data-theme="dark" data-site-proxy="" data-worker-example="{{ '/assets/js/yahoo/proxy-worker.example.js' | relative_url }}">
   <div class="sdd-shell">
     <header class="sdd-masthead">
@@ -206,7 +207,7 @@ sections:
       </div>
       <div class="sdd-panel">
         <h3>Your own proxy (optional)</h3>
-        <p class="muted">Both settings below are saved only in this browser's local storage.</p>
+        <p class="muted">Not needed for normal use. Advanced users with their own relay can add it here to improve reliability. Both settings are saved only in this browser's local storage.</p>
         <form id="sddProxySettings" class="sdd-form" novalidate>
           <div class="sdd-field">
             <label for="sddCorsproxyKey">corsproxy.io API key</label>
@@ -290,7 +291,7 @@ sections:
   <details class="pj-details">
     <summary>“Live data could not be reached”</summary>
     <div class="pj-details-body">
-      <p>Free public proxies are rate-limited and sometimes offline. Wait a minute and press <strong>Retry</strong>; failed proxies are skipped automatically and the last working one is tried first. For dependable access, add your own proxy (for example the <a href="{{ '/assets/js/yahoo/proxy-worker.example.js' | relative_url }}">example Cloudflare Worker</a>) in the web app's <strong>Settings</strong> tab. You can use the <strong>Offline demo</strong> at any time.</p>
+      <p>Yahoo Finance blocks direct requests from other websites, so the tool reaches it through several free public relays, and their availability varies. Wait a minute and press <strong>Retry</strong>; relays that fail are skipped automatically and the last one that worked is tried first. The <strong>Offline demo</strong> works at any time with no connection. Advanced users can optionally add their own relay in the web app's <strong>Settings</strong> tab.</p>
     </div>
   </details>
   <details class="pj-details">

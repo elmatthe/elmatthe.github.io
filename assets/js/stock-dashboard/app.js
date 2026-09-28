@@ -447,17 +447,18 @@ function init() {
       const usable = symbols.filter(s => histories[s]);
       if (usable.length < MIN_COMPARE_TICKERS) {
         const allNetwork = failures.length && failures.every(f => f.error && !f.error.definitive);
+        discardComparison();
         setStatus(status, usable.length ? "Only one ticker returned usable data; a comparison needs at least two." : "No usable price history was returned.", "error");
         showNotice(notice, {
           title: allNetwork ? "Live data could not be reached." : "The comparison could not be completed.",
           items: [
             ...failures.map(f => f.message),
-            ...(allNetwork ? ["Public proxies are rate-limited or down. Wait a minute and retry, add your own proxy in Settings, or use the offline demo."] : []),
+            ...(allNetwork ? ["Yahoo Finance could not be reached through the public relays this site uses; they are busy or offline right now. Try again in a minute, or use the offline demo."] : []),
           ],
           actions: [
             { label: "Retry", onClick: () => runComparison(), secondary: false },
-            { label: "Use offline demo", onClick: () => { compareForm.querySelector('input[value="demo"]').click(); runComparison(); } },
-            { label: "Proxy settings", onClick: openSettings },
+            { label: "Use offline demo", onClick: useOfflineDemo },
+            ...(allNetwork ? [{ label: "Connection details", onClick: openSettings }] : []),
           ],
         });
         progress.value = 0;
@@ -485,8 +486,9 @@ function init() {
       if (error.kind === "aborted" || controller.signal.aborted) {
         setStatus(status, "Comparison cancelled. Completed requests stay cached for 15 minutes.", "warn");
       } else {
+        discardComparison();
         setStatus(status, describeError(error), "error");
-        showNotice(notice, { title: "The comparison failed.", items: [describeError(error)], actions: [{ label: "Retry", onClick: () => runComparison(), secondary: false }, { label: "Proxy settings", onClick: openSettings }] });
+        showNotice(notice, { title: "The comparison failed.", items: [describeError(error)], actions: [{ label: "Retry", onClick: () => runComparison(), secondary: false }, { label: "Use offline demo", onClick: useOfflineDemo }] });
       }
       progress.value = 0;
     } finally {
@@ -495,6 +497,19 @@ function init() {
       $("sddCancelCompare").disabled = true;
       renderPipelineStatus();
     }
+  }
+
+  // A failed run supersedes the previous result: never leave it on screen (or in the
+  // Export tab) looking like the answer to the request that just failed.
+  function discardComparison() {
+    if (!state.comparison) return;
+    state.comparison = null;
+    $("sddCompareResult").hidden = true;
+    updateExportState();
+  }
+  function useOfflineDemo() {
+    compareForm.querySelector('input[value="demo"]').click();
+    runComparison();
   }
 
   /* ================= Compare: render ================= */
@@ -728,11 +743,13 @@ function init() {
       return state.snapshot;
     } catch (error) {
       if (error.kind === "aborted") return null;
+      state.snapshot = null;
+      $("sddSnapshotResult").hidden = true;
       setStatus(status, describeError(error), "error");
       showNotice(notice, {
         title: error.definitive ? "Ticker not found." : "Live data could not be reached.",
-        items: [describeError(error), ...(error.definitive ? ["Check the symbol; non-US listings need a Yahoo suffix such as .TO or .L."] : [])],
-        actions: error.definitive ? [] : [{ label: "Retry", onClick: () => loadSnapshot(symbol), secondary: false }, { label: "Proxy settings", onClick: openSettings }],
+        items: [describeError(error), ...(error.definitive ? ["Check the symbol; non-US listings need a Yahoo suffix such as .TO or .L."] : ["Yahoo Finance could not be reached through the public relays this site uses; they are busy or offline right now. Try again in a minute, or use the offline demo."])],
+        actions: error.definitive ? [] : [{ label: "Retry", onClick: () => loadSnapshot(symbol), secondary: false }, { label: "Connection details", onClick: openSettings }],
       });
       return null;
     } finally {

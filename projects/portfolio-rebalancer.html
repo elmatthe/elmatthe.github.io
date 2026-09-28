@@ -38,7 +38,8 @@ sections:
 <section class="pj-section" id="web-app" aria-labelledby="web-app-h">
   <h2 id="web-app-h">Web app</h2>
   <p>Runs entirely in this page. Leave <strong>live prices</strong> off to use the prices you type; turn it on to fetch current quotes and FX from Yahoo Finance.</p>
-  <!-- data-site-proxy: optional https URL template containing {url} for an owner-run Yahoo proxy. -->
+  <!-- data-site-proxy: optional. Leave empty unless the site owner runs their own Yahoo relay; an https
+       template containing {url} is then tried before the public relays. The page works without it. -->
   <div class="pj-app" id="rb-app" data-site-proxy="" aria-busy="false">
     <div class="rb-controls">
       <div class="pj-field">
@@ -143,7 +144,7 @@ sections:
   <h2 id="help-h">Troubleshooting</h2>
   <details class="pj-details">
     <summary>Live prices are unavailable</summary>
-    <div class="pj-details-body"><p>Public proxies are sometimes rate-limited. Rows with a manual price keep it and the plan still runs. Retry after a minute. Proxy settings you save in the <a href="{{ '/projects/stock-data-dashboard-tool/' | relative_url }}#web-app">Stock tool's Settings tab</a> (including your own proxy) apply to this page too, in the same browser.</p></div>
+    <div class="pj-details-body"><p>Yahoo Finance is reached through free public relays whose availability varies. When live data can't be retrieved, each row keeps the price you entered, fixed fallback FX rates are used and labelled, and the plan and exports still work. Retry after a minute, or untick live prices. Optional relay settings saved in the <a href="{{ '/projects/stock-data-dashboard-tool/' | relative_url }}#web-app">Stock tool's Settings tab</a> also apply here in the same browser; they aren't needed for normal use.</p></div>
   </details>
   <details class="pj-details">
     <summary>“Not found on Yahoo Finance” for a Canadian or international ticker</summary>

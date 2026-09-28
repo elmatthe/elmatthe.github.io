@@ -366,7 +366,7 @@ function init() {
             warnings.push(`Live FX ${code}USD=X unavailable (${error.message}); using fallback rate ${E.fallbackFxToUsd(key).toFixed(4)}.`);
           }
         }
-        if (transportFailures) warnings.push("Some live requests failed because public proxies are busy or offline. Retry in a minute, or add your own proxy in the Stock tool's Settings tab (shared with this page).");
+        if (transportFailures) warnings.push("Some live Yahoo Finance requests failed because the public relays this site uses are busy or offline. The affected rows use your entered prices and fallback FX; retry in a minute for live data.");
         state.liveFxToUsd = { ...fxToUsd };
         state.liveFxKeys = liveKeys;
         // Show the prices and currencies actually used in the input table.

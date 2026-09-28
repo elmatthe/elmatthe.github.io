@@ -120,6 +120,11 @@ const num = text => Number(String(text).replace(/[^0-9.\-]/g, ""));
   const downText = await page.locator("#rbResults").innerText();
   check(await page.locator(".rb-output tbody tr").count() === 9 && /live data could not be reached; using your manual price/.test(downText), "total outage falls back to manual prices");
   check(/Live FX CADUSD=X unavailable/.test(downText), "total outage falls back to offline FX with a warning");
+  check(/public relays this site uses are busy or offline/.test(downText) && !/add your own proxy/i.test(downText), "outage warning is plain-language and does not require proxy setup");
+  const [downCsv] = await Promise.all([page.waitForEvent("download"), page.click("#rbExportCsv")]);
+  const downCsvPath = path.join(OUT, "outage.csv");
+  await downCsv.saveAs(downCsvPath);
+  check(fs.readFileSync(downCsvPath, "utf8").split(/\r?\n/).length > 9, "CSV export still works during a total outage (manual values)");
   mode.down = false;
 
   // Validation.
