@@ -21,6 +21,6 @@ redirect_from:
   </li>
   <li>
     <a href="{{ '/projects/stock-data-dashboard-tool/' | relative_url }}">Stock Comparison &amp; Analytics Tool</a>
-    <div class="muted">Interactive stock comparison dashboard, downloadable cross-platform Python app, and setup guide.</div>
+    <div class="muted">In-browser comparison and research dashboard (live Yahoo Finance data, correlation and regression, saved TipRanks analyst view, XLSX export), downloadable cross-platform Python app, and setup guide.</div>
   </li>
 </ul>

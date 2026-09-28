@@ -33,9 +33,11 @@ multi-currency warning when off. Pure conversion logic lives in `analytics.py`
 tested; FX fetching lives in `data_sources.py` (`YahooFinanceSource.fetch_fx_rate`, offline
 `load_offline_fx_rates`/`get_offline_fx_rate`).
 
-- **Web:** browser dashboard in `projects/stock-data-dashboard-tool.md`; FX fetched through the
-  same CORS proxy + Yahoo chart path as prices. Offline Sample mode uses an embedded `SAMPLE_FX`
-  table mirroring the desktop bundled rates.
+- **Web:** browser dashboard in `projects/stock-data-dashboard-tool.md`, with ES modules in
+  `assets/js/stock-dashboard/` (rebuilt 2026-09 on the TipRanks Automation Tool comparison
+  engine; it no longer mirrors the desktop code). FX comes from ECB reference rates
+  (Frankfurter, no proxy) with Yahoo `<FROM><TO>=X` through the proxy chain as fallback.
+  Its offline demo uses synthetic prices and FX generated in the browser.
 - **Desktop:** Offline mode demonstrates normalization from a small bundled FX file
   (`test-files/fx_rates.csv`, columns Date,Pair,Rate where Pair is `<FROM><TO>`); the price-CSV
   loader skips this file. If no FX file is present offline, conversion fails soft.

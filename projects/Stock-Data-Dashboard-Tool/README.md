@@ -80,7 +80,7 @@ The dashboard shows total return, annualized return, annualized volatility, Shar
 ## Limitations
 - FX normalization is Off by default; when Off, returns and correlations are computed in each security's listing currency.
 - Alpha Vantage and Twelve Data are still provider stubs; Yahoo Finance and Offline CSV are the supported data sources.
-- An interactive in-browser version of this tool is available on the project page at <https://elmatthe.github.io/projects/stock-data-dashboard-tool/>.
+- A separate in-browser dashboard is available on the project page at <https://elmatthe.github.io/projects/stock-data-dashboard-tool/>. It shares this tool's purpose but not its code: it uses daily log returns with exact-interval correlation (the TipRanks Automation Tool method), ECB reference rates for currency normalization, and an offline demo with synthetic prices instead of `sample_prices.csv`.
 
 ## Saving Work
 This tool is designed as a one-time analysis utility. It does not save comparison profiles; users can export results to a manually selected folder when they want to keep outputs.

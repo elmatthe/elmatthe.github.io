@@ -2,14 +2,14 @@
 layout: page
 title: Stock Comparison & Analytics Tool
 permalink: /projects/stock-data-dashboard-tool/
-summary: Stock comparison and analytics workflow with an interactive in-browser dashboard, downloadable cross-platform Python desktop app, and setup guide.
-last_updated: 2026-06-29
+summary: Stock comparison and analytics workflow with an in-browser research dashboard (live Yahoo Finance data, correlation and regression, saved-TipRanks analyst view, XLSX export), a downloadable cross-platform Python desktop app, and a setup guide.
+last_updated: 2026-09-28
 ---
 
 <section class="hero-panel">
   <div class="eyebrow">Market Analytics Project</div>
   <h1>Stock Comparison &amp; Analytics Tool</h1>
-  <p class="lede">A cross-platform Python GUI tool for comparing stocks, ETFs, and indexes using historical returns, risk metrics, correlation analysis, regression analytics, and exportable chart outputs. Use the interactive web dashboard below, or download the desktop program to run the same workflow locally.</p>
+  <p class="lede">Compare stocks, ETFs, and indexes on returns, risk, correlation, and regression, and review analyst consensus next to live prices. Use the browser dashboard below (no install, nothing to sign in to), or download the desktop program to run the Python workflow locally.</p>
 </section>
 
 ## Downloads
@@ -29,935 +29,279 @@ last_updated: 2026-06-29
 </figure>
 
 ## About This Tool
-This project compares multiple securities side by side using historical price data. It computes per-security performance and risk metrics, a correlation matrix, regression analytics against a chosen benchmark, and a set of comparison charts.
+The browser dashboard runs entirely in your browser; no server of mine is involved. It uses the comparison engine and page layout of my TipRanks Automation Tool, rewritten as browser JavaScript modules, and has four sections:
 
-The browser version below mirrors the desktop workflow for quick analysis directly on this site. It supports an **Offline Sample** mode (built-in `sample_prices.csv` demo data) and a **Yahoo Finance** mode that fetches live historical prices. An optional **Currency Normalization** control converts every security into one common currency (USD/CAD/EUR/GBP) before metrics and charts are computed, so cross-currency comparisons reflect true performance rather than FX drift. The downloadable desktop app adds Excel, CSV, and JPG image exports plus additional charts.
+- **Multi-Stock Comparison**: 2–10 tickers over nine horizons (1D to 5Y). It shows total and annualized return, volatility, Sharpe ratio, and max drawdown, plus an exact-interval correlation heatmap, benchmark regression, and four charts. Optional **currency normalization** converts every security to USD, CAD, EUR, or GBP using European Central Bank reference rates before any metric is computed.
+- **Security Research**: a live Yahoo Finance snapshot for one ticker, plus an **analyst consensus view** (Smart Score, price targets, implied move, ranked analysts, insider activity). The consensus view comes from a Research result saved by the desktop TipRanks Automation Tool and opened locally. The file is read in your browser and never uploaded.
+- **Export**: an XLSX workbook with the same five sheets as the desktop tool, plus CSV and JSON downloads, all generated in the browser.
+- **Settings**: data-proxy health, an optional personal proxy or corsproxy.io key, cache, and a light/dark theme.
+
+The downloadable desktop app (v0.3.0) remains a separate Python program with its own Excel, CSV, and JPG exports and additional rolling-window charts.
 
 ## Interactive Web Dashboard
-<div class="tool-grid sdd-theme">
-  <section class="tool-card">
-    <h3>Inputs</h3>
-    <div class="field">
-      <label for="sddTickers">Tickers (comma separated)</label>
-      <input id="sddTickers" type="text" value="AAPL, MSFT, SPY" placeholder="e.g. AAPL, MSFT, SPY, QQQ" />
-      <div class="muted">Stocks, ETFs, or indexes. For non-US listings use Yahoo suffixes (e.g. XIU.TO, ISF.L).</div>
-    </div>
-    <div class="sdd-input-grid">
-      <div class="field">
-        <label for="sddDataSource">Data source</label>
-        <select id="sddDataSource" class="sheet-select">
-          <option value="yahoo" selected>Yahoo Finance (live)</option>
-          <option value="offline">Offline Sample CSV</option>
-        </select>
+<link rel="stylesheet" href="{{ '/assets/css/stock-dashboard.css' | relative_url }}">
+<!-- data-site-proxy: set to an https URL template containing {url} (for example a deployed
+     copy of assets/js/stock-dashboard/proxy-worker.example.js) so every visitor tries it first. -->
+<div id="sdd-app" class="sdd-app" data-theme="dark" data-site-proxy="" data-worker-example="{{ '/assets/js/stock-dashboard/proxy-worker.example.js' | relative_url }}">
+  <div class="sdd-shell">
+    <header class="sdd-masthead">
+      <div class="sdd-brand">
+        <h2>Stock Comparison &amp; Analytics</h2>
+        <p>Browser research dashboard · Yahoo Finance market data · saved TipRanks research</p>
       </div>
-      <div class="field" id="sddRangeField">
-        <label for="sddRange">History range</label>
-        <select id="sddRange" class="sheet-select">
-          <option value="6mo">6 months</option>
-          <option value="1y" selected>1 year</option>
-          <option value="2y">2 years</option>
-          <option value="5y">5 years</option>
-        </select>
+      <aside class="sdd-status-widget" aria-label="Live data status">
+        <strong>Live data <span id="sddPipelineState" class="sdd-pill idle">Not tested</span></strong>
+        <span id="sddPipelineDetail">No live request yet.</span>
+        <small id="sddCacheState">Cache: 0 responses</small>
+        <button id="sddTestConnection" type="button" class="secondary">Test connection</button>
+        <small id="sddTestState" role="status" aria-live="polite"></small>
+      </aside>
+    </header>
+  </div>
+  <nav class="sdd-tabs" role="tablist" aria-label="Dashboard sections">
+    <button type="button" role="tab" id="sddTab-compare" aria-controls="sddPanel-compare" aria-selected="true">Multi-Stock Comparison</button>
+    <button type="button" role="tab" id="sddTab-research" aria-controls="sddPanel-research" aria-selected="false" tabindex="-1">Security Research</button>
+    <button type="button" role="tab" id="sddTab-export" aria-controls="sddPanel-export" aria-selected="false" tabindex="-1">Export</button>
+    <button type="button" role="tab" id="sddTab-settings" aria-controls="sddPanel-settings" aria-selected="false" tabindex="-1">Settings</button>
+  </nav>
+  <div class="sdd-body">
+    <noscript><div class="sdd-notice error"><p>This dashboard needs JavaScript enabled.</p></div></noscript>
+    <!-- ================= Compare ================= -->
+    <section id="sddPanel-compare" role="tabpanel" aria-labelledby="sddTab-compare">
+      <div class="sdd-panel">
+        <form id="sddCompareForm" class="sdd-form" novalidate>
+          <fieldset class="sdd-fieldset">
+            <legend>Data source</legend>
+            <label class="sdd-choice"><input type="radio" name="source" value="live" checked> Live · Yahoo Finance</label>
+            <label class="sdd-choice"><input type="radio" name="source" value="demo"> Offline demo · synthetic prices</label>
+          </fieldset>
+          <fieldset class="sdd-fieldset">
+            <legend>Tickers (2–10)</legend>
+            <div id="sddTickerList" class="sdd-ticker-list"></div>
+            <div class="sdd-actions">
+              <button id="sddAddTicker" type="button" class="secondary">Add ticker</button>
+              <small class="muted">Stocks, ETFs, or indexes. Non-US listings use Yahoo suffixes (XIU.TO, ISF.L); indexes use ^ (^GSPC).</small>
+            </div>
+          </fieldset>
+          <div class="sdd-field">
+            <label for="sddHorizon">Horizon</label>
+            <select id="sddHorizon" name="horizon">
+              <option value="1D">1D</option><option value="1M">1M</option><option value="3M">3M</option><option value="6M">6M</option><option value="9M">9M</option><option value="YTD">YTD</option><option value="1Y" selected>1Y</option><option value="3Y">3Y</option><option value="5Y">5Y</option>
+            </select>
+          </div>
+          <div class="sdd-field">
+            <label for="sddRiskFree">Risk-free rate (% / yr)</label>
+            <input id="sddRiskFree" name="riskFree" type="number" step="0.01" min="0" max="25" value="0" inputmode="decimal">
+          </div>
+          <div class="sdd-field">
+            <label for="sddNormalize">Normalize to currency</label>
+            <select id="sddNormalize" name="normalize">
+              <option value="off" selected>Off (native listing currency)</option><option value="USD">USD</option><option value="CAD">CAD</option><option value="EUR">EUR</option><option value="GBP">GBP</option>
+            </select>
+          </div>
+          <div class="sdd-actions">
+            <button id="sddRunCompare" type="submit">Run comparison</button>
+            <button id="sddCancelCompare" type="button" class="secondary" disabled>Cancel</button>
+          </div>
+        </form>
+        <p id="sddCompareStatus" class="sdd-status" role="status" aria-live="polite">Ready. Enter 2–10 tickers and run the comparison.</p>
+        <progress id="sddCompareProgress" max="100" value="0" aria-label="Comparison progress"></progress>
+        <ul id="sddTickerProgress" class="sdd-progress-list" aria-label="Per-ticker fetch status"></ul>
       </div>
-      <div class="field">
-        <label for="sddRiskFree">Risk-free rate (% / yr)</label>
-        <input id="sddRiskFree" type="number" step="0.01" value="0" min="0" />
+      <div id="sddCompareNotice" class="sdd-notice" role="alert" hidden></div>
+      <div id="sddCompareResult" hidden>
+        <p id="sddCompareMeta" class="muted"></p>
+        <div id="sddTiles" class="sdd-tiles"></div>
+        <div class="sdd-card wide">
+          <h4>Performance &amp; risk</h4>
+          <div class="sdd-table-scroll">
+            <table id="sddMetricsTable">
+              <thead><tr><th scope="col">Ticker</th><th scope="col">Currency</th><th scope="col" class="num">Total return</th><th scope="col" class="num">Annualized return</th><th scope="col" class="num">Annualized volatility</th><th scope="col" class="num">Sharpe</th><th scope="col" class="num">Max drawdown</th><th scope="col" class="num">Return obs.</th><th scope="col">Actual price range</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p class="muted">Annualized figures extrapolate the available daily log returns to 252 trading periods, so they overstate what short horizons (1D–3M) can tell you.</p>
+          <div id="sddCompareWarnings"></div>
+        </div>
+        <div class="sdd-grid">
+          <div class="sdd-card"><h4>Indexed price (start = 100)</h4><div class="sdd-chart"><canvas id="sddChartIndexed" aria-label="Indexed price chart" role="img"></canvas></div></div>
+          <div class="sdd-card"><h4>Drawdown from running peak</h4><div class="sdd-chart"><canvas id="sddChartDrawdown" aria-label="Drawdown chart" role="img"></canvas></div></div>
+          <div class="sdd-card"><h4>Risk / return</h4><div class="sdd-chart"><canvas id="sddChartScatter" aria-label="Annualized volatility versus annualized return" role="img"></canvas></div></div>
+          <div class="sdd-card"><h4>Cumulative return</h4><div class="sdd-chart"><canvas id="sddChartCumulative" aria-label="Cumulative return chart" role="img"></canvas></div></div>
+          <div class="sdd-card wide">
+            <h4>Correlation heatmap</h4>
+            <p class="muted">Daily adjusted-close log returns over identical intervals. Each cell shows the correlation and, underneath, the number of shared returns; "n/a" means fewer than three shared returns or zero variance.</p>
+            <div class="sdd-legend"><span>−1</span><span class="sdd-legend-bar"></span><span>+1</span></div>
+            <div id="sddCorrelation" class="sdd-table-scroll sdd-corr"></div>
+            <div id="sddDiversification" class="muted"></div>
+          </div>
+          <div class="sdd-card wide">
+            <h4>Regression vs benchmark</h4>
+            <div class="sdd-form">
+              <div class="sdd-field"><label for="sddBenchmark">Benchmark (X variable)</label><select id="sddBenchmark"></select></div>
+            </div>
+            <div id="sddRegression" class="sdd-table-scroll"></div>
+          </div>
+          <div class="sdd-card wide"><h4>Sources and timestamps</h4><ul id="sddCompareSources" class="sdd-list"></ul></div>
+        </div>
       </div>
-      <div class="field">
-        <label for="sddNormalize">Normalize to currency</label>
-        <select id="sddNormalize" class="sheet-select">
-          <option value="off" selected>Off (native listing currency)</option>
-          <option value="USD">USD</option>
-          <option value="CAD">CAD</option>
-          <option value="EUR">EUR</option>
-          <option value="GBP">GBP</option>
-        </select>
+    </section>
+    <!-- ================= Research ================= -->
+    <section id="sddPanel-research" role="tabpanel" aria-labelledby="sddTab-research" hidden>
+      <div class="sdd-panel">
+        <h3>Live market snapshot</h3>
+        <form id="sddSnapshotForm" class="sdd-form" novalidate>
+          <div class="sdd-field">
+            <label for="sddSnapshotTicker">Ticker</label>
+            <input id="sddSnapshotTicker" name="ticker" maxlength="20" autocomplete="off" spellcheck="false" placeholder="AAPL, TD.TO, or XIU.TO" value="AAPL">
+          </div>
+          <div class="sdd-actions"><button id="sddSnapshotRun" type="submit">Load snapshot</button></div>
+        </form>
+        <p id="sddSnapshotStatus" class="sdd-status" role="status" aria-live="polite">Loads one year of Yahoo Finance history for a single ticker.</p>
+        <div id="sddSnapshotNotice" class="sdd-notice" role="alert" hidden></div>
+        <div id="sddSnapshotResult" class="sdd-grid" hidden>
+          <div class="sdd-card"><h4 id="sddSnapshotTitle">Snapshot</h4><dl id="sddSnapshotIdentity"></dl></div>
+          <div class="sdd-card"><h4>Market data</h4><dl id="sddSnapshotMarket"></dl></div>
+          <div class="sdd-card wide"><h4>One-year adjusted price</h4><div class="sdd-chart"><canvas id="sddChartSnapshot" aria-label="One-year price chart" role="img"></canvas></div><p id="sddSnapshotSource" class="muted"></p></div>
+        </div>
       </div>
-    </div>
-    <div class="btn-row">
-      <button class="btn" id="sddRunBtn" type="button">Run Analysis</button>
-      <button class="btn btn-secondary" id="sddSampleBtn" type="button">Load Offline Sample</button>
-    </div>
-    <div id="sddStatus" class="muted sdd-status-line">Ready. Choose a data source and run the analysis.</div>
-    <p class="muted" id="sddSampleHint" style="display:none;">Offline Sample mode loads the built-in <code>test-files/sample_prices.csv</code> dataset (AAPL, MSFT, XIU.TO for 2024-01-02 to 2024-01-04). It is a small demo dataset; switch to Yahoo Finance for longer live history.</p>
-  </section>
-
-  <section class="tool-card">
-    <h3>Dashboard Metrics</h3>
-    <div class="summary-grid" id="sddSummaryTiles">
-      <div class="summary-item"><span>Securities Compared</span><strong>Run analysis</strong></div>
-      <div class="summary-item"><span>Date Range</span><strong>Run analysis</strong></div>
-      <div class="summary-item"><span>Observations</span><strong>Run analysis</strong></div>
-      <div class="summary-item"><span>Best Total Return</span><strong>Run analysis</strong></div>
-    </div>
-    <div class="table-wrap">
-      <table class="sheet-table sdd-metrics-table" id="sddMetricsTable">
-        <thead>
-          <tr>
-            <th>Ticker</th>
-            <th>Total Return</th>
-            <th>Annualized Return</th>
-            <th>Annualized Volatility</th>
-            <th>Sharpe Ratio</th>
-            <th>Max Drawdown</th>
-            <th>Observations</th>
-            <th>Currency</th>
-          </tr>
-        </thead>
-        <tbody id="sddMetricsBody">
-          <tr><td colspan="8" class="muted">Metrics will appear here after you run the analysis.</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <div id="sddCurrencyWarning" class="muted"></div>
-  </section>
+      <div class="sdd-panel">
+        <h3>Analyst consensus <span class="muted">(TipRanks Automation Tool research)</span></h3>
+        <p class="muted">TipRanks data requires a private API key, which must never be placed in a public web page, so this page does not call TipRanks. Open a <code>record.json</code> Research result saved by the desktop TipRanks Automation Tool (from <code>files/results/&lt;id&gt;/</code>). The file is read in this browser and is never uploaded. You can also load a synthetic demo.</p>
+        <div class="sdd-form">
+          <div class="sdd-field"><label for="sddRecordFile">Saved research file (record.json)</label><input id="sddRecordFile" type="file" accept=".json,application/json"></div>
+          <div class="sdd-actions">
+            <button id="sddRecordDemo" type="button" class="secondary">Load synthetic demo</button>
+            <button id="sddRecordLive" type="button" class="secondary" disabled>Compare with live Yahoo price</button>
+            <button id="sddRecordClear" type="button" class="secondary" disabled>Clear</button>
+          </div>
+        </div>
+        <p id="sddRecordStatus" class="sdd-status" role="status" aria-live="polite">No research loaded.</p>
+        <div id="sddResearchResult" hidden>
+          <h3 id="sddResearchTitle"></h3>
+          <p id="sddResearchMeta" class="muted"></p>
+          <div id="sddResearchWarnings"></div>
+          <div class="sdd-grid">
+            <div class="sdd-card"><h4>Identity and saved market data</h4><dl id="sddResearchIdentity"></dl><div class="sdd-metric"><span>Smart Score</span><strong id="sddSmartScore">Unavailable</strong><small class="muted">Source: TipRanks</small></div></div>
+            <div class="sdd-card"><h4>Consensus and price targets</h4><dl id="sddResearchTargets"></dl><p class="muted">Implied move = (average target − current price) ÷ current price × 100.</p></div>
+            <div class="sdd-card wide"><h4>Target range</h4><div id="sddTargetTrack"></div><p id="sddTargetText" class="muted"></p></div>
+            <div class="sdd-card"><h4>Analyst-target distribution</h4><div id="sddTargetDistribution"></div></div>
+            <div class="sdd-card"><h4>Top analyst insights</h4><div id="sddTopAnalysts" class="sdd-insights"></div></div>
+            <div class="sdd-card wide"><h4>Recent analyst actions</h4><div id="sddAnalystActions" class="sdd-table-scroll"></div></div>
+            <div class="sdd-card wide"><h4>Insider activity</h4><div id="sddInsiders" class="sdd-table-scroll"></div></div>
+            <div class="sdd-card"><h4>News and sentiment</h4><ul id="sddNews" class="sdd-list"></ul></div>
+            <div class="sdd-card"><h4>Research coverage</h4><ul id="sddCoverage" class="sdd-list"></ul></div>
+            <div class="sdd-card wide"><h4>Source comparison</h4><div id="sddSourceComparison" class="sdd-table-scroll"></div></div>
+            <div class="sdd-card wide"><h4>Sources and timestamps</h4><ul id="sddResearchSources" class="sdd-list"></ul></div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <!-- ================= Export ================= -->
+    <section id="sddPanel-export" role="tabpanel" aria-labelledby="sddTab-export" hidden>
+      <div class="sdd-panel">
+        <h3>Export</h3>
+        <p>Files are generated in your browser from the latest completed comparison and the loaded research; nothing is re-fetched. The XLSX workbook uses the desktop tool's five sheets: Read Me &amp; Sources, Executive Summary, Model &amp; Calculations, Portfolio Risk, and Raw Data Ingestion. It contains values only (no macros or formulas), and text cells are protected against spreadsheet formula injection.</p>
+        <fieldset class="sdd-fieldset">
+          <legend>Include</legend>
+          <label class="sdd-choice"><input id="sddExportComparison" type="checkbox" checked> <span id="sddExportComparisonLabel">Latest comparison (none yet)</span></label>
+          <label class="sdd-choice"><input id="sddExportResearch" type="checkbox" checked> <span id="sddExportResearchLabel">Loaded research (none yet)</span></label>
+        </fieldset>
+        <div class="sdd-actions" style="margin-top:.8rem;">
+          <button id="sddExportXlsx" type="button" disabled>Download XLSX workbook</button>
+          <button id="sddExportMetrics" type="button" class="secondary" disabled>Metrics CSV</button>
+          <button id="sddExportCorrelation" type="button" class="secondary" disabled>Correlation CSV</button>
+          <button id="sddExportPrices" type="button" class="secondary" disabled>Prices CSV</button>
+          <button id="sddExportJson" type="button" class="secondary" disabled>JSON snapshot</button>
+        </div>
+        <p id="sddExportStatus" class="sdd-status" role="status" aria-live="polite">Run a comparison or load research to enable exports.</p>
+      </div>
+    </section>
+    <!-- ================= Settings ================= -->
+    <section id="sddPanel-settings" role="tabpanel" aria-labelledby="sddTab-settings" hidden>
+      <div class="sdd-panel">
+        <h3>Appearance</h3>
+        <div class="sdd-form">
+          <div class="sdd-field"><label for="sddTheme">Theme</label><select id="sddTheme"><option value="dark">Dark (site default)</option><option value="light">Light</option><option value="system">Match system</option></select></div>
+        </div>
+      </div>
+      <div class="sdd-panel">
+        <h3>Live data proxies</h3>
+        <p class="muted">Yahoo Finance does not allow direct browser requests from other websites (CORS), so live requests go through public proxies. They are tried in order, and each response is checked before it is used. A proxy that fails is skipped for a cooldown period, and the last one that worked is tried first. Only the ticker and date range are sent.</p>
+        <div class="sdd-table-scroll">
+          <table class="sdd-proxy-table">
+            <thead><tr><th scope="col">Use</th><th scope="col">Proxy</th><th scope="col">Status</th><th scope="col">Last result</th></tr></thead>
+            <tbody id="sddProxyRows"></tbody>
+          </table>
+        </div>
+        <div class="sdd-actions" style="margin-top:.6rem;">
+          <button id="sddProxyTest" type="button">Test all proxies</button>
+          <button id="sddProxyReset" type="button" class="secondary">Reset proxy health</button>
+        </div>
+        <p id="sddProxyStatus" class="sdd-status" role="status" aria-live="polite"></p>
+      </div>
+      <div class="sdd-panel">
+        <h3>Your own proxy (optional)</h3>
+        <p class="muted">Both settings below are saved only in this browser's local storage.</p>
+        <form id="sddProxySettings" class="sdd-form" novalidate>
+          <div class="sdd-field">
+            <label for="sddCorsproxyKey">corsproxy.io API key</label>
+            <input id="sddCorsproxyKey" type="password" autocomplete="off" spellcheck="false" maxlength="200" placeholder="Paste a key from console.corsproxy.io">
+            <small>corsproxy.io requires a key for requests from websites. Its free plan is limited.</small>
+          </div>
+          <div class="sdd-field">
+            <label for="sddCustomProxy">Custom proxy URL template</label>
+            <input id="sddCustomProxy" type="url" autocomplete="off" spellcheck="false" placeholder="https://your-worker.example.workers.dev/?url={url}">
+            <small>Must be https and contain <code>{url}</code>. <a id="sddWorkerLink" href="#">Example Cloudflare Worker</a>.</small>
+          </div>
+          <div class="sdd-actions">
+            <button type="submit">Save proxy settings</button>
+            <button id="sddProxyClear" type="button" class="secondary">Clear</button>
+          </div>
+        </form>
+        <p id="sddProxySettingsStatus" class="sdd-status" role="status" aria-live="polite"></p>
+      </div>
+      <div class="sdd-panel">
+        <h3>Cache</h3>
+        <p class="muted">Successful Yahoo Finance responses are cached for 15 minutes in this tab's session storage, which reduces rate limiting when you re-run a comparison.</p>
+        <div class="sdd-actions"><button id="sddClearCache" type="button" class="secondary">Clear cached responses</button><span id="sddCacheCount" class="muted"></span></div>
+      </div>
+    </section>
+  </div>
+  <p class="sdd-footer-note"><strong>Disclaimer:</strong> for education and analysis only; not investment, financial, legal, or tax advice. Live prices are fetched best-effort through third-party proxies and may be delayed, adjusted, or unavailable. Analyst data is shown only from files you open yourself.</p>
 </div>
-
-<div class="tool-grid sdd-theme">
-  <section class="tool-card">
-    <h3>Indexed Price (Base 100)</h3>
-    <div class="sdd-chart-wrap"><canvas id="sddIndexedChart" aria-label="Indexed price chart"></canvas></div>
-  </section>
-  <section class="tool-card">
-    <h3>Cumulative Return</h3>
-    <div class="sdd-chart-wrap"><canvas id="sddCumulativeChart" aria-label="Cumulative return chart"></canvas></div>
-  </section>
-</div>
-
-<div class="tool-grid sdd-theme">
-  <section class="tool-card">
-    <h3>Risk / Return</h3>
-    <div class="sdd-chart-wrap"><canvas id="sddScatterChart" aria-label="Risk versus return scatterplot"></canvas></div>
-  </section>
-  <section class="tool-card">
-    <h3>Drawdown</h3>
-    <div class="sdd-chart-wrap"><canvas id="sddDrawdownChart" aria-label="Drawdown chart"></canvas></div>
-  </section>
-</div>
-
-<div class="tool-grid sdd-theme">
-  <section class="tool-card">
-    <h3>Correlation Matrix &amp; Heatmap</h3>
-    <div id="sddCorrelation" class="result-box">Correlation matrix will appear here after you run the analysis.</div>
-    <div id="sddDiversification" class="muted"></div>
-  </section>
-  <section class="tool-card">
-    <h3>Regression Analytics</h3>
-    <div class="field">
-      <label for="sddBenchmark">Benchmark (X variable)</label>
-      <select id="sddBenchmark" class="sheet-select" disabled>
-        <option value="">Run analysis first</option>
-      </select>
-    </div>
-    <div id="sddRegression" class="result-box">Regression table will appear here after you run the analysis.</div>
-  </section>
-</div>
-
-<p class="muted sdd-disclaimer"><strong>Disclaimer:</strong> This dashboard is for education and analysis only. It is not investment advice. Live data is fetched best-effort through public proxies and may be delayed or unavailable.</p>
 
 ## What This Tool Includes
 <div class="card-grid">
   <section class="card">
-    <h3>Multi-Ticker Analytics</h3>
-    <p class="muted">Multi-ticker Yahoo Finance analysis with an offline CSV mode and built-in sample data, dashboard metrics, and a diversification summary.</p>
+    <h3>Multi-Ticker Comparison</h3>
+    <p class="muted">2–10 securities over nine horizons, with total and annualized return, volatility, Sharpe ratio, and max drawdown, calculated with the same method as the desktop TipRanks Automation Tool.</p>
   </section>
   <section class="card">
     <h3>Correlation &amp; Regression</h3>
-    <p class="muted">Correlation matrix and heatmap, plus regression analytics (alpha, beta, R-squared, and significance) against a chosen benchmark.</p>
+    <p class="muted">A correlation heatmap over identical return intervals with shared-observation counts, diversification flags, and alpha/beta/R²/p-value regression against any chosen benchmark.</p>
   </section>
   <section class="card">
-    <h3>Comparison Charts</h3>
-    <p class="muted">Risk/return, drawdown, indexed price, cumulative return, rolling volatility, and rolling correlation charts in the desktop app.</p>
+    <h3>Analyst Research View</h3>
+    <p class="muted">Consensus, Smart Score, price-target range, implied move against the live price, rank-ordered analyst insights, and insider activity from saved TipRanks research files.</p>
   </section>
   <section class="card">
-    <h3>Exports &amp; Launchers</h3>
-    <p class="muted">Excel, CSV, and JPG image exports, with Windows and macOS one-click setup launchers in the downloadable desktop version.</p>
+    <h3>Exports &amp; Desktop App</h3>
+    <p class="muted">Five-sheet XLSX, CSV, and JSON downloads in the browser. The desktop app adds Excel/CSV/JPG exports, rolling charts, and Windows/macOS launchers.</p>
   </section>
 </div>
 
 ## Key Features
 <ul class="link-list">
-  <li>Multi-ticker Yahoo Finance analysis</li>
-  <li>Offline CSV mode with sample data</li>
-  <li>Currency normalization (USD/CAD/EUR/GBP) before metrics</li>
-  <li>Dashboard metrics</li>
-  <li>Correlation matrix and heatmap</li>
-  <li>Regression analytics</li>
-  <li>Risk/return, drawdown, rolling volatility, and rolling correlation charts</li>
-  <li>Excel, CSV, and JPG image exports</li>
-  <li>Windows and macOS setup launchers</li>
+  <li>Live Yahoo Finance history through several public proxies, with fallback, response checks, and a 15-minute cache</li>
+  <li>Offline demo mode with deterministic synthetic prices (no network needed)</li>
+  <li>Currency normalization (USD/CAD/EUR/GBP) using ECB reference rates, with Yahoo FX as a fallback</li>
+  <li>Correlation heatmap, diversification flags, and benchmark regression</li>
+  <li>Indexed-price, drawdown, cumulative-return, and risk/return charts</li>
+  <li>Analyst consensus and price targets from locally opened TipRanks Automation Tool research</li>
+  <li>XLSX, CSV, and JSON exports built in the browser</li>
+  <li>Desktop app: Excel, CSV, and JPG exports, rolling-window charts, and Windows/macOS setup launchers</li>
 </ul>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
-{% raw %}
-<script>
-  (function () {
-    "use strict";
-
-    var SAMPLE_CSV = [
-      "Date,Ticker,Close,Adj Close,Currency",
-      "2024-01-02,AAPL,100,100,USD",
-      "2024-01-03,AAPL,102,102,USD",
-      "2024-01-04,AAPL,101,101,USD",
-      "2024-01-02,MSFT,200,200,USD",
-      "2024-01-03,MSFT,204,204,USD",
-      "2024-01-04,MSFT,208,208,USD",
-      "2024-01-02,XIU.TO,30,30,CAD",
-      "2024-01-03,XIU.TO,30.5,30.5,CAD",
-      "2024-01-04,XIU.TO,30.25,30.25,CAD"
-    ].join("\n");
-
-    // Bundled FX rates so Offline Sample mode can still demonstrate normalization.
-    // Each entry is target-per-native: SAMPLE_FX["CADUSD"] is USD per 1 CAD.
-    var SAMPLE_FX = {
-      "CADUSD": [["2024-01-02", 0.75], ["2024-01-03", 0.752], ["2024-01-04", 0.749]],
-      "USDCAD": [["2024-01-02", 1.3333], ["2024-01-03", 1.3298], ["2024-01-04", 1.3351]]
-    };
-
-    var PALETTE = ["#5f9ae6", "#5ef0ab", "#f2c14e", "#ff8fa3", "#b98cff", "#4fd6d6", "#ff9f55", "#9db2d2"];
-
-    var tickersInput = document.getElementById("sddTickers");
-    var dataSourceSelect = document.getElementById("sddDataSource");
-    var rangeSelect = document.getElementById("sddRange");
-    var rangeField = document.getElementById("sddRangeField");
-    var riskFreeInput = document.getElementById("sddRiskFree");
-    var normalizeSelect = document.getElementById("sddNormalize");
-    var runBtn = document.getElementById("sddRunBtn");
-    var sampleBtn = document.getElementById("sddSampleBtn");
-    var statusNode = document.getElementById("sddStatus");
-    var sampleHint = document.getElementById("sddSampleHint");
-    var summaryTiles = document.getElementById("sddSummaryTiles");
-    var metricsBody = document.getElementById("sddMetricsBody");
-    var currencyWarning = document.getElementById("sddCurrencyWarning");
-    var correlationNode = document.getElementById("sddCorrelation");
-    var diversificationNode = document.getElementById("sddDiversification");
-    var benchmarkSelect = document.getElementById("sddBenchmark");
-    var regressionNode = document.getElementById("sddRegression");
-
-    var charts = { indexed: null, cumulative: null, scatter: null, drawdown: null };
-    var lastRun = null;
-    var isRunning = false;
-    var workingProxyIdx = -1;
-
-    var CORS_PROXIES = [
-      function (url) { return "https://corsproxy.io/?" + encodeURIComponent(url); },
-      function (url) { return "https://api.allorigins.win/raw?url=" + encodeURIComponent(url); },
-      function (url) { return "https://api.codetabs.com/v1/proxy?quest=" + encodeURIComponent(url); }
-    ];
-    var YAHOO_BASES = ["https://query1.finance.yahoo.com", "https://query2.finance.yahoo.com"];
-    var chartUnavailable = typeof window.Chart === "undefined";
-
-    /* ---------- small helpers ---------- */
-    function setStatus(msg, color) {
-      statusNode.textContent = msg;
-      statusNode.style.color = color || "#9db2d2";
-    }
-    function esc(value) {
-      return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-    }
-    function fmtPct(num, digits) {
-      if (num === null || num === undefined || !isFinite(num)) return "—";
-      return (num * 100).toFixed(digits === undefined ? 2 : digits) + "%";
-    }
-    function fmtNum(num, digits) {
-      if (num === null || num === undefined || !isFinite(num)) return "—";
-      return Number(num).toFixed(digits === undefined ? 3 : digits);
-    }
-    function parseTickers(raw) {
-      var seen = {};
-      var out = [];
-      String(raw || "").split(/[,\s]+/).forEach(function (t) {
-        var clean = t.trim().toUpperCase();
-        if (clean && !seen[clean]) { seen[clean] = true; out.push(clean); }
-      });
-      return out;
-    }
-    function mean(arr) {
-      if (!arr.length) return NaN;
-      var s = 0;
-      for (var i = 0; i < arr.length; i++) s += arr[i];
-      return s / arr.length;
-    }
-    function sampleStd(arr) {
-      if (arr.length < 2) return NaN;
-      var m = mean(arr), s = 0;
-      for (var i = 0; i < arr.length; i++) s += (arr[i] - m) * (arr[i] - m);
-      return Math.sqrt(s / (arr.length - 1));
-    }
-
-    /* ---------- Student-t two-tailed p-value (regularized incomplete beta) ---------- */
-    function betacf(a, b, x) {
-      var fpmin = 1e-30, qab = a + b, qap = a + 1, qam = a - 1;
-      var c = 1, d = 1 - qab * x / qap;
-      if (Math.abs(d) < fpmin) d = fpmin;
-      d = 1 / d;
-      var h = d;
-      for (var m = 1; m <= 200; m++) {
-        var m2 = 2 * m;
-        var aa = m * (b - m) * x / ((qam + m2) * (a + m2));
-        d = 1 + aa * d; if (Math.abs(d) < fpmin) d = fpmin;
-        c = 1 + aa / c; if (Math.abs(c) < fpmin) c = fpmin;
-        d = 1 / d; h *= d * c;
-        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2));
-        d = 1 + aa * d; if (Math.abs(d) < fpmin) d = fpmin;
-        c = 1 + aa / c; if (Math.abs(c) < fpmin) c = fpmin;
-        d = 1 / d;
-        var del = d * c; h *= del;
-        if (Math.abs(del - 1) < 3e-7) break;
-      }
-      return h;
-    }
-    function gammaln(x) {
-      var cof = [76.18009172947146, -86.50532032941677, 24.01409824083091,
-        -1.231739572450155, 0.1208650973866179e-2, -0.5395239384953e-5];
-      var y = x, tmp = x + 5.5;
-      tmp -= (x + 0.5) * Math.log(tmp);
-      var ser = 1.000000000190015;
-      for (var j = 0; j < 6; j++) { y += 1; ser += cof[j] / y; }
-      return -tmp + Math.log(2.5066282746310005 * ser / x);
-    }
-    function betai(a, b, x) {
-      if (x <= 0) return 0;
-      if (x >= 1) return 1;
-      var bt = Math.exp(gammaln(a + b) - gammaln(a) - gammaln(b) + a * Math.log(x) + b * Math.log(1 - x));
-      if (x < (a + 1) / (a + b + 2)) return bt * betacf(a, b, x) / a;
-      return 1 - bt * betacf(b, a, 1 - x) / b;
-    }
-    function tTwoTailedP(t, df) {
-      if (!isFinite(t) || df <= 0) return NaN;
-      return betai(df / 2, 0.5, df / (df + t * t));
-    }
-
-    /* ---------- periods per year from spacing ---------- */
-    function periodsPerYear(dates) {
-      if (dates.length < 2) return 252;
-      var gaps = [];
-      for (var i = 1; i < dates.length; i++) {
-        gaps.push((dates[i] - dates[i - 1]) / 86400000);
-      }
-      gaps.sort(function (a, b) { return a - b; });
-      var med = gaps[Math.floor(gaps.length / 2)];
-      if (med <= 4) return 252;
-      if (med <= 10) return 52;
-      if (med <= 45) return 12;
-      return 4;
-    }
-
-    /* ---------- offline sample parsing ---------- */
-    function loadOfflineSeries() {
-      var lines = SAMPLE_CSV.split("\n");
-      var header = lines[0].split(",");
-      var idx = {};
-      header.forEach(function (h, i) { idx[h.trim().toLowerCase()] = i; });
-      var priceCol = idx["adj close"] !== undefined ? idx["adj close"] : idx["close"];
-      var series = {};
-      for (var r = 1; r < lines.length; r++) {
-        var cells = lines[r].split(",");
-        if (cells.length < 3) continue;
-        var ticker = cells[idx["ticker"]].trim().toUpperCase();
-        var date = new Date(cells[idx["date"]].trim() + "T00:00:00Z");
-        var price = parseFloat(cells[priceCol]);
-        var currency = idx["currency"] !== undefined ? (cells[idx["currency"]] || "").trim() : "";
-        if (!ticker || isNaN(date.getTime()) || !isFinite(price)) continue;
-        if (!series[ticker]) series[ticker] = { points: [], currency: currency };
-        series[ticker].points.push({ date: date, price: price });
-      }
-      Object.keys(series).forEach(function (t) {
-        series[t].points.sort(function (a, b) { return a.date - b.date; });
-      });
-      return series;
-    }
-
-    /* ---------- Yahoo fetch ---------- */
-    function fetchWithTimeout(url, ms) {
-      var controller = new AbortController();
-      var tid = setTimeout(function () { controller.abort(); }, ms || 13000);
-      return fetch(url, { signal: controller.signal, headers: { Accept: "application/json" } })
-        .then(function (res) { clearTimeout(tid); return res; })
-        .catch(function (e) { clearTimeout(tid); throw e; });
-    }
-    function proxyFetch(url, idx) { return fetchWithTimeout(CORS_PROXIES[idx](url), 13000); }
-    function findWorkingProxy() {
-      if (workingProxyIdx >= 0) return Promise.resolve(workingProxyIdx);
-      var testUrl = "https://query1.finance.yahoo.com/v8/finance/chart/AAPL?interval=1d&range=5d";
-      var i = 0;
-      function tryNext() {
-        if (i >= CORS_PROXIES.length) return Promise.resolve(-1);
-        var cur = i++;
-        return proxyFetch(testUrl, cur).then(function (res) {
-          if (!res.ok) return tryNext();
-          return res.text().then(function (text) {
-            if (text && text.indexOf("\"chart\"") > -1) { workingProxyIdx = cur; return cur; }
-            return tryNext();
-          });
-        }).catch(function () { return tryNext(); });
-      }
-      return tryNext();
-    }
-    function fetchYahooSeries(ticker, range, proxyIdx) {
-      var encoded = encodeURIComponent(ticker);
-      var url = YAHOO_BASES[0] + "/v8/finance/chart/" + encoded +
-        "?interval=1d&range=" + encodeURIComponent(range) + "&includePrePost=false";
-      return proxyFetch(url, proxyIdx).then(function (res) {
-        if (!res.ok) return null;
-        return res.text();
-      }).then(function (text) {
-        if (!text || text.charAt(0) !== "{") return null;
-        var data = JSON.parse(text);
-        var result = data && data.chart && Array.isArray(data.chart.result) ? data.chart.result[0] : null;
-        if (!result || !result.timestamp) return null;
-        var ts = result.timestamp;
-        var quote = result.indicators && result.indicators.quote ? result.indicators.quote[0] : null;
-        var adj = result.indicators && result.indicators.adjclose ? result.indicators.adjclose[0].adjclose : null;
-        var closes = quote ? quote.close : null;
-        var currency = (result.meta && result.meta.currency) || "";
-        var points = [];
-        for (var i = 0; i < ts.length; i++) {
-          var px = adj && adj[i] != null ? adj[i] : (closes && closes[i] != null ? closes[i] : null);
-          if (px == null || !isFinite(px)) continue;
-          points.push({ date: new Date(ts[i] * 1000), price: Number(px) });
-        }
-        if (points.length < 2) return null;
-        return { points: points, currency: currency };
-      }).catch(function () { return null; });
-    }
-    function fetchAllYahoo(tickers, range) {
-      return findWorkingProxy().then(function (proxyIdx) {
-        if (proxyIdx < 0) {
-          throw new Error("Live data is unavailable right now (no reachable data proxy). Try Offline Sample mode.");
-        }
-        var series = {};
-        var failed = [];
-        var chain = Promise.resolve();
-        tickers.forEach(function (t) {
-          chain = chain.then(function () {
-            setStatus("Fetching " + t + " from Yahoo Finance…");
-            return fetchYahooSeries(t, range, proxyIdx).then(function (res) {
-              if (res) series[t] = res; else failed.push(t);
-            });
-          });
-        });
-        return chain.then(function () { return { series: series, failed: failed }; });
-      });
-    }
-
-    /* ---------- analytics ---------- */
-    function buildReturns(points) {
-      var rets = [];
-      for (var i = 1; i < points.length; i++) {
-        var prev = points[i - 1].price, cur = points[i].price;
-        if (prev > 0 && isFinite(prev) && isFinite(cur)) {
-          rets.push({ date: points[i].date, ret: cur / prev - 1 });
-        }
-      }
-      return rets;
-    }
-    function maxDrawdown(points) {
-      if (points.length < 2) return NaN;
-      var peak = points[0].price, mdd = 0;
-      for (var i = 0; i < points.length; i++) {
-        if (points[i].price > peak) peak = points[i].price;
-        if (peak > 0) {
-          var dd = points[i].price / peak - 1;
-          if (dd < mdd) mdd = dd;
-        }
-      }
-      return mdd;
-    }
-    function computeMetrics(ticker, data, ppy, rfAnnual) {
-      var points = data.points;
-      var rets = buildReturns(points).map(function (r) { return r.ret; });
-      var obs = rets.length;
-      var totalReturn = (points.length >= 2 && points[0].price !== 0)
-        ? points[points.length - 1].price / points[0].price - 1 : NaN;
-      var annReturn = (obs > 0 && isFinite(totalReturn) && totalReturn > -1)
-        ? Math.pow(1 + totalReturn, ppy / obs) - 1 : NaN;
-      var sd = sampleStd(rets);
-      var vol = obs > 1 ? sd * Math.sqrt(ppy) : NaN;
-      var rfPer = ppy ? rfAnnual / ppy : 0;
-      var sharpe = (obs > 1 && sd !== 0 && isFinite(sd))
-        ? (mean(rets) - rfPer) / sd * Math.sqrt(ppy) : NaN;
-      return {
-        ticker: ticker,
-        totalReturn: totalReturn,
-        annReturn: annReturn,
-        volatility: vol,
-        sharpe: sharpe,
-        maxDrawdown: maxDrawdown(points),
-        observations: obs,
-        currency: data.currency || ""
-      };
-    }
-    function returnsMap(points) {
-      var map = {};
-      var rets = buildReturns(points);
-      rets.forEach(function (r) { map[r.date.toISOString().slice(0, 10)] = r.ret; });
-      return map;
-    }
-    function pearson(mapA, mapB) {
-      var xs = [], ys = [];
-      Object.keys(mapA).forEach(function (d) {
-        if (mapB.hasOwnProperty(d)) { xs.push(mapA[d]); ys.push(mapB[d]); }
-      });
-      if (xs.length < 2) return NaN;
-      var mx = mean(xs), my = mean(ys), num = 0, dx = 0, dy = 0;
-      for (var i = 0; i < xs.length; i++) {
-        num += (xs[i] - mx) * (ys[i] - my);
-        dx += (xs[i] - mx) * (xs[i] - mx);
-        dy += (ys[i] - my) * (ys[i] - my);
-      }
-      if (dx === 0 || dy === 0) return NaN;
-      return num / Math.sqrt(dx * dy);
-    }
-    function regression(mapY, mapX, rfPer) {
-      var ys = [], xs = [];
-      Object.keys(mapY).forEach(function (d) {
-        if (mapX.hasOwnProperty(d)) { ys.push(mapY[d] - rfPer); xs.push(mapX[d] - rfPer); }
-      });
-      var n = xs.length;
-      if (n < 3) return { alpha: NaN, beta: NaN, r2: NaN, t: NaN, p: NaN, n: n };
-      var mx = mean(xs), my = mean(ys), xvar = 0, cov = 0;
-      for (var i = 0; i < n; i++) { xvar += (xs[i] - mx) * (xs[i] - mx); cov += (xs[i] - mx) * (ys[i] - my); }
-      if (xvar === 0) return { alpha: NaN, beta: NaN, r2: NaN, t: NaN, p: NaN, n: n };
-      var beta = cov / xvar;
-      var alpha = my - beta * mx;
-      var ssRes = 0, ssTot = 0;
-      for (var j = 0; j < n; j++) {
-        var yhat = alpha + beta * xs[j];
-        ssRes += (ys[j] - yhat) * (ys[j] - yhat);
-        ssTot += (ys[j] - my) * (ys[j] - my);
-      }
-      var r2 = ssTot ? 1 - ssRes / ssTot : NaN;
-      var resVar = ssRes / (n - 2);
-      var betaSe = Math.sqrt(resVar / xvar);
-      var t = betaSe ? beta / betaSe : NaN;
-      var p = isFinite(t) ? tTwoTailedP(t, n - 2) : NaN;
-      return { alpha: alpha, beta: beta, r2: r2, t: t, p: p, n: n };
-    }
-
-    /* ---------- FX normalization ---------- */
-    function parseNormalize(value) {
-      var v = String(value || "").trim();
-      if (!v || /^off/i.test(v)) return null;
-      return v.toUpperCase();
-    }
-    // Build a forward-fill aligner from sorted FX points: returns the rate at or
-    // before a date, back-filling the leading edge from the earliest known rate.
-    function buildFxAligner(fxPoints) {
-      if (!fxPoints || !fxPoints.length) return function () { return null; };
-      var sorted = fxPoints.slice().sort(function (a, b) { return a.date - b.date; });
-      return function (d) {
-        var rate = null;
-        for (var i = 0; i < sorted.length; i++) {
-          if (sorted[i].date <= d) rate = sorted[i].price; else break;
-        }
-        if (rate === null) rate = sorted[0].price;
-        return isFinite(rate) ? rate : null;
-      };
-    }
-    // Resolve sample FX points for native->target, deriving the inverse if needed.
-    function sampleFxPoints(native, target) {
-      function toPoints(rows) {
-        return rows.map(function (r) { return { date: new Date(r[0] + "T00:00:00Z"), price: r[1] }; });
-      }
-      if (SAMPLE_FX[native + target]) return toPoints(SAMPLE_FX[native + target]);
-      if (SAMPLE_FX[target + native]) {
-        return toPoints(SAMPLE_FX[target + native]).map(function (p) {
-          return { date: p.date, price: p.price ? 1 / p.price : null };
-        });
-      }
-      return null;
-    }
-    // Convert each security's price points into the target currency before any
-    // returns/metrics/charts are computed. Fails soft per security with a warning.
-    function normalizeSeries(seriesByTicker, tickers, target, alignerByCurrency) {
-      var warnings = [];
-      tickers.forEach(function (t) {
-        var s = seriesByTicker[t];
-        if (!s) return;
-        var native = String(s.currency || "").toUpperCase();
-        if (!native) { warnings.push(t + ": listing currency unknown; left unconverted."); return; }
-        if (native === target) { s.currency = target; return; }
-        var aligner = alignerByCurrency[native];
-        if (!aligner) { warnings.push("FX rates unavailable for " + native + "→" + target + "; " + t + " shown in " + native + "."); return; }
-        s.points = s.points.map(function (p) {
-          var r = aligner(p.date);
-          return (r && isFinite(r)) ? { date: p.date, price: p.price * r } : p;
-        });
-        s.currency = target;
-      });
-      return warnings;
-    }
-
-    /* ---------- rendering ---------- */
-    function heatColor(v) {
-      if (v === null || v === undefined || !isFinite(v)) return "#16273f";
-      // -1 (teal) -> 0 (slate) -> +1 (red/orange)
-      var t = (v + 1) / 2;
-      var cold = [79, 214, 214], mid = [22, 39, 63], hot = [242, 140, 78];
-      var c;
-      if (t < 0.5) {
-        var k = t / 0.5;
-        c = cold.map(function (a, i) { return Math.round(a + (mid[i] - a) * k); });
-      } else {
-        var k2 = (t - 0.5) / 0.5;
-        c = mid.map(function (a, i) { return Math.round(a + (hot[i] - a) * k2); });
-      }
-      return "rgb(" + c[0] + "," + c[1] + "," + c[2] + ")";
-    }
-    function renderMetrics(metrics, dateLabel, obs) {
-      var best = null;
-      metrics.forEach(function (m) {
-        if (isFinite(m.totalReturn) && (best === null || m.totalReturn > best.totalReturn)) best = m;
-      });
-      summaryTiles.innerHTML =
-        tile("Securities Compared", String(metrics.length)) +
-        tile("Date Range", dateLabel) +
-        tile("Observations", String(obs)) +
-        tile("Best Total Return", best ? (best.ticker + " " + fmtPct(best.totalReturn)) : "—");
-
-      metricsBody.innerHTML = metrics.map(function (m) {
-        return "<tr>" +
-          "<td><strong>" + esc(m.ticker) + "</strong></td>" +
-          "<td>" + fmtPct(m.totalReturn) + "</td>" +
-          "<td>" + fmtPct(m.annReturn) + "</td>" +
-          "<td>" + fmtPct(m.volatility) + "</td>" +
-          "<td>" + fmtNum(m.sharpe, 2) + "</td>" +
-          "<td>" + fmtPct(m.maxDrawdown) + "</td>" +
-          "<td>" + m.observations + "</td>" +
-          "<td>" + esc(m.currency || "—") + "</td>" +
-          "</tr>";
-      }).join("");
-    }
-    function tile(label, value) {
-      return "<div class='summary-item'><span>" + esc(label) + "</span><strong>" + esc(value) + "</strong></div>";
-    }
-    function renderCurrencyWarning(metrics, normInfo) {
-      if (normInfo && normInfo.target) {
-        var src = normInfo.source === "offline" ? "bundled Offline Sample FX rates" : "daily Yahoo Finance FX rates";
-        var html = "<strong style='color:#5ef0ab;'>FX normalization ON</strong> — all series converted to " +
-          esc(normInfo.target) + " using " + src + ".";
-        if (normInfo.warnings && normInfo.warnings.length) {
-          html += "<br><span style='color:#f2c14e;'>" + esc(normInfo.warnings.join(" ")) + "</span>";
-        }
-        currencyWarning.innerHTML = html;
-        return;
-      }
-      var currencies = {};
-      metrics.forEach(function (m) { if (m.currency) currencies[m.currency] = true; });
-      var keys = Object.keys(currencies);
-      if (keys.length > 1) {
-        currencyWarning.innerHTML = "<strong style='color:#f2c14e;'>Currency note:</strong> Multiple listing currencies detected (" +
-          esc(keys.join(", ")) + "). Cross-currency comparisons may be distorted without FX normalization.";
-      } else {
-        currencyWarning.innerHTML = "";
-      }
-    }
-    function renderCorrelation(tickers, retMaps) {
-      if (tickers.length < 2) {
-        correlationNode.innerHTML = "<span class='muted'>Add at least two securities to compute correlations.</span>";
-        diversificationNode.innerHTML = "";
-        return;
-      }
-      var html = "<table class='sheet-table sdd-corr-table' style='min-width:0;'><thead><tr><th></th>";
-      tickers.forEach(function (t) { html += "<th>" + esc(t) + "</th>"; });
-      html += "</tr></thead><tbody>";
-      var high = [], low = [];
-      for (var i = 0; i < tickers.length; i++) {
-        html += "<tr><th>" + esc(tickers[i]) + "</th>";
-        for (var j = 0; j < tickers.length; j++) {
-          var v = i === j ? 1 : pearson(retMaps[tickers[i]], retMaps[tickers[j]]);
-          var txt = isFinite(v) ? v.toFixed(2) : "—";
-          var fg = (isFinite(v) && Math.abs(v) > 0.55) ? "#0f1d31" : "#dce7f7";
-          html += "<td style='background:" + heatColor(v) + ";color:" + fg + ";text-align:center;font-variant-numeric:tabular-nums;'>" + txt + "</td>";
-          if (i < j && isFinite(v)) {
-            if (v >= 0.85) high.push(tickers[i] + "/" + tickers[j] + " (" + v.toFixed(2) + ")");
-            else if (v <= 0.30) low.push(tickers[i] + "/" + tickers[j] + " (" + v.toFixed(2) + ")");
-          }
-        }
-        html += "</tr>";
-      }
-      html += "</tbody></table>";
-      correlationNode.innerHTML = html;
-
-      var parts = [];
-      if (high.length) parts.push("<strong style='color:#ff8fa3;'>High correlation (&ge;0.85):</strong> " + esc(high.join(", ")));
-      if (low.length) parts.push("<strong style='color:#5ef0ab;'>Diversifying (&le;0.30):</strong> " + esc(low.join(", ")));
-      diversificationNode.innerHTML = parts.length ? parts.join("<br>") : "No strong diversification flags detected at the 0.85 / 0.30 thresholds.";
-    }
-    function renderRegression(benchmark, tickers, retMaps, rfPer) {
-      var others = tickers.filter(function (t) { return t !== benchmark; });
-      if (!benchmark || !others.length) {
-        regressionNode.innerHTML = "<span class='muted'>Need at least two securities for regression.</span>";
-        return;
-      }
-      var rows = others.map(function (t) {
-        var reg = regression(retMaps[t], retMaps[benchmark], rfPer);
-        var sig = isFinite(reg.p) ? (reg.p < 0.01 ? " ***" : reg.p < 0.05 ? " **" : reg.p < 0.1 ? " *" : "") : "";
-        return "<tr>" +
-          "<td><strong>" + esc(t) + "</strong></td>" +
-          "<td>" + fmtPct(reg.alpha, 3) + "</td>" +
-          "<td>" + fmtNum(reg.beta, 3) + sig + "</td>" +
-          "<td>" + fmtNum(reg.r2, 3) + "</td>" +
-          "<td>" + fmtNum(reg.p, 4) + "</td>" +
-          "<td>" + reg.n + "</td>" +
-          "</tr>";
-      }).join("");
-      regressionNode.innerHTML =
-        "<table class='sheet-table' style='min-width:0;'><thead><tr>" +
-        "<th>Y vs " + esc(benchmark) + "</th><th>Alpha (per period)</th><th>Beta</th><th>R&sup2;</th><th>p-value</th><th>Obs</th>" +
-        "</tr></thead><tbody>" + rows + "</tbody></table>" +
-        "<div class='muted' style='margin-top:0.5rem;'>Beta significance: * p&lt;0.10, ** p&lt;0.05, *** p&lt;0.01. Alpha shown per return period.</div>";
-    }
-
-    function destroyChart(key) {
-      if (charts[key]) { charts[key].destroy(); charts[key] = null; }
-    }
-    function commonLineOptions(yLabel, yIsPct) {
-      return {
-        responsive: true, maintainAspectRatio: false,
-        interaction: { mode: "index", intersect: false },
-        plugins: { legend: { labels: { color: "#cfe0f7" } } },
-        scales: {
-          x: { ticks: { color: "#9db2d2", maxTicksLimit: 8 }, grid: { color: "rgba(127,177,240,0.08)" } },
-          y: {
-            title: { display: true, text: yLabel, color: "#9db2d2" },
-            ticks: {
-              color: "#9db2d2",
-              callback: function (v) { return yIsPct ? (v * 100).toFixed(0) + "%" : v; }
-            },
-            grid: { color: "rgba(127,177,240,0.08)" }
-          }
-        }
-      };
-    }
-    function renderCharts(tickers, seriesByTicker) {
-      if (chartUnavailable) return;
-      var labelSet = {};
-      tickers.forEach(function (t) {
-        seriesByTicker[t].points.forEach(function (p) { labelSet[p.date.toISOString().slice(0, 10)] = true; });
-      });
-      var labels = Object.keys(labelSet).sort();
-
-      function alignedSeries(t, transform) {
-        var byDate = {};
-        var pts = seriesByTicker[t].points;
-        var base = pts.length ? pts[0].price : 1;
-        var peak = pts.length ? pts[0].price : 1;
-        pts.forEach(function (p) {
-          if (p.price > peak) peak = p.price;
-          byDate[p.date.toISOString().slice(0, 10)] = transform(p.price, base, peak);
-        });
-        return labels.map(function (d) { return byDate.hasOwnProperty(d) ? byDate[d] : null; });
-      }
-
-      var indexedSets = tickers.map(function (t, i) {
-        return { label: t, data: alignedSeries(t, function (px, base) { return base ? px / base * 100 : null; }),
-          borderColor: PALETTE[i % PALETTE.length], backgroundColor: PALETTE[i % PALETTE.length], spanGaps: true, tension: 0.15, pointRadius: 0, borderWidth: 2 };
-      });
-      var cumulativeSets = tickers.map(function (t, i) {
-        return { label: t, data: alignedSeries(t, function (px, base) { return base ? px / base - 1 : null; }),
-          borderColor: PALETTE[i % PALETTE.length], backgroundColor: PALETTE[i % PALETTE.length], spanGaps: true, tension: 0.15, pointRadius: 0, borderWidth: 2 };
-      });
-      var drawdownSets = tickers.map(function (t, i) {
-        return { label: t, data: alignedSeries(t, function (px, base, peak) { return peak ? px / peak - 1 : null; }),
-          borderColor: PALETTE[i % PALETTE.length], backgroundColor: PALETTE[i % PALETTE.length], spanGaps: true, tension: 0.15, pointRadius: 0, borderWidth: 2 };
-      });
-
-      destroyChart("indexed");
-      charts.indexed = new Chart(document.getElementById("sddIndexedChart"), {
-        type: "line", data: { labels: labels, datasets: indexedSets }, options: commonLineOptions("Index (start = 100)", false)
-      });
-      destroyChart("cumulative");
-      charts.cumulative = new Chart(document.getElementById("sddCumulativeChart"), {
-        type: "line", data: { labels: labels, datasets: cumulativeSets }, options: commonLineOptions("Cumulative return", true)
-      });
-      destroyChart("drawdown");
-      charts.drawdown = new Chart(document.getElementById("sddDrawdownChart"), {
-        type: "line", data: { labels: labels, datasets: drawdownSets }, options: commonLineOptions("Drawdown", true)
-      });
-    }
-    function renderScatter(metrics) {
-      if (chartUnavailable) return;
-      var pts = metrics.filter(function (m) { return isFinite(m.volatility) && isFinite(m.annReturn); })
-        .map(function (m, i) { return { x: m.volatility, y: m.annReturn, label: m.ticker, color: PALETTE[i % PALETTE.length] }; });
-      destroyChart("scatter");
-      charts.scatter = new Chart(document.getElementById("sddScatterChart"), {
-        type: "scatter",
-        data: { datasets: pts.map(function (p) {
-          return { label: p.label, data: [{ x: p.x, y: p.y }], backgroundColor: p.color, pointRadius: 7, pointHoverRadius: 9 };
-        }) },
-        options: {
-          responsive: true, maintainAspectRatio: false,
-          plugins: {
-            legend: { labels: { color: "#cfe0f7" } },
-            tooltip: { callbacks: { label: function (c) {
-              return c.dataset.label + ": vol " + (c.parsed.x * 100).toFixed(1) + "%, ret " + (c.parsed.y * 100).toFixed(1) + "%";
-            } } }
-          },
-          scales: {
-            x: { title: { display: true, text: "Annualized volatility", color: "#9db2d2" },
-              ticks: { color: "#9db2d2", callback: function (v) { return (v * 100).toFixed(0) + "%"; } }, grid: { color: "rgba(127,177,240,0.08)" } },
-            y: { title: { display: true, text: "Annualized return", color: "#9db2d2" },
-              ticks: { color: "#9db2d2", callback: function (v) { return (v * 100).toFixed(0) + "%"; } }, grid: { color: "rgba(127,177,240,0.08)" } }
-          }
-        }
-      });
-    }
-
-    function populateBenchmark(tickers) {
-      benchmarkSelect.innerHTML = tickers.map(function (t, i) {
-        return "<option value='" + esc(t) + "'" + (i === tickers.length - 1 ? " selected" : "") + ">" + esc(t) + "</option>";
-      }).join("");
-      benchmarkSelect.disabled = tickers.length < 2;
-    }
-
-    /* ---------- run ---------- */
-    function setRunning(running) {
-      isRunning = running;
-      runBtn.disabled = running;
-      sampleBtn.disabled = running;
-    }
-    function processSeries(seriesByTicker, requested, normInfo) {
-      var tickers = requested.filter(function (t) { return seriesByTicker[t] && seriesByTicker[t].points.length >= 2; });
-      if (!tickers.length) {
-        setStatus("No usable price history was returned for those tickers.", "#ff8fa3");
-        return;
-      }
-      var allDates = [];
-      tickers.forEach(function (t) { seriesByTicker[t].points.forEach(function (p) { allDates.push(p.date); }); });
-      allDates.sort(function (a, b) { return a - b; });
-      var ppy = periodsPerYear(seriesByTicker[tickers[0]].points.map(function (p) { return p.date; }));
-      var rfAnnual = Math.max(0, parseFloat(riskFreeInput.value) || 0) / 100;
-      var rfPer = ppy ? rfAnnual / ppy : 0;
-
-      var metrics = tickers.map(function (t) { return computeMetrics(t, seriesByTicker[t], ppy, rfAnnual); });
-      var retMaps = {};
-      tickers.forEach(function (t) { retMaps[t] = returnsMap(seriesByTicker[t].points); });
-
-      var dateLabel = allDates.length
-        ? allDates[0].toISOString().slice(0, 10) + " → " + allDates[allDates.length - 1].toISOString().slice(0, 10) : "—";
-      var maxObs = metrics.reduce(function (a, m) { return Math.max(a, m.observations); }, 0);
-
-      renderMetrics(metrics, dateLabel, maxObs);
-      renderCurrencyWarning(metrics, normInfo);
-      renderCorrelation(tickers, retMaps);
-      populateBenchmark(tickers);
-      renderRegression(benchmarkSelect.value || tickers[tickers.length - 1], tickers, retMaps, rfPer);
-      renderCharts(tickers, seriesByTicker);
-      renderScatter(metrics);
-
-      lastRun = { tickers: tickers, retMaps: retMaps, rfPer: rfPer };
-      setStatus("Analysis complete — " + tickers.length + " securities, " + maxObs + " return observations (assumed " + ppy + " periods/yr).", "#5ef0ab");
-    }
-
-    function nativeCurrenciesNeeding(seriesByTicker, tickers, target) {
-      var natives = {};
-      tickers.forEach(function (t) {
-        var c = String((seriesByTicker[t] && seriesByTicker[t].currency) || "").toUpperCase();
-        if (c && c !== target) natives[c] = true;
-      });
-      return Object.keys(natives);
-    }
-    function applyOfflineNormalization(seriesByTicker, tickers) {
-      var target = parseNormalize(normalizeSelect.value);
-      if (!target) return null;
-      var aligners = {};
-      var warnings = [];
-      nativeCurrenciesNeeding(seriesByTicker, tickers, target).forEach(function (nc) {
-        var pts = sampleFxPoints(nc, target);
-        if (pts) aligners[nc] = buildFxAligner(pts);
-        else warnings.push("FX rates unavailable for " + nc + "→" + target + ".");
-      });
-      warnings = normalizeSeries(seriesByTicker, tickers, target, aligners).concat(warnings);
-      return { target: target, warnings: warnings, source: "offline" };
-    }
-
-    function run() {
-      if (isRunning) return;
-      var source = dataSourceSelect.value;
-      if (source === "offline") {
-        var offline = loadOfflineSeries();
-        var requested = Object.keys(offline);
-        setRunning(true);
-        setStatus("Loading offline sample data…");
-        try {
-          var normInfo = applyOfflineNormalization(offline, requested);
-          processSeries(offline, requested, normInfo);
-        }
-        catch (e) { setStatus("Could not process sample data: " + e.message, "#ff8fa3"); }
-        setRunning(false);
-        return;
-      }
-      var tickers = parseTickers(tickersInput.value);
-      if (!tickers.length) { setStatus("Enter at least one ticker.", "#ff8fa3"); return; }
-      if (tickers.length > 10) { tickers = tickers.slice(0, 10); }
-      setRunning(true);
-      setStatus("Connecting to Yahoo Finance…");
-      fetchAllYahoo(tickers, rangeSelect.value).then(function (res) {
-        if (res.failed.length) {
-          setStatus("Could not load: " + res.failed.join(", ") + ". Continuing with the rest…", "#f2c14e");
-        }
-        var ok = tickers.filter(function (t) { return res.series[t]; });
-        if (!ok.length) {
-          setStatus("No tickers could be loaded. Check symbols or try Offline Sample mode.", "#ff8fa3");
-          setRunning(false);
-          return;
-        }
-        var target = parseNormalize(normalizeSelect.value);
-        if (!target) {
-          processSeries(res.series, ok);
-          setRunning(false);
-          return;
-        }
-        var pairs = nativeCurrenciesNeeding(res.series, ok, target);
-        var aligners = {};
-        var fxWarnings = [];
-        var fchain = Promise.resolve();
-        pairs.forEach(function (nc) {
-          fchain = fchain.then(function () {
-            setStatus("Fetching FX " + nc + "→" + target + "…");
-            return fetchYahooSeries(nc + target + "=X", rangeSelect.value, workingProxyIdx).then(function (fx) {
-              if (fx && fx.points && fx.points.length) aligners[nc] = buildFxAligner(fx.points);
-              else fxWarnings.push("FX rates unavailable for " + nc + "→" + target + "; left in native currency.");
-            });
-          });
-        });
-        fchain.then(function () {
-          var warnings = normalizeSeries(res.series, ok, target, aligners).concat(fxWarnings);
-          processSeries(res.series, ok, { target: target, warnings: warnings, source: "yahoo" });
-          setRunning(false);
-        });
-      }).catch(function (e) {
-        setStatus(e.message || "Live data fetch failed. Try Offline Sample mode.", "#ff8fa3");
-        setRunning(false);
-      });
-    }
-
-    /* ---------- events ---------- */
-    function syncSourceUI() {
-      var offline = dataSourceSelect.value === "offline";
-      rangeField.style.opacity = offline ? "0.5" : "1";
-      rangeSelect.disabled = offline;
-      sampleHint.style.display = offline ? "block" : "none";
-    }
-    dataSourceSelect.addEventListener("change", syncSourceUI);
-    runBtn.addEventListener("click", run);
-    sampleBtn.addEventListener("click", function () {
-      dataSourceSelect.value = "offline";
-      syncSourceUI();
-      run();
-    });
-    benchmarkSelect.addEventListener("change", function () {
-      if (lastRun) renderRegression(benchmarkSelect.value, lastRun.tickers, lastRun.retMaps, lastRun.rfPer);
-    });
-    tickersInput.addEventListener("keydown", function (e) { if (e.key === "Enter") run(); });
-
-    if (chartUnavailable) {
-      setStatus("Charts could not load (offline or blocked CDN). Tables and metrics still work.", "#f2c14e");
-    }
-    syncSourceUI();
-  })();
-</script>
-{% endraw %}
+<script type="module" src="{{ '/assets/js/stock-dashboard/app.js' | relative_url }}"></script>

@@ -28,7 +28,7 @@ Outside of my advisory work, I build software tools independently — applying w
 
 ### Personal Projects
 
-#### Portfolio Dashboard — [elmatthe.github.io/portfolio-dashboard]({{ '/software/portfolio-dashboard/' | relative_url }})
+#### Portfolio Dashboard — [elmatthe.github.io/software/portfolio-dashboard]({{ '/software/portfolio-dashboard/' | relative_url }})
 *Ongoing development since 2025 · Built with Claude Code, OpenAI Codex, and Cursor AI agents*
 
 A personal investment tracking application that consolidates holdings across 11 Canadian and international brokerages (Questrade, Wealthsimple, RBC, TD, CIBC, and more), multiple currencies, and all major registered account types. Includes automated CRA-compliant tax reporting tools — capital gains calculation, TFSA contribution room tracking, superficial loss flagging, and PDF generation of Schedule 3-style reports. Built as a Windows desktop application with a clean browser-based interface, installable without technical setup. Also includes portfolio analytics: risk-adjusted return metrics, asset correlation, dividend tracking, rebalancing suggestions, and a "What-If" tax simulator that estimates marginal tax impact across account types.
@@ -36,7 +36,7 @@ A personal investment tracking application that consolidates holdings across 11 
 #### Audiobook Toolkit & Streaming Platform — Crimson Audiobooks
 *Ongoing development since 2025 · Built with Claude Code, OpenAI Codex, and Cursor AI agents*
 
-A desktop application that converts e-books and documents (EPUB, PDF, TXT) into audiobook files using either Microsoft's cloud-based neural voice or a fully offline AI voice model running locally on-device. Paired with Crimson Audiobooks — a privately hosted streaming service for ~20 users on iOS and Android, with offline downloads, lock screen playback controls, and cross-device progress sync. Similar in concept to a personal Audible or Spotify, built and self-hosted entirely from scratch.
+A desktop application that converts e-books and documents (EPUB, PDF, TXT) into audiobook files using either Microsoft's cloud-based neural voice or a fully offline AI voice model running locally on-device. Paired with Crimson Audiobooks — a privately hosted streaming service for ~20 users on iOS and Android, with offline downloads, lock screen playback controls, and cross-device progress sync. Similar in concept to a personal Audible or Spotify, built and self-hosted entirely from scratch. The desktop converter is available as the [Audiobook Creation Tool]({{ '/software/audiobook-creation-tool/' | relative_url }}).
 
 ---
 

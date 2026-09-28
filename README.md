@@ -5,14 +5,15 @@ Professional GitHub Pages portfolio for wealth management projects, software app
 ## Site Structure
 - `index.md` - Homepage with advisory focus and quick navigation
 - `projects.md` - Project landing page
-- `projects/` - Individual project pages (Monte Carlo, CPI, Portfolio Rebalancer)
+- `projects/` - Individual project pages (Monte Carlo, CPI, Portfolio Rebalancer, Stock Comparison & Analytics)
 - `software.md` - Software and applications landing page
 - `software/` - Individual application pages (Portfolio Dashboard, Audiobook Creation Tool)
 - `about.md` - Professional profile
 - `assets/main.scss` - Global visual styling
+- `assets/js/stock-dashboard/` - Browser ES modules for the Stock Comparison & Analytics dashboard (proxy pipeline, Yahoo Finance adapter, analytics, research view, exports); page styles in `assets/css/stock-dashboard.css`
 
 ## Featured Tool
-- **Stock Comparison & Analytics Tool** (v0.3.0) — browser dashboard and downloadable cross-platform Python desktop app for comparing stocks/ETFs/indexes with performance and risk metrics, correlation, and regression. v0.3.0 **adds FX (currency) normalization** — convert every security to one common currency (USD/CAD/EUR/GBP) before metrics so cross-currency comparisons reflect true performance instead of FX drift — and fixes/flags bugs found during a focused review (see the tool's CHANGELOG and handoff log).
+- **Stock Comparison & Analytics Tool** — in-browser research dashboard plus the downloadable cross-platform Python desktop app (v0.3.0). The browser dashboard uses the TipRanks Automation Tool comparison engine and layout, rewritten as client-side modules. It has four tabs: Multi-Stock Comparison (2–10 tickers, nine horizons, exact-interval correlation heatmap, regression, charts, ECB-rate currency normalization), Security Research (live Yahoo snapshot, plus analyst consensus from a locally opened TipRanks research file), Export (five-sheet XLSX/CSV/JSON), and Settings (proxy health, personal proxy, cache, theme). Live Yahoo Finance data goes through a fallback chain of public CORS proxies; the site owner can set `data-site-proxy` on the page to a deployed copy of `assets/js/stock-dashboard/proxy-worker.example.js` for dependable access.
 - **Monte Carlo Retirement Simulator** — browser scenario tool, downloadable desktop app, and setup guide.
 - **Portfolio Rebalancer** — browser tool and desktop program with two modes (New Money / Rebalance), three invariants (budget cap, sell-funds-buys, cross-account funding), optional live Yahoo Finance data, and CSV/Excel export. Desktop program uses a Python package structure with `setup.bat` / `run.bat` for one-click Windows setup.
 - **CPI Webscraper** — automated CPI data pipeline with dashboard and setup guide.

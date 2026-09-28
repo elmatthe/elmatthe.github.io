@@ -3,7 +3,7 @@ layout: page
 title: CPI Dashboard Automation
 permalink: /projects/cpi-dashboard-automation/
 summary: CPI data download and spreadsheet workflow project with downloadable templates.
-last_updated: 2026-06-19
+last_updated: 2026-09-28
 ---
 
 <section class="hero-panel">
@@ -15,7 +15,7 @@ last_updated: 2026-06-19
 ## Downloads
 <div class="btn-row">
   <a class="btn" href="{{ '/projects/cpi-automation.zip' | relative_url }}" download="cpi-automation.zip">Download cpi-automation.zip (full project)</a>
-  <a class="btn" href="{{ '/projects/CPI_Automation/files/CPI.xlsx' | relative_url }}" download>Download CPI Template (.xlsx)</a>
+  <a class="btn" href="{{ '/projects/CPI_Automation/files/tests/CPI.xlsx' | relative_url }}" download>Download CPI Template (.xlsx)</a>
   <a class="btn" href="{{ '/projects/CPI_Automation/scripts/cpi_dashboard_downloader-v0.2.0.py' | relative_url }}" download>Download CPI Downloader (.py)</a>
 </div>
 
