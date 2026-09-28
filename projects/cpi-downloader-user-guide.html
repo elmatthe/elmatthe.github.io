@@ -1,0 +1,123 @@
+---
+layout: project
+project: cpi
+kind: guide
+title: CPI Web Scraper Setup Guide
+permalink: /projects/cpi-downloader-user-guide/
+redirect_from:
+  - /projects/CPI_Automation/
+eyebrow: Setup & user guide
+summary: How to install, configure and run the CPI Web Scraper on Windows with desktop Excel, including FRED API key setup and troubleshooting.
+lede: Set up the CPI Web Scraper with one launcher, add your free FRED API key, and write Statistics Canada and FRED data into your Excel model.
+last_updated: 2026-09-28
+sections:
+  - { id: before, label: Before you start }
+  - { id: install, label: Install }
+  - { id: use, label: Using the program }
+  - { id: config, label: Configuration }
+  - { id: manage, label: Update & remove }
+  - { id: troubleshooting, label: Troubleshooting }
+  - { id: developers, label: For developers }
+---
+{%- assign p = site.data.tool_projects.cpi -%}
+<section class="pj-section" id="before" aria-labelledby="before-h">
+  <h2 id="before-h">Before you start</h2>
+  <dl class="pj-facts">
+    <dt>Operating system</dt><dd>Windows 10 or 11. The tool doesn't run on macOS.</dd>
+    <dt>Excel</dt><dd>Desktop Microsoft Excel for Windows. Excel on the web and Excel for Mac can't be automated this way.</dd>
+    <dt>Python</dt><dd>You don't need to install it yourself. The launcher uses an existing stable Python {{ p.python }} or offers to install Python 3.14 for your user account only.</dd>
+    <dt>FRED API key</dt><dd>Free. <a href="https://fred.stlouisfed.org/docs/api/api_key.html">Request one from the St. Louis Fed</a>; it takes a couple of minutes.</dd>
+    <dt>Administrator rights</dt><dd>Not needed.</dd>
+    <dt>Internet</dt><dd>Needed for setup and for every download (Statistics Canada, FRED, and Yahoo Finance only if you enable the optional S&amp;P 500 history).</dd>
+  </dl>
+</section>
+
+<section class="pj-section" id="install" aria-labelledby="install-h">
+  <h2 id="install-h">Install and first run</h2>
+  <ol class="pj-steps">
+    <li><strong>Download <a href="{{ p.zip | relative_url }}" download>{{ p.zip_name }}</a></strong> and extract it to a normal folder such as Documents. Keep the <code>CPI-Webscraper</code> folder together.</li>
+    <li><strong>Double-click <code>{{ p.launcher_windows }}</code>.</strong> If SmartScreen warns about a downloaded file, choose <em>More info → Run anyway</em> only if you trust the source; on a work PC, ask IT first.</li>
+    <li><strong>If asked, allow the Python install</strong> (Y/N). It uses <code>winget</code> with user scope and leaves PATH unchanged.</li>
+    <li><strong>The program opens</strong> after setup has proven the environment. The first run also creates <code>config.toml</code> from the blank template.</li>
+  </ol>
+  <details class="pj-details">
+    <summary>What the launcher does, step by step</summary>
+    <div class="pj-details-body">
+      <ol>
+        <li><strong>Assess:</strong> finds a stable Python 3.11–3.14 with tkinter (never the Microsoft Store placeholder), then checks the private <code>.venv</code>: version, exact package pins and real imports.</li>
+        <li><strong>Repair / provision:</strong> rebuilds a missing or broken <code>.venv</code> (keeping a backup until the rebuild succeeds) and installs only what's missing or drifted.</li>
+        <li><strong>Prove:</strong> re-checks the environment and validates <code>config.toml</code>.</li>
+        <li><strong>Launch and report:</strong> opens the program, or stops with a message naming the failing step. Healthy repeat launches skip pip entirely.</li>
+      </ol>
+    </div>
+  </details>
+</section>
+
+<section class="pj-section" id="use" aria-labelledby="use-h">
+  <h2 id="use-h">Using the program</h2>
+  <ol class="pj-steps">
+    <li><strong>Make a working copy</strong> of <code>files/CPI.xlsx</code> (or use your own model with a <code>CPI_Downloader</code> sheet) and <strong>close it in Excel</strong>.</li>
+    <li><strong>Pick <em>Single month</em> or <em>Date range</em></strong> and enter the year and month. Data starts in January 1913; earlier dates are moved to January 1913. Current months may be incomplete or not yet released.</li>
+    <li><strong>Choose the target <code>.xlsx</code> / <code>.xlsm</code></strong> and, optionally, tick <em>Also export to CSV</em> and choose a file.</li>
+    <li><strong>Enter your FRED API key.</strong> After a successful download it's saved to <code>config.toml</code> so you don't have to type it again.</li>
+    <li><strong>Click <em>Download &amp; Write to Excel</em>.</strong> Every source is collected and validated first; if any fails, nothing is written.</li>
+  </ol>
+  <p>The columns written, their sources and how the workbook is protected are described on the <a href="{{ p.page | relative_url }}#data">project page</a>.</p>
+</section>
+
+<section class="pj-section" id="config" aria-labelledby="config-h">
+  <h2 id="config-h">Configuration (<code>config.toml</code>)</h2>
+  <p>Created in the tool folder on first run from <code>scripts/config-default.toml</code>. Your existing file always takes precedence, and an invalid file is kept unchanged and blocks downloads until you fix it.</p>
+  <div class="pj-table-wrap">
+    <table class="pj-table">
+      <thead><tr><th scope="col">Section</th><th scope="col">Setting</th><th scope="col">Meaning</th></tr></thead>
+      <tbody>
+        <tr><th scope="row"><code>[workbook]</code></th><td><code>sheet_name</code></td><td>Target sheet; it must already exist. Default <code>CPI_Downloader</code>.</td></tr>
+        <tr><th scope="row"><code>[fred]</code></th><td><code>api_key</code></td><td>Your FRED key. Blank in the download. <strong>Private: don't share this file.</strong></td></tr>
+        <tr><th scope="row"><code>[output]</code></th><td><code>columns</code></td><td>Ordered <code>{ id, header }</code> list. You may rename headers and reorder, but keep each ID exactly once. The supplied model's formulas expect the default A–S order.</td></tr>
+        <tr><th scope="row"><code>[sp500_history]</code></th><td><code>add_missing_data</code></td><td><code>false</code> (default): FRED only, about ten years. <code>true</code>: fill older months from Yahoo Finance <code>^GSPC</code>; FRED wins overlaps and a mismatch stops the download.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="muted">If you used an older version, a key in the legacy <code>files/config.json</code> is copied into the new <code>config.toml</code> the first time it's created.</p>
+</section>
+
+<section class="pj-section" id="manage" aria-labelledby="manage-h">
+  <h2 id="manage-h">Update, move or remove</h2>
+  <ul>
+    <li><strong>Update:</strong> extract the new ZIP to a new folder and copy your <code>config.toml</code> across to keep your key and column settings.</li>
+    <li><strong>Move or reset:</strong> run the launcher after moving the folder; it repairs the <code>.venv</code>. To start fresh, delete <code>.venv</code> and run it again.</li>
+    <li><strong>Remove:</strong> delete the folder. A per-user Python you agreed to install can be kept or uninstalled normally.</li>
+  </ul>
+</section>
+
+<section class="pj-section" id="troubleshooting" aria-labelledby="troubleshooting-h">
+  <h2 id="troubleshooting-h">Troubleshooting</h2>
+  <details class="pj-details">
+    <summary>“A stable Python 3.11-3.14 installation is required” and the install fails</summary>
+    <div class="pj-details-body"><p><code>winget</code> may be missing or blocked. Install Python 3.14 from <a href="https://www.python.org/downloads/windows/">python.org</a> (<em>Install for me only</em>, with tcl/tk) and run the launcher again.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>Setup failed: config.toml</summary>
+    <div class="pj-details-body"><p>Compare your <code>config.toml</code> with <code>scripts/config-default.toml</code>: every column ID once, headers not starting with <code>=</code>, <code>+</code>, <code>-</code> or <code>@</code>, and <code>add_missing_data</code> exactly <code>true</code> or <code>false</code>. Or rename the file and let the launcher create a fresh one, then re-enter your key.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>FRED rejects the key, or a source fails</summary>
+    <div class="pj-details-body"><p>Check the key at fred.stlouisfed.org and your connection. The error names the failing source; nothing is written when any source fails.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>The workbook can't be written</summary>
+    <div class="pj-details-body"><p>Close the workbook, confirm the target sheet exists and is unprotected, and that the A:S area has no formulas or merged cells. Files in OneDrive are supported, but a local copy is more reliable.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>The S&amp;P 500 history check fails</summary>
+    <div class="pj-details-body"><p>With <code>add_missing_data = true</code>, Yahoo Finance must return enough overlap months that match FRED within 0.005 points. If Yahoo is unavailable or differs, the download stops. Retry later or set it back to <code>false</code>.</p></div>
+  </details>
+</section>
+
+<section class="pj-section" id="developers" aria-labelledby="developers-h">
+  <h2 id="developers-h">For developers</h2>
+  <p>This download is packaged from the canonical <code>elmatthe/CPI-Webscraper</code> repository (version {{ p.version }}). Its launcher and <code>scripts/bootstrap.py</code> are the project's own and differ slightly from the website's other desktop tools (for example <code>--check-only</code> instead of <code>--venv-check</code>). To check the installation without opening the program, run from the tool folder:</p>
+  <div class="pj-code"><pre><code id="cpi-dev-cmd">Setup_and_Run-cpi-webscraper.bat --check-only</code></pre><button type="button" data-copy-target="cpi-dev-cmd" hidden>Copy</button></div>
+  <p class="muted">The offline test suite, release gate (<code>scripts/verify.py</code>) and developer notes are in the source repository, not the ZIP.</p>
+</section>

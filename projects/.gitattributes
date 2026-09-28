@@ -1,0 +1,3 @@
+# Launcher line endings: cmd.exe needs CRLF; macOS .command files need LF.
+*.bat -text
+*.command text eol=lf

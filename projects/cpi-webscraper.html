@@ -1,0 +1,115 @@
+---
+layout: project
+project: cpi
+kind: tool
+title: CPI Web Scraper
+permalink: /projects/cpi-webscraper/
+redirect_from:
+  - /projects/cpi-dashboard-automation/
+summary: Windows desktop tool that downloads Canadian and US inflation, rates, PCE and S&P 500 data from Statistics Canada and FRED straight into an existing Excel model, with optional CSV export.
+lede: Refresh an inflation and rates workbook in one click. The CPI Web Scraper collects 18 Statistics Canada and FRED series for any month or date range back to 1913, validates everything, and writes it into your existing Excel model without touching its formulas.
+last_updated: 2026-09-28
+sections:
+  - { id: overview, label: Overview }
+  - { id: download, label: Download }
+  - { id: data, label: Data sources }
+  - { id: workbook, label: Workbook safety }
+  - { id: privacy, label: Credentials & privacy }
+  - { id: help, label: Troubleshooting }
+---
+{%- assign p = site.data.tool_projects.cpi -%}
+<section class="pj-section" id="overview" aria-labelledby="overview-h">
+  <h2 id="overview-h">Overview</h2>
+  <ul class="pj-cards">
+    <li class="pj-card"><h3>One click, 18 series</h3><p>Five Statistics Canada CPI series and thirteen FRED series: US CPI, unemployment, fed funds, Treasury yields, the 10y–2y spread, PCE, and the S&amp;P 500.</p></li>
+    <li class="pj-card"><h3>Straight into Excel</h3><p>Writes to the <code>CPI_Downloader</code> sheet of your .xlsx or .xlsm model through desktop Excel, and can also save the same data as CSV.</p></li>
+    <li class="pj-card"><h3>Validated first</h3><p>All sources are collected and checked before Excel opens. If any source fails, nothing is written.</p></li>
+  </ul>
+  <figure class="pj-figure">
+    <img src="{{ '/assets/images/cpi-workflow-overview.svg' | relative_url }}" alt="Three-step workflow: download economic data with Python, update the spreadsheet model, use the output in planning discussions" width="960" height="300" loading="lazy">
+    <figcaption>Download → update the Excel model → use the results in planning discussions.</figcaption>
+  </figure>
+  <div class="pj-note">
+    <p><strong>Desktop only.</strong> The tool needs desktop Microsoft Excel for Windows, so there is no web version. Everything you need is in the download.</p>
+  </div>
+</section>
+
+<section class="pj-section" id="download" aria-labelledby="download-h">
+  <h2 id="download-h">Download and run</h2>
+  <div class="pj-download">
+    <div>
+      <h3>{{ p.zip_name }}</h3>
+      <p class="muted">Version {{ p.version }} · {{ p.platforms }} · Python {{ p.python }} is set up automatically{% if p.zip_size %} · {{ p.zip_size }}{% endif %}</p>
+    </div>
+    <a class="pj-btn pj-btn-primary" href="{{ p.zip | relative_url }}" download>Download ZIP</a>
+  </div>
+  <ol class="pj-steps">
+    <li><strong>Extract the ZIP</strong> and keep the folder together. It includes the reference workbook <code>files/CPI.xlsx</code>; work on a copy of it.</li>
+    <li><strong>Double-click <code>{{ p.launcher_windows }}</code>.</strong> Setup finds a stable Python 3.11–3.14 or offers a per-user install, repairs the private <code>.venv</code>, reconciles exact dependencies, validates the configuration and opens the program. Healthy repeat launches skip pip entirely.</li>
+    <li><strong>Choose a month or date range, your workbook and your FRED API key</strong>, then click <strong>Download &amp; Write to Excel</strong>. Close the workbook in Excel first.</li>
+  </ol>
+  <p>Step-by-step instructions, configuration and troubleshooting: <a href="{{ p.guide | relative_url }}">setup &amp; user guide</a>.</p>
+</section>
+
+<section class="pj-section" id="data" aria-labelledby="data-h">
+  <h2 id="data-h">Data sources</h2>
+  <p>Monthly rows are keyed to the first day of each month from January 1913. History before a series begins stays blank: nothing is interpolated, forward-filled, or replaced by a proxy series. Daily FRED series (DFF, SP500, T10Y2Y) use the last valid observation of each month.</p>
+  <div class="pj-table-wrap">
+    <table class="pj-table">
+      <caption class="muted" style="caption-side:top;text-align:left;padding:.5rem .75rem;">Default columns of the supplied model (sheet <code>CPI_Downloader</code>)</caption>
+      <thead><tr><th scope="col">Column</th><th scope="col">Series</th><th scope="col">Source</th><th scope="col">First month</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">A</th><td>Date (monthly key)</td><td>—</td><td>1913-01</td></tr>
+        <tr><th scope="row">B–C</th><td>Headline CPI, unadjusted / seasonally adjusted (Canada)</td><td>Statistics Canada 41690973 / 41690914</td><td>1914-01 / 1992-01</td></tr>
+        <tr><th scope="row">D–E</th><td>Core CPI, unadjusted / seasonally adjusted (Canada)</td><td>Statistics Canada 41691233 / 41690924</td><td>1961-01 / 1992-01</td></tr>
+        <tr><th scope="row">F</th><td>Alberta CPI, unadjusted</td><td>Statistics Canada 41692327</td><td>1978-09</td></tr>
+        <tr><th scope="row">G–H</th><td>Headline CPI, unadjusted / seasonally adjusted (US)</td><td>FRED CPIAUCNS / CPIAUCSL</td><td>1913-01 / 1947-01</td></tr>
+        <tr><th scope="row">I–J</th><td>Core CPI, unadjusted / seasonally adjusted (US)</td><td>FRED CPILFENS / CPILFESL</td><td>1957-01</td></tr>
+        <tr><th scope="row">K</th><td>Unemployment rate, seasonally adjusted</td><td>FRED UNRATE</td><td>1948-01</td></tr>
+        <tr><th scope="row">L–M</th><td>Effective fed funds rate: monthly average / end of period</td><td>FRED FEDFUNDS / DFF</td><td>1954-07</td></tr>
+        <tr><th scope="row">N</th><td>S&amp;P 500, last trading-day close</td><td>FRED SP500 (optional Yahoo Finance backfill)</td><td>About 10 years (see below)</td></tr>
+        <tr><th scope="row">O</th><td>10-year minus 2-year Treasury spread, end of month</td><td>FRED T10Y2Y</td><td>1976-06</td></tr>
+        <tr><th scope="row">P–Q</th><td>10-year / 2-year Treasury yield, monthly average</td><td>FRED GS10 / GS2</td><td>1953-04 / 1976-06</td></tr>
+        <tr><th scope="row">R–S</th><td>Headline / core PCE price index, seasonally adjusted</td><td>FRED PCEPI / PCEPILFE</td><td>1959-01</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <h3>Optional S&amp;P 500 history</h3>
+  <p>FRED publishes only about ten years of S&amp;P 500 history, and that series carries third-party usage restrictions. Setting <code>add_missing_data = true</code> under <code>[sp500_history]</code> in <code>config.toml</code> fills older months from Yahoo Finance <code>^GSPC</code> daily closes. FRED always wins any overlap, the two sources must agree within 0.005 index points, and any mismatch stops the download before Excel is touched. The default is <code>false</code>, which makes no Yahoo requests.</p>
+  <p class="pj-disclaimer">This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis. Statistics Canada is the source of the Canadian data; this application does not imply Statistics Canada endorsement. Confirm your organization's rights to S&amp;P 500 data before professional use.</p>
+</section>
+
+<section class="pj-section" id="workbook" aria-labelledby="workbook-h">
+  <h2 id="workbook-h">Workbook safety</h2>
+  <ul>
+    <li>Writes through a private Excel instance and clears <strong>contents only</strong> inside the owned A:S area of the target sheet. It never inserts or deletes rows, recreates sheets, or changes formulas, formats, named ranges, VBA, charts or tables.</li>
+    <li>Macros, events and external-link updates are disabled during the write. Worksheet calculation is suppressed so dynamic-array spills can't change model cells, and the workbook's own calculation mode is preserved.</li>
+    <li>Read-only, locked or protected targets, formulas or merged cells inside the raw area, and a missing sheet all fail with a clear message before any change is made.</li>
+    <li>The optional CSV uses the same columns and data with <code>YYYY-MM-DD</code> dates. A CSV failure is reported separately from an Excel write that already completed.</li>
+  </ul>
+</section>
+
+<section class="pj-section" id="privacy" aria-labelledby="privacy-h">
+  <h2 id="privacy-h">Credentials &amp; privacy</h2>
+  <ul>
+    <li><strong>You need your own free FRED API key</strong> (<a href="https://fred.stlouisfed.org/docs/api/api_key.html">request one here</a>). It is saved only in <code>config.toml</code> inside your copy of the tool, which the launcher creates from a blank template. Never share that file.</li>
+    <li>The download contains no API key or other credential; the bundled template's key field is blank.</li>
+    <li>Only series identifiers, dates and your FRED key (to FRED) are sent. Your workbook stays on your PC.</li>
+  </ul>
+</section>
+
+<section class="pj-section" id="help" aria-labelledby="help-h">
+  <h2 id="help-h">Troubleshooting</h2>
+  <details class="pj-details">
+    <summary>“The workbook is open” or the write fails</summary>
+    <div class="pj-details-body"><p>Close the workbook in Excel, make sure the <code>CPI_Downloader</code> sheet exists and is unprotected, and try again on a copy. Excel must be the desktop Windows version.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>A source failed and nothing was written</summary>
+    <div class="pj-details-body"><p>That's deliberate: data is written only when every source succeeded. Check your internet connection and FRED key, then retry. The error names the failing source.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>Setup stops before the program opens</summary>
+    <div class="pj-details-body"><p>Read the message: it names the failing step (Python, dependencies, or <code>config.toml</code>). An invalid <code>config.toml</code> is kept as-is and blocks downloads until fixed; compare it with <code>scripts/config-default.toml</code>. The <a href="{{ p.guide | relative_url }}#troubleshooting">guide</a> covers each case.</p></div>
+  </details>
+</section>

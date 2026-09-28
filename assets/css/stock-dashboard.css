@@ -1,7 +1,5 @@
-/* Stock Comparison & Analytics dashboard.
-   Layout and component language adapted from the TipRanks Automation Tool UI
-   (scripts/static/css/app.css): masthead with a status widget, sticky section
-   navigation, bordered panels, research cards, target track and correlation heatmap.
+/* Stock Comparison & Analytics web app: masthead with a live-data status widget,
+   sticky section tabs, bordered panels, result cards and a correlation heatmap.
    Everything is scoped under .sdd-app so the site theme is untouched. */
 
 .sdd-app {
@@ -32,9 +30,9 @@
   border: 1px solid var(--sdd-border);
   border-radius: 10px;
   line-height: 1.5;
-  /* Break out of Minima's narrow content column so tables and charts have room. */
-  width: min(1180px, 94vw);
-  margin: 1rem 0 1.5rem calc(50% - min(590px, 47vw));
+  /* The project layout (.pj) already provides the wide column. */
+  width: 100%;
+  margin: .6rem 0 1.2rem;
 }
 .sdd-app[data-theme="light"] {
   --sdd-bg: #f3f6f9;
@@ -91,8 +89,8 @@
 .sdd-status-widget button { justify-self: start; margin-top: .3rem; }
 .sdd-pill { display: inline-block; padding: 0 .45rem; border-radius: 999px; font-size: .8rem; font-weight: 700; border: 1px solid currentColor; }
 .sdd-pill.ok { color: var(--sdd-ok); } .sdd-pill.warn { color: var(--sdd-warn); } .sdd-pill.error { color: var(--sdd-error); } .sdd-pill.idle { color: var(--sdd-muted); }
-/* Only the section tabs stay pinned while scrolling long results. */
-.sdd-tabs { position: sticky; top: 0; z-index: 5; display: flex; flex-wrap: wrap; gap: .35rem; padding: .5rem 1.25rem; background: var(--sdd-surface); border-bottom: 1px solid var(--sdd-border); box-shadow: 0 3px 10px var(--sdd-shadow); }
+/* Only the section tabs stay pinned while scrolling, just below the page's own sticky nav. */
+.sdd-tabs { position: sticky; top: var(--pj-nav-h, 0); z-index: 5; display: flex; flex-wrap: wrap; gap: .35rem; padding: .5rem 1.25rem; background: var(--sdd-surface); border-bottom: 1px solid var(--sdd-border); box-shadow: 0 3px 10px var(--sdd-shadow); }
 .sdd-app .sdd-tabs button { background: transparent; color: var(--sdd-accent); border: 1px solid transparent; font-weight: 650; white-space: nowrap; }
 .sdd-app .sdd-tabs button:hover { border-color: var(--sdd-border); }
 .sdd-app .sdd-tabs button[aria-selected="true"] { background: var(--sdd-button-bg); color: var(--sdd-button-text); }
@@ -166,24 +164,7 @@
 .sdd-different { font-weight: 700; color: var(--sdd-warn); }
 .sdd-list { margin: .2rem 0 0 1.1rem; padding: 0; font-size: .9rem; }
 .sdd-list li { margin-bottom: .25rem; }
-.sdd-badge { display: inline-block; margin-left: .4rem; padding: .05rem .5rem; font-size: .75rem; font-weight: 700; border-radius: 999px; background: var(--sdd-warn); color: #1b1300; vertical-align: middle; }
 
-/* Target track (from the TipRanks research card) */
-.sdd-target-track { position: relative; height: 3.4rem; margin: 2.2rem 1.5rem 1rem; border-top: .45rem solid var(--sdd-accent-border); }
-.sdd-target-marker { position: absolute; top: -1.05rem; transform: translateX(-50%); display: grid; justify-items: center; color: var(--sdd-text); font-size: .76rem; white-space: nowrap; text-align: center; }
-.sdd-target-marker::before { content: ""; width: .22rem; height: 1.5rem; background: var(--sdd-focus); display: block; }
-.sdd-target-marker.average::before { background: var(--sdd-accent); }
-.sdd-target-marker.current::before { background: var(--sdd-text); }
-.sdd-target-marker.current { top: auto; bottom: -2.9rem; }
-.sdd-target-marker.current::before { order: -1; }
-.sdd-bars { display: flex; align-items: flex-end; gap: 3px; height: 90px; border-bottom: 1px solid var(--sdd-border); padding-top: .4rem; }
-.sdd-bars span { flex: 1 1 0; background: var(--sdd-accent-border); border-radius: 2px 2px 0 0; min-height: 2px; }
-.sdd-bar-axis { display: flex; justify-content: space-between; font-size: .75rem; color: var(--sdd-muted); }
-.sdd-metric { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; margin-top: .7rem; padding-top: .6rem; border-top: 1px solid var(--sdd-border); }
-.sdd-metric strong { font-size: 1.35rem; color: var(--sdd-heading); }
-.sdd-insights { display: grid; gap: .6rem; }
-.sdd-insight { padding: .6rem .75rem; border: 1px solid var(--sdd-border); border-radius: .3rem; }
-.sdd-insight strong, .sdd-insight span { display: block; }
 .sdd-proxy-table td { vertical-align: middle; }
 .sdd-footer-note { margin: 0; padding: .8rem 1.25rem; border-top: 1px solid var(--sdd-border); font-size: .85rem; color: var(--sdd-muted); }
 

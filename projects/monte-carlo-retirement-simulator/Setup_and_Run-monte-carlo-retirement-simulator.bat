@@ -1,0 +1,155 @@
+@echo off
+setlocal EnableExtensions DisableDelayedExpansion
+cd /d "%~dp0"
+title Monte Carlo Retirement Simulator - Setup and Run
+
+:: ============================================================================
+::  Monte Carlo Retirement Simulator - Windows setup + launcher
+::  Double-click this file. It checks the private .venv in this folder, repairs
+::  it if needed, and starts the program. All real logic is in
+::  scripts\bootstrap.py (ASSESS -> RECONCILE -> REPAIR/PROVISION -> PROVE ->
+::  LAUNCH -> REPORT). No administrator rights are requested.
+::
+::  healthy .venv -> bootstrap --venv-check -> bootstrap --launch-only
+::  first run / unhealthy -> external Python -> bootstrap (repairs what is broken)
+::  A running .venv Python never replaces its own .venv.
+::  Generated from _tools/bootstrap in the website repository.
+:: ============================================================================
+
+set "PROJECT_NAME=Monte Carlo Retirement Simulator"
+set "BOOTSTRAP=scripts\bootstrap.py"
+set "VENV_PY=.venv\Scripts\python.exe"
+set "PYTHON_WINGET_ID=Python.Python.3.13"
+set "MIN_MINOR=11"
+set "MAX_MINOR=14"
+set "RUN_EXIT=1"
+
+if not exist "%BOOTSTRAP%" goto missing_bootstrap
+if not "%~1"=="" goto first_run
+
+:: Fast path: reuse only a PROVEN healthy environment.
+if not exist "%VENV_PY%" goto first_run
+"%VENV_PY%" "%BOOTSTRAP%" --venv-check >nul 2>nul
+if errorlevel 1 goto needs_repair
+"%VENV_PY%" "%BOOTSTRAP%" --launch-only
+set "RUN_EXIT=%errorlevel%"
+goto finished
+
+:needs_repair
+echo ============================================================
+echo   %PROJECT_NAME% - checking and repairing setup
+echo ============================================================
+echo The project environment did not pass its health check.
+echo Only the broken parts will be repaired. Your files are not touched.
+echo.
+goto find_python
+
+:first_run
+echo ============================================================
+echo   %PROJECT_NAME% - setup
+echo ============================================================
+echo Everything is installed inside this folder or for your Windows user only.
+echo Administrator rights are not needed.
+echo.
+
+:find_python
+echo Looking for Python 3.%MIN_MINOR% - 3.%MAX_MINOR%...
+call :detect_python
+if defined BASE_PYTHON_EXE goto run_bootstrap
+
+echo.
+echo A compatible Python was not found. Python is needed to run this program.
+where winget >nul 2>&1
+if errorlevel 1 goto no_winget
+choice /C YN /N /M "Install Python 3.13 for your Windows user now (no admin rights needed)? [Y/N] "
+if errorlevel 2 goto setup_cancelled
+echo.
+echo Installing Python for the current user only...
+winget install --id %PYTHON_WINGET_ID% --exact --scope user --source winget --accept-package-agreements --accept-source-agreements --override "/quiet InstallAllUsers=0 PrependPath=0 Include_launcher=0 Include_test=0"
+if errorlevel 1 goto python_install_failed
+:: PATH is not changed by this install, so look in the per-user location directly.
+call :detect_python
+if defined BASE_PYTHON_EXE goto run_bootstrap
+goto python_not_validated
+
+:run_bootstrap
+echo Using:
+"%BASE_PYTHON_EXE%" %BASE_PYTHON_ARGS% --version
+echo.
+"%BASE_PYTHON_EXE%" %BASE_PYTHON_ARGS% "%BOOTSTRAP%" %*
+set "RUN_EXIT=%errorlevel%"
+goto finished
+
+:: ----------------------------------------------------------------------------
+:: Python discovery (bounded; the Microsoft Store alias is never used)
+:: ----------------------------------------------------------------------------
+:detect_python
+set "BASE_PYTHON_EXE="
+set "BASE_PYTHON_ARGS="
+for %%M in (14 13 12 11) do if not defined BASE_PYTHON_EXE call :try_python "py" "-3.%%M"
+if not defined BASE_PYTHON_EXE call :try_python "python" ""
+if defined BASE_PYTHON_EXE goto :eof
+if not defined LocalAppData goto :eof
+for %%M in (14 13 12 11) do if not defined BASE_PYTHON_EXE if exist "%LocalAppData%\Programs\Python\Python3%%M\python.exe" call :try_python "%LocalAppData%\Programs\Python\Python3%%M\python.exe" ""
+goto :eof
+
+:try_python
+set "CANDIDATE_PYTHON="
+if exist "%~1" set "CANDIDATE_PYTHON=%~1"
+if not defined CANDIDATE_PYTHON for /f "delims=" %%P in ('where %~1 2^>nul') do if not defined CANDIDATE_PYTHON set "CANDIDATE_PYTHON=%%P"
+if not defined CANDIDATE_PYTHON goto :eof
+echo %CANDIDATE_PYTHON% | findstr /i "WindowsApps" >nul
+if not errorlevel 1 goto :eof
+"%CANDIDATE_PYTHON%" %~2 -c "import sys; raise SystemExit(0 if (3,%MIN_MINOR%) <= sys.version_info[:2] <= (3,%MAX_MINOR%) and sys.version_info.releaselevel == 'final' else 1)" >nul 2>&1
+if errorlevel 1 goto :eof
+set "BASE_PYTHON_EXE=%CANDIDATE_PYTHON%"
+set "BASE_PYTHON_ARGS=%~2"
+goto :eof
+
+:: ----------------------------------------------------------------------------
+:: Exits
+:: ----------------------------------------------------------------------------
+:missing_bootstrap
+echo ERROR: %BOOTSTRAP% is missing. Extract the whole ZIP again and keep the folder together.
+set "RUN_EXIT=1"
+goto visible_failure
+
+:no_winget
+echo Windows Package Manager (winget) is not available on this PC.
+echo Install Python 3.13 for your user from https://www.python.org/downloads/windows/
+echo (the standard installer includes everything this program needs), then run this file again.
+set "RUN_EXIT=1"
+goto visible_failure
+
+:python_install_failed
+echo.
+echo ERROR: The per-user Python installation did not complete (see the winget messages above).
+echo Nothing was installed for all users. You can install Python 3.13 from
+echo https://www.python.org/downloads/windows/ and then run this file again.
+set "RUN_EXIT=1"
+goto visible_failure
+
+:python_not_validated
+echo.
+echo ERROR: Python was installed but could not be validated from this window.
+echo Close this window and double-click this file again.
+set "RUN_EXIT=1"
+goto visible_failure
+
+:setup_cancelled
+echo.
+echo Setup cancelled. Nothing was installed.
+exit /b 0
+
+:finished
+if "%RUN_EXIT%"=="0" exit /b 0
+if "%RUN_EXIT%"=="2" exit /b 0
+echo.
+echo %PROJECT_NAME% stopped with exit code %RUN_EXIT%.
+echo The message above names the step that failed. A full log is in files\test-logs\setup-and-run-latest.log
+
+:visible_failure
+if defined AI_BOOTSTRAP_TEST_MODE exit /b %RUN_EXIT%
+echo.
+pause
+exit /b %RUN_EXIT%

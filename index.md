@@ -56,7 +56,7 @@ redirect_from:
 ## Featured Projects
 <ul class="link-list">
   <li><a href="{{ '/projects/monte-carlo-simulator/' | relative_url }}">Monte Carlo Retirement Simulator</a></li>
-  <li><a href="{{ '/projects/cpi-webscraper/' | relative_url }}">CPI Webscraper</a></li>
+  <li><a href="{{ '/projects/cpi-webscraper/' | relative_url }}">CPI Web Scraper</a></li>
   <li><a href="{{ '/projects/portfolio-rebalancer/' | relative_url }}">Portfolio Rebalancer</a></li>
   <li><a href="{{ '/projects/stock-data-dashboard-tool/' | relative_url }}">Stock Comparison &amp; Analytics Tool</a></li>
 </ul>

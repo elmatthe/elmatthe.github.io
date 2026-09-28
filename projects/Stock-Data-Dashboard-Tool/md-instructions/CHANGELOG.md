@@ -1,5 +1,19 @@
 # Stock Comparison & Analytics Tool - Changelog
 
+## v0.4.0 - 2026-09-28
+- Replaced `setup_and_run.bat/.command` with the standard one-click launchers
+  `Setup_and_Run-stock-data-dashboard-tool.bat/.command` and `scripts/bootstrap.py`: a
+  repo-root `.venv` is proven (exact pins, imports, `pip check`) before each launch and
+  repaired only when needed; healthy launches no longer reinstall packages. Python 3.11-3.14
+  is found first (never the Microsoft Store alias) and installed per user only with consent.
+- Yahoo Finance is now the only online data source: removed the unused Alpha Vantage,
+  Twelve Data and Polygon provider stubs, the API-key config loader and
+  `files/config.example.json`.
+- Bumped `yfinance` 1.3.0 -> 1.7.0 (verified live for US, `.TO`, `.L` pence and `=X` FX).
+- Moved tests to `files/tests/`; `pytest` is no longer installed into the user environment.
+- Removed developer workspace notes from the distributed folder; the user ZIP now contains
+  only the launchers, `scripts/`, `config.toml`, README and the offline sample data.
+
 ## v0.3.0 - 2026-06-29
 - Added user-selectable **Currency Normalization** ("Normalize to currency": Off / USD / CAD / EUR / GBP) in both the desktop app and the in-browser web dashboard, with identical behavior, labels, and an Off default.
 - Prices are now converted into one common currency **before** any returns, total/annualized return, volatility, Sharpe, drawdown, indexed price, cumulative return, correlation, or regression are computed, so cross-currency comparisons reflect true performance instead of USD/CAD FX drift.

@@ -7,3 +7,19 @@ header_pages:
   - projects.md
   - software.md
   - about.md
+# Desktop-tool source folders for the four /projects/ tools. They are packaged
+# into the /projects/*.zip downloads by _tools/build_project_zips.py and are not
+# published as web pages or loose files. Setting `exclude` replaces Jekyll's
+# default list, so those defaults are repeated first.
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - node_modules/
+  - vendor/bundle/
+  - vendor/cache/
+  - vendor/gems/
+  - vendor/ruby/
+  - projects/monte-carlo-retirement-simulator/
+  - projects/portfolio-rebalancer-tool/
+  - projects/Stock-Data-Dashboard-Tool/
+  - projects/CPI-Webscraper/

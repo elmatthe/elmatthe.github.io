@@ -4,20 +4,24 @@
 This project is a Python desktop GUI for comparing multiple stocks, ETFs, indexes, and funds. It can fetch Yahoo Finance data or load offline CSV price data, compute performance and risk metrics, generate correlations and regressions, display charts in the GUI, save website-ready visuals, and export results to Excel or CSV.
 
 ## Tech Stack
-- Language: Python 3.11+
+- Language: Python 3.11-3.14
 - GUI: tkinter / ttk
-- Key Libraries: pandas, numpy, scipy, matplotlib, yfinance, openpyxl, Pillow, pytest
+- Key Libraries: pandas, numpy, scipy, matplotlib, yfinance, openpyxl, Pillow (pinned in
+  `scripts/requirements.txt`); pytest is a developer-only dependency for `files/tests/`.
 
 ## Architecture
 - `scripts/main.py` is the Tkinter entry point.
-- `scripts/data_sources.py` contains pluggable data providers for Yahoo Finance, Offline CSV, and future API-key sources.
+- `scripts/data_sources.py` contains the two data sources: Yahoo Finance (the only online provider) and Offline CSV.
 - `scripts/analytics.py` contains pure analytics functions for alignment, returns, metrics, correlations, regressions, and diversification flags.
 - `scripts/plots.py` writes Matplotlib PNG outputs into `files/plots/`.
 - `scripts/exports.py` writes Excel and CSV outputs and inserts plot PNGs into the Excel `Charts` sheet.
-- `scripts/config.py` centralizes paths, supported currencies, defaults, directory validation, and config loading.
+- `scripts/config.py` centralizes paths, supported currencies, defaults and directory validation.
+- `scripts/bootstrap.py` + `Setup_and_Run-stock-data-dashboard-tool.bat/.command` are the
+  standard one-click launchers rendered from `_tools/bootstrap/` in the website repository
+  (ASSESS -> RECONCILE -> REPAIR/PROVISION -> PROVE -> LAUNCH -> REPORT, repo-root `.venv`).
 
 ## Current Version
-v0.3.0
+v0.4.0
 
 ## FX Normalization (v0.3.0)
 A user-selectable "Normalize to currency" control (Off / USD / CAD / EUR / GBP, default Off)
@@ -33,11 +37,12 @@ multi-currency warning when off. Pure conversion logic lives in `analytics.py`
 tested; FX fetching lives in `data_sources.py` (`YahooFinanceSource.fetch_fx_rate`, offline
 `load_offline_fx_rates`/`get_offline_fx_rate`).
 
-- **Web:** browser dashboard in `projects/stock-data-dashboard-tool.md`, with ES modules in
-  `assets/js/stock-dashboard/` (rebuilt 2026-09 on the TipRanks Automation Tool comparison
-  engine; it no longer mirrors the desktop code). FX comes from ECB reference rates
-  (Frankfurter, no proxy) with Yahoo `<FROM><TO>=X` through the proxy chain as fallback.
-  Its offline demo uses synthetic prices and FX generated in the browser.
+- **Web:** browser tool in `projects/stock-data-dashboard-tool.html`, with ES modules in
+  `assets/js/stock-dashboard/` and the shared Yahoo transport in `assets/js/yahoo/` (its own
+  client-side analytics engine; it does not mirror the desktop code). Yahoo Finance is the
+  only data provider: prices from the v8 chart endpoint and FX from Yahoo `<FROM><TO>=X`
+  pairs, relayed through CORS proxies that act as transport only. Its offline demo uses
+  synthetic prices and FX generated in the browser and makes no network requests.
 - **Desktop:** Offline mode demonstrates normalization from a small bundled FX file
   (`test-files/fx_rates.csv`, columns Date,Pair,Rate where Pair is `<FROM><TO>`); the price-CSV
   loader skips this file. If no FX file is present offline, conversion fails soft.
@@ -56,11 +61,10 @@ tested; FX fetching lives in `data_sources.py` (`YahooFinanceSource.fetch_fx_rat
 - Excel and CSV export helpers, including Excel chart image insertion.
 - Export workflow writes Excel, CSV, and a separate JPG visualization folder.
 - Website asset output folder at `files/website-assets/`.
-- Minimal ZIP release guidance is documented in `README.md` and `md-instructions/RELEASE_CHECKLIST.md`.
-- Pytest coverage for analytics, Offline CSV loading, plots, exports, and config path helpers.
+- The user ZIP is built by `_tools/build_project_zips.py` in the website repository.
+- Pytest coverage (`files/tests/`) for analytics, Offline CSV loading, plots, exports, and config path helpers.
 
 ## Known Issues
-- Alpha Vantage and Twelve Data are provider stubs only.
 - An interactive in-browser version is live on the GitHub Pages project page; the desktop app adds Excel/CSV/JPG exports and additional charts.
 - The app is intentionally a one-time analysis/export utility and does not save comparison profiles.
 - Flagged for review (see `handoff.md`): dashboard total/annualized/volatility metrics are computed over each security's own available date window rather than the common overlapping window, so comparisons across securities with different histories (e.g. 251 vs 128 observations) mix time periods; and geometric annualization of short, high-return windows can produce extreme figures (correct compounding, but potentially misleading). Neither was changed in v0.3.0 to avoid silently altering existing metric behavior.

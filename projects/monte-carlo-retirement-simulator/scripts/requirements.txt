@@ -4,4 +4,3 @@
 numpy==2.4.6         # vectorized simulation math and percentiles (wheels available for current Python)
 openpyxl==3.1.5      # writes the .xlsx report (summary, percentiles, chart)
 matplotlib==3.10.9   # renders the fan chart embedded in the workbook (wheels available for current Python)
-pytest==8.3.4        # test runner used by the verify/test step

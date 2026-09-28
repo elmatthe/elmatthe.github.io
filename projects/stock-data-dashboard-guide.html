@@ -1,0 +1,76 @@
+---
+layout: project
+project: stock
+kind: guide
+title: Stock Comparison & Analytics Tool Setup Guide
+permalink: /projects/stock-data-dashboard-guide/
+redirect_from:
+  - /projects/Stock-Data-Dashboard-Tool/
+eyebrow: Setup & user guide
+summary: How to install, run, repair and use the Stock Comparison & Analytics Tool desktop program on Windows or macOS.
+lede: Install the desktop analytics tool with one launcher, compare securities with Yahoo Finance or offline CSV data, and export charts and tables.
+last_updated: 2026-09-28
+sections:
+  - { id: before, label: Before you start }
+  - { id: install, label: Install }
+  - { id: use, label: Using the tool }
+  - { id: offline, label: Offline CSV }
+  - { id: outputs, label: Outputs }
+  - { id: manage, label: Update & remove }
+  - { id: troubleshooting, label: Troubleshooting }
+  - { id: developers, label: For developers }
+---
+{%- assign p = site.data.tool_projects.stock -%}
+{% include project-desktop-setup.html p=p folder="Stock-Data-Dashboard-Tool" live=true disk="600 MB" %}
+
+<section class="pj-section" id="use" aria-labelledby="use-h">
+  <h2 id="use-h">Using the tool</h2>
+  <ol class="pj-steps">
+    <li><strong>Enter the securities:</strong> set how many, click <em>Apply</em>, and type each Yahoo Finance symbol (for example <code>AAPL</code>, <code>XIU.TO</code>, <code>^GSPC</code>) with its listing currency.</li>
+    <li><strong>Choose the settings:</strong> <em>Data source</em> (Yahoo Finance or Offline CSV), <em>Frequency</em> (daily, weekly, monthly), <em>Price type</em>, <em>Return type</em>, <em>Regression</em> mode, start/end dates, risk-free rate and benchmark.</li>
+    <li><strong>Optional: <em>Normalize to currency</em></strong> converts every price to USD, CAD, EUR or GBP before any maths, using Yahoo Finance FX pairs such as <code>CADUSD=X</code>. If a pair is unavailable, that security stays in its own currency and a warning says so.</li>
+    <li><strong>Click <em>Fetch &amp; Analyze</em>.</strong> Results fill the tabs: metrics, correlation, diversification, regression, plots and warnings. Use <em>Export Results</em> to save them and <em>Clear</em> to start over.</li>
+  </ol>
+</section>
+
+<section class="pj-section" id="offline" aria-labelledby="offline-h">
+  <h2 id="offline-h">Offline CSV mode</h2>
+  <p>Works with no internet connection. Choose <em>Offline CSV</em>, point <em>Offline folder</em> at a folder of CSVs, and use dates that the files cover. The included sample is <code>test-files/sample_prices.csv</code> (dates 2024-01-02 to 2024-01-04) with <code>test-files/fx_rates.csv</code> for normalization. Expected format:</p>
+  <div class="pj-code"><pre><code>Date,Ticker,Close,Adj Close,Currency
+2024-01-02,AAPL,185.64,184.91,USD</code></pre></div>
+  <p>One file per ticker (named after the ticker) also works. FX files use <code>Date,Pair,Rate</code> where <code>Pair</code> is <code>&lt;FROM&gt;&lt;TO&gt;</code>.</p>
+</section>
+
+<section class="pj-section" id="outputs" aria-labelledby="outputs-h">
+  <h2 id="outputs-h">Outputs</h2>
+  <ul>
+    <li><strong>Metrics:</strong> total and annualised return, annualised volatility, Sharpe ratio, max drawdown, observations, data completeness and currency.</li>
+    <li><strong>Charts:</strong> indexed price, cumulative return, correlation heatmap, risk/return scatter, drawdown, rolling volatility, rolling correlation, regression scatter.</li>
+    <li><strong>Export Results</strong> writes to your export folder: an Excel workbook (<em>Dashboard Metrics</em>, <em>Correlation Matrix</em>, <em>Regression Results</em>, <em>Charts</em>, <em>Warnings</em>), a CSV folder with the same tables, and JPG copies of the charts.</li>
+  </ul>
+</section>
+
+<section class="pj-section" id="troubleshooting" aria-labelledby="troubleshooting-h">
+  <h2 id="troubleshooting-h">Troubleshooting</h2>
+  <details class="pj-details">
+    <summary>“No data” for a ticker</summary>
+    <div class="pj-details-body"><p>Check the symbol on finance.yahoo.com. Canadian listings need <code>.TO</code>/<code>.V</code>, indexes start with <code>^</code>. Yahoo Finance sometimes rate-limits; wait a few minutes and try again.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>Offline CSV says the data doesn't overlap the dates</summary>
+    <div class="pj-details-body"><p>The sample covers only 2024-01-02 to 2024-01-04. Set those dates, or switch to Yahoo Finance for recent data.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>A currency-mismatch warning appears</summary>
+    <div class="pj-details-body"><p>Comparing securities listed in different currencies mixes FX moves into returns. Turn on <em>Normalize to currency</em> or make sure each row's currency is correct.</p></div>
+  </details>
+  {% include project-desktop-troubleshooting.html %}
+</section>
+
+<section class="pj-section" id="developers" aria-labelledby="developers-h">
+  <h2 id="developers-h">For developers</h2>
+  <p>The program is in <code>scripts/</code> (<code>main.py</code> GUI, <code>data_sources.py</code> for Yahoo Finance/offline CSV, <code>analytics.py</code>, <code>plots.py</code>, <code>exports.py</code>). Yahoo Finance is the only online data provider. The unit tests are in the source repository (<code>files/tests</code>) and aren't included in the ZIP:</p>
+  <div class="pj-code"><pre><code id="sd-dev-cmd">.venv/bin/python -m pip install pytest
+.venv/bin/python -m pytest files/tests -q</code></pre><button type="button" data-copy-target="sd-dev-cmd" hidden>Copy</button></div>
+  <p class="muted">On Windows use <code>.venv\Scripts\python.exe</code>. The web version on the project page is a separate client-side implementation; see its <a href="{{ p.page | relative_url }}#compare">comparison table</a>.</p>
+</section>

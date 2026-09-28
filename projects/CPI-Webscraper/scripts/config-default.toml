@@ -1,0 +1,40 @@
+# Keep every ID exactly once; edit headers or reorder columns as needed.
+# The supplied model uses a fixed A-S mapping.
+# P/Q contain Treasury yields; R/S contain Headline/Core PCE.
+# Custom order or sheet names require matching downstream workbook formulas.
+# The sheet must already exist. This application never adjusts model formulas.
+[workbook]
+sheet_name = "CPI_Downloader"
+
+[fred]
+api_key = ""
+
+[output]
+columns = [
+    { id = "date", header = "Date" },
+    { id = "ca_cpi_headline_nsa", header = "Headline CPI - Unadjusted CDN" },
+    { id = "ca_cpi_headline_sa", header = "Headline CPI - Seasonally Adjusted CDN" },
+    { id = "ca_cpi_core_nsa", header = "Core CPI - Unadjusted CDN" },
+    { id = "ca_cpi_core_sa", header = "Core CPI - Seasonally Adjusted CDN" },
+    { id = "ca_cpi_alberta_nsa", header = "Alberta CPI - Unadjusted CDN" },
+    { id = "us_cpi_headline_nsa", header = "Headline CPI - Unadjusted US" },
+    { id = "us_cpi_headline_sa", header = "Headline CPI - Seasonally Adjusted US" },
+    { id = "us_cpi_core_nsa", header = "Core CPI - Unadjusted US" },
+    { id = "us_cpi_core_sa", header = "Core CPI - Seasonally Adjusted US" },
+    { id = "us_unemployment_sa", header = "Unemployment Rate - Seasonally Adjusted US" },
+    { id = "us_fed_funds_avg", header = "Monthly Effective Fed Fund Rate US" },
+    { id = "us_fed_funds_eom", header = "Monthly Fed Fund Rate - EOP US" },
+    { id = "us_sp500_eom", header = "SP by month US" },
+    { id = "us_10y2y_eom", header = "10yr vs 2yr US" },
+    { id = "us_treasury_10y_avg", header = "10-Year Treasury Yield - Monthly Average US" },
+    { id = "us_treasury_2y_avg", header = "2-Year Treasury Yield - Monthly Average US" },
+    { id = "us_pce_sa", header = "PCE - Seasonally Adjusted US" },
+    { id = "us_core_pce_sa", header = "Core PCE - Seasonally Adjusted US" },
+]
+
+# Optional S&P 500 history (no additional API key).
+# false: normal FRED-only data; older unavailable months remain blank.
+# true: add unofficial Yahoo Finance ^GSPC daily-Close history where FRED is missing.
+# FRED always wins overlap. Yahoo failure/mismatch stops the download before Excel.
+[sp500_history]
+add_missing_data = false

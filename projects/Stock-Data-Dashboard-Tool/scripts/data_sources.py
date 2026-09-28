@@ -13,7 +13,7 @@ try:
 except ImportError:  # pragma: no cover - exercised when dependencies are absent.
     yf = None
 
-from config import get_files_dir, load_config
+from config import get_files_dir
 
 
 class DataSourceError(Exception):
@@ -445,31 +445,11 @@ class YahooFinanceSource(BaseDataSource):
         return rate.dropna()
 
 
-class AlphaVantageSource(BaseDataSource):
-    name = "Alpha Vantage"
-
-    def is_configured(self) -> bool:
-        return bool(load_config().get("alpha_vantage_api_key"))
-
-    def fetch_prices(self, *args, **kwargs) -> PriceDataResult:
-        raise DataSourceError("Alpha Vantage support is a future enhancement. Set ALPHA_VANTAGE_API_KEY when implemented.")
-
-
-class TwelveDataSource(BaseDataSource):
-    name = "Twelve Data"
-
-    def is_configured(self) -> bool:
-        return bool(load_config().get("twelve_data_api_key"))
-
-    def fetch_prices(self, *args, **kwargs) -> PriceDataResult:
-        raise DataSourceError("Twelve Data support is a future enhancement. Set TWELVE_DATA_API_KEY when implemented.")
-
-
 def get_data_source(name: str, offline_folder: str | None = None) -> BaseDataSource:
+    # Yahoo Finance is the only external market-data provider; Offline CSV reads the
+    # user's own files and makes no network request.
     sources = {
         YahooFinanceSource.name: YahooFinanceSource(),
         OfflineCsvSource.name: OfflineCsvSource(offline_folder),
-        AlphaVantageSource.name: AlphaVantageSource(),
-        TwelveDataSource.name: TwelveDataSource(),
     }
     return sources[name]

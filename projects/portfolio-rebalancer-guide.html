@@ -1,0 +1,69 @@
+---
+layout: project
+project: rebalancer
+kind: guide
+title: Portfolio Rebalancer Setup Guide
+permalink: /projects/portfolio-rebalancer-guide/
+redirect_from:
+  - /projects/portfolio-rebalancer-tool/
+eyebrow: Setup & user guide
+summary: How to install, run, repair and use the Portfolio Rebalancer desktop program on Windows or macOS.
+lede: Install the desktop rebalancer with one launcher, then turn holdings and target weights into a buy / sell / hold plan with optional live Yahoo Finance prices.
+last_updated: 2026-09-28
+sections:
+  - { id: before, label: Before you start }
+  - { id: install, label: Install }
+  - { id: use, label: Using the rebalancer }
+  - { id: outputs, label: Outputs }
+  - { id: manage, label: Update & remove }
+  - { id: troubleshooting, label: Troubleshooting }
+  - { id: developers, label: For developers }
+---
+{%- assign p = site.data.tool_projects.rebalancer -%}
+{% include project-desktop-setup.html p=p folder="portfolio-rebalancer-tool" live=true disk="450 MB" %}
+
+<section class="pj-section" id="use" aria-labelledby="use-h">
+  <h2 id="use-h">Using the rebalancer</h2>
+  <ol class="pj-steps">
+    <li><strong>Choose a mode.</strong> <em>New Money</em> gives buy-only trades that never spend more than your budget. <em>Rebalance</em> adds no cash: sells fund the buys, so the plan never spends more than the sales raise.</li>
+    <li><strong>Choose the reporting currency</strong> and the number of rows (<em>Apply Rows</em>, <em>Add Row</em>, <em>Remove Last</em>).</li>
+    <li><strong>Fill each row:</strong> ticker, shares/units, local price, row currency and target weight %. Weights are relative; they're normalised to 100%. As you type a ticker it's checked against Yahoo Finance. You'll see either <em>Verified: VTI (USD)</em> or a hint such as “found as <code>ISF.L</code> (GBP)”.</li>
+    <li><strong>Optional run options:</strong> <em>Fetch live prices and FX rates</em> (internet required), <em>Show Account Type column</em> (warns when a plan would need money moved between TFSA, RRSP, margin and so on), and <em>Export CSV</em> / <em>Export Excel</em> with a file path.</li>
+    <li><strong>Click <em>Run Rebalance</em></strong> and review the summary, the per-row plan and any warnings. <em>Load Sample</em> fills a demonstration portfolio.</li>
+  </ol>
+  <div class="pj-note"><p>If a live price or FX lookup fails, that row falls back to the price you typed and the output says so. Nothing is silently guessed. Always confirm prices at your broker before trading.</p></div>
+</section>
+
+<section class="pj-section" id="outputs" aria-labelledby="outputs-h">
+  <h2 id="outputs-h">Outputs</h2>
+  <ul>
+    <li><strong>On screen:</strong> totals, the buy/sell/hold plan per row (shares and amount in both local and reporting currency), and warnings.</li>
+    <li><strong>Excel</strong> (optional): <code>RB_Summary</code> and <code>RB_TradePlan</code> sheets, which are replaced on each run; other sheets in the workbook are kept.</li>
+    <li><strong>CSV</strong> (optional): the trade plan, one row per position.</li>
+  </ul>
+</section>
+
+<section class="pj-section" id="troubleshooting" aria-labelledby="troubleshooting-h">
+  <h2 id="troubleshooting-h">Troubleshooting</h2>
+  <details class="pj-details">
+    <summary>A ticker isn't found, or is found in another currency</summary>
+    <div class="pj-details-body"><p>Use Yahoo Finance symbols: Canadian listings end in <code>.TO</code> (TSX) or <code>.V</code> (TSX-V), London listings in <code>.L</code> (priced in pence, which the tool converts to pounds). Set the row currency to the currency the listing trades in.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>Live prices didn't load</summary>
+    <div class="pj-details-body"><p>Yahoo Finance may be rate-limiting or unreachable from your network. The plan still runs using your entered prices and warns you. Try again in a few minutes, or untick live fetch.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>The Excel file can't be saved</summary>
+    <div class="pj-details-body"><p>Close the workbook in Excel and choose a folder you can write to.</p></div>
+  </details>
+  {% include project-desktop-troubleshooting.html %}
+</section>
+
+<section class="pj-section" id="developers" aria-labelledby="developers-h">
+  <h2 id="developers-h">For developers</h2>
+  <p><code>scripts/portfolio_rebalancer/core.py</code> holds the rebalancing maths and its three invariants: buys never exceed the budget in New Money; buys never exceed sale proceeds in Rebalance; and a warning whenever the plan implies moving money between account types. The web version implements the same algorithm and is checked against this file by the website's parity tests. The unit tests live in the source repository (<code>files/tests</code>) and are not included in the ZIP:</p>
+  <div class="pj-code"><pre><code id="rb-dev-cmd">.venv/bin/python -m pip install pytest
+.venv/bin/python -m pytest files/tests -q</code></pre><button type="button" data-copy-target="rb-dev-cmd" hidden>Copy</button></div>
+  <p class="muted">On Windows use <code>.venv\Scripts\python.exe</code>.</p>
+</section>

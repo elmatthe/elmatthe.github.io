@@ -1,0 +1,56 @@
+{%- comment -%}
+  Shared install / repair / troubleshooting sections for the Python desktop tools
+  (Monte Carlo, Portfolio Rebalancer, Stock Comparison). Usage:
+    {% include project-desktop-setup.html p=site.data.tool_projects.KEY folder="folder-in-zip" %}
+{%- endcomment -%}
+{%- assign p = include.p -%}
+<section class="pj-section" id="before" aria-labelledby="before-h">
+  <h2 id="before-h">Before you start</h2>
+  <dl class="pj-facts">
+    <dt>Operating system</dt><dd>Windows 10 or 11, or macOS 12 or later.</dd>
+    <dt>Python</dt><dd>You don't need to install it yourself. The launcher uses an existing Python {{ p.python }} (with tkinter) or offers to install one for your user account only.</dd>
+    <dt>Administrator rights</dt><dd>Not needed. Nothing is installed for all users.</dd>
+    <dt>Internet</dt><dd>Needed for the first setup (to download Python packages){% if include.live %} and for live Yahoo Finance data{% endif %}.</dd>
+    <dt>Disk space</dt><dd>About {{ include.disk | default: "400 MB" }} for the private Python environment inside the folder.</dd>
+  </dl>
+  <p class="muted">Only want to try it? The <a href="{{ p.page | relative_url }}#web-app">web version</a> runs in your browser with nothing to install.</p>
+</section>
+
+<section class="pj-section" id="install" aria-labelledby="install-h">
+  <h2 id="install-h">Install and first run</h2>
+  <ol class="pj-steps">
+    <li><strong>Download <a href="{{ p.zip | relative_url }}" download>{{ p.zip_name }}</a></strong> and extract it somewhere you can write to, such as Documents. Keep the <code>{{ include.folder }}</code> folder together; don't run the program from inside the ZIP.</li>
+    <li>
+      <strong>Double-click the launcher</strong> in that folder:
+      <ul>
+        <li><strong>Windows:</strong> <code>{{ p.launcher_windows }}</code>. If SmartScreen warns about a downloaded file, choose <em>More info → Run anyway</em> only if you trust the source; on a work PC, ask IT first.</li>
+        <li><strong>macOS:</strong> <code>{{ p.launcher_macos }}</code>. The first time, macOS may say it “cannot be opened”: open <em>System Settings → Privacy &amp; Security</em> and click <em>Open Anyway</em>.</li>
+      </ul>
+    </li>
+    <li><strong>Answer any simple prompt.</strong> If no suitable Python is found, you're asked before anything is installed (Y/N on Windows; a numbered menu on macOS).</li>
+    <li><strong>The program opens</strong> once the environment has been proven healthy. Keep the setup window open while you use it; closing the program returns you to it.</li>
+  </ol>
+  <details class="pj-details">
+    <summary>What the launcher does, step by step</summary>
+    <div class="pj-details-body">
+      <ol>
+        <li><strong>Assess:</strong> checks the private <code>.venv</code> in the folder: its Python version, exact package versions, and that every package actually imports.</li>
+        <li><strong>Reconcile:</strong> if something is wrong, it repairs only that part. A damaged or missing <code>.venv</code> is rebuilt from a separate Python; drifted or missing packages are reinstalled to the pinned versions.</li>
+        <li><strong>Provision (only if needed):</strong> with your permission, installs Python for your user. On Windows it uses <code>winget</code> (Python 3.13, user scope, PATH unchanged). On macOS it uses Homebrew (<code>python@3.13</code> + <code>python-tk@3.13</code>), or you can use the python.org installer instead.</li>
+        <li><strong>Prove:</strong> re-checks everything after repair before launching.</li>
+        <li><strong>Launch and report:</strong> starts the program and reports how it finished.</li>
+      </ol>
+      <p>Healthy later launches only run the quick check and start immediately, with no downloads. Setup scratch files and the package cache stay in <code>files/temp/</code>; the last setup log is <code>files/test-logs/setup-and-run-latest.log</code>.</p>
+    </div>
+  </details>
+</section>
+
+<section class="pj-section" id="manage" aria-labelledby="manage-h">
+  <h2 id="manage-h">Update, move or remove</h2>
+  <ul>
+    <li><strong>Update:</strong> download the new ZIP and extract it to a new folder. The launcher builds a fresh environment on its first run. Copy over any exports you want to keep.</li>
+    <li><strong>Move:</strong> after moving the folder, just run the launcher. It detects that the old <code>.venv</code> no longer works and rebuilds it.</li>
+    <li><strong>Reset:</strong> delete the <code>.venv</code> folder and run the launcher again.</li>
+    <li><strong>Remove:</strong> delete the folder. The only thing installed outside it is a per-user Python, if you agreed to install one, which you can keep or uninstall normally.</li>
+  </ul>
+</section>

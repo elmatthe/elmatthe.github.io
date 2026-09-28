@@ -50,7 +50,7 @@ from plots import (
 )
 
 
-APP_VERSION = "v0.3.0"
+APP_VERSION = "v0.4.0"
 
 MULTI_CURRENCY_WARNING = (
     "Multiple listing currencies were detected. Returns and correlations are currently computed in each security's "
@@ -242,7 +242,7 @@ class StockAnalyticsApp(tk.Tk):
 
         row += 1
         controls = [
-            ("Data source", self.source_var, ["Yahoo Finance", "Offline CSV", "Alpha Vantage", "Twelve Data"]),
+            ("Data source", self.source_var, ["Yahoo Finance", "Offline CSV"]),
             ("Frequency", self.frequency_var, ["Daily", "Weekly", "Monthly"]),
             ("Price type", self.price_type_var, ["Close", "Adjusted Close"]),
             ("Return type", self.return_type_var, ["Simple returns", "Log returns"]),

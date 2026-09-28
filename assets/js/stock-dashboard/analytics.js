@@ -1,17 +1,15 @@
-// Dependency-free adjusted-price comparison analytics.
+// Dependency-free comparison analytics for the Stock Comparison & Analytics page.
 //
-// Browser port of the TipRanks Automation Tool comparison engine
-// (scripts/services/analytics.py and scripts/services/comparison.py on
-// feature/0.1.0-initial-dashboard). Semantics are kept identical so results match
-// the desktop tool:
+// The site's client-side analytics engine:
 //   * daily log returns, keyed by the exact (previous date, current date) interval;
 //   * pairwise correlations only over identical intervals, with observation counts,
 //     and "unavailable" below three shared returns or at zero variance;
 //   * annualized return = exp(mean log return x 252) - 1,
 //     annualized volatility = sample stdev x sqrt(252);
-//   * max drawdown from the running peak of adjusted closes.
-// Sharpe ratio and benchmark regression are carried over from the website's
-// previous dashboard and computed on the same exact-interval log returns.
+//   * Sharpe ratio on the same log-return basis;
+//   * max drawdown from the running peak of adjusted closes;
+//   * OLS regression of excess log returns against a chosen benchmark.
+// A daily bar dated today is excluded because it may be an unfinished session.
 
 export const HORIZONS = ["1D", "1M", "3M", "6M", "9M", "YTD", "1Y", "3Y", "5Y"];
 export const TRADING_DAYS = 252;

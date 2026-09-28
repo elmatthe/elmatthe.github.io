@@ -1,0 +1,57 @@
+# Metadata for the four tool projects on /projects/. Used by _layouts/project.html
+# and the project/guide pages. Keep versions and ZIP names in sync with the files
+# built by _tools/build_project_zips.py.
+monte-carlo:
+  name: Monte Carlo Retirement Simulator
+  category: Retirement Planning Tool
+  version: 1.1.0
+  web_app: Runs in your browser
+  platforms: Windows · macOS
+  python: "3.11–3.14"
+  page: /projects/monte-carlo-simulator/
+  guide: /projects/monte-carlo-guide/
+  zip: /projects/monte-carlo-retirement-simulator.zip
+  zip_name: monte-carlo-retirement-simulator.zip
+  zip_size: 30 KB
+  launcher_windows: Setup_and_Run-monte-carlo-retirement-simulator.bat
+  launcher_macos: Setup_and_Run-monte-carlo-retirement-simulator.command
+cpi:
+  name: CPI Web Scraper
+  category: Research Automation Tool
+  version: 0.3.0
+  platforms: Windows (desktop Excel)
+  python: "3.11–3.14"
+  page: /projects/cpi-webscraper/
+  guide: /projects/cpi-downloader-user-guide/
+  zip: /projects/cpi-web-scraper.zip
+  zip_name: cpi-web-scraper.zip
+  zip_size: 1.2 MB
+  launcher_windows: Setup_and_Run-cpi-webscraper.bat
+rebalancer:
+  name: Portfolio Rebalancer
+  category: Portfolio Management Tool
+  version: 1.1.0
+  web_app: Runs in your browser
+  platforms: Windows · macOS
+  python: "3.11–3.14"
+  page: /projects/portfolio-rebalancer/
+  guide: /projects/portfolio-rebalancer-guide/
+  zip: /projects/portfolio-rebalancer.zip
+  zip_name: portfolio-rebalancer.zip
+  zip_size: 36 KB
+  launcher_windows: Setup_and_Run-portfolio-rebalancer.bat
+  launcher_macos: Setup_and_Run-portfolio-rebalancer.command
+stock:
+  name: Stock Comparison & Analytics Tool
+  category: Market Analytics Tool
+  version: 0.4.0
+  web_app: Runs in your browser
+  platforms: Windows · macOS
+  python: "3.11–3.14"
+  page: /projects/stock-data-dashboard-tool/
+  guide: /projects/stock-data-dashboard-guide/
+  zip: /projects/stock-data-dashboard-tool.zip
+  zip_name: stock-data-dashboard-tool.zip
+  zip_size: 41 KB
+  launcher_windows: Setup_and_Run-stock-data-dashboard-tool.bat
+  launcher_macos: Setup_and_Run-stock-data-dashboard-tool.command

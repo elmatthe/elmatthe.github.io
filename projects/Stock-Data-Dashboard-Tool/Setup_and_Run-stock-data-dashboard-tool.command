@@ -1,0 +1,134 @@
+#!/bin/bash
+# ============================================================================
+#  Stock Comparison & Analytics Tool - macOS setup + launcher
+#  Double-click this file in Finder. It checks the private .venv in this folder,
+#  repairs it if needed, and starts the program. All real logic is in
+#  scripts/bootstrap.py (ASSESS -> RECONCILE -> REPAIR/PROVISION -> PROVE ->
+#  LAUNCH -> REPORT). Apple's system Python is never modified.
+#
+#  healthy .venv -> bootstrap --venv-check -> bootstrap --launch-only
+#  first run / unhealthy -> external Python 3.11-3.14 -> bootstrap
+#  If no such Python exists: Homebrew (python@3.13 + python-tk@3.13) or the
+#  python.org installer, after asking you.
+#  Generated from _tools/bootstrap in the website repository.
+# ============================================================================
+
+cd "$(dirname "$0")" || exit 1
+
+PROJECT_NAME="Stock Comparison & Analytics Tool"
+BOOTSTRAP="scripts/bootstrap.py"
+VENV_PY=".venv/bin/python"
+MIN_MINOR=11
+MAX_MINOR=14
+BREW_FORMULAE=("python@3.13" "python-tk@3.13")
+
+finish() {
+    local code="$1"
+    if [ -z "$AI_BOOTSTRAP_TEST_MODE" ] && [ "$code" -ne 0 ]; then
+        echo
+        read -r -p "Press Enter to close this window..." _
+    fi
+    exit "$code"
+}
+
+if [ ! -f "$BOOTSTRAP" ]; then
+    echo "ERROR: $BOOTSTRAP is missing. Extract the whole ZIP again and keep the folder together."
+    finish 1
+fi
+
+# Fast path: reuse only a PROVEN healthy environment.
+if [ "$#" -eq 0 ] && [ -x "$VENV_PY" ] && "$VENV_PY" "$BOOTSTRAP" --venv-check >/dev/null 2>&1; then
+    "$VENV_PY" "$BOOTSTRAP" --launch-only
+    finish $?
+fi
+
+echo "============================================================"
+echo "  $PROJECT_NAME - setup"
+echo "============================================================"
+echo "Everything is installed inside this folder or for your macOS user."
+if [ ! -d ".venv" ]; then
+    echo
+    echo "First run: if macOS said this file \"cannot be opened\", open"
+    echo "System Settings > Privacy & Security and choose \"Open Anyway\" (once)."
+fi
+echo
+
+# Bounded discovery of a Python 3.11-3.14 able to host the bootstrap.
+find_host() {
+    HOST=""
+    local minor candidate
+    local candidates=()
+    for minor in $(seq "$MAX_MINOR" -1 "$MIN_MINOR"); do
+        candidates+=("$(command -v "python3.$minor" 2>/dev/null)")
+        candidates+=("/opt/homebrew/bin/python3.$minor" "/usr/local/bin/python3.$minor")
+        candidates+=("/Library/Frameworks/Python.framework/Versions/3.$minor/bin/python3.$minor")
+    done
+    candidates+=("$(command -v python3 2>/dev/null)")
+    for candidate in "${candidates[@]}"; do
+        [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+        if "$candidate" -c "import sys; raise SystemExit(0 if (3,$MIN_MINOR) <= sys.version_info[:2] <= (3,$MAX_MINOR) and sys.version_info.releaselevel == 'final' else 1)" >/dev/null 2>&1; then
+            HOST="$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+load_brew() {
+    if command -v brew >/dev/null 2>&1; then return 0; fi
+    for b in /opt/homebrew/bin/brew /usr/local/bin/brew; do
+        if [ -x "$b" ]; then eval "$("$b" shellenv)"; return 0; fi
+    done
+    return 1
+}
+
+install_python() {
+    echo "A compatible Python (3.$MIN_MINOR - 3.$MAX_MINOR) was not found."
+    echo "Choose how to install it:"
+    echo "  1) Homebrew: installs ${BREW_FORMULAE[*]} for your user (recommended)"
+    echo "  2) python.org installer: opens the download page; you run the installer"
+    echo "  3) Cancel"
+    read -r -p "Enter 1, 2 or 3: " choice
+    case "$choice" in
+        1)
+            if ! load_brew; then
+                echo
+                echo "Homebrew is not installed. Its official installer will ask for your"
+                echo "password once to create its folder (this is Homebrew's own requirement)."
+                read -r -p "Install Homebrew now? (y/N): " yn
+                case "$yn" in [Yy]*) ;; *) return 1 ;; esac
+                /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || return 1
+                load_brew || return 1
+            fi
+            brew install "${BREW_FORMULAE[@]}" || return 1
+            ;;
+        2)
+            open "https://www.python.org/downloads/macos/" 2>/dev/null || echo "Open https://www.python.org/downloads/macos/ in your browser."
+            read -r -p "Press Enter after the Python installer has finished..." _
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
+if ! find_host; then
+    if ! install_python || ! find_host; then
+        echo
+        echo "ERROR: No compatible Python is available, so setup cannot continue."
+        echo "Install Python 3.13 from https://www.python.org/downloads/macos/ and run this file again."
+        finish 1
+    fi
+fi
+
+echo "Using $("$HOST" --version 2>&1) at $HOST"
+"$HOST" "$BOOTSTRAP" "$@"
+code=$?
+if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then
+    echo
+    echo "$PROJECT_NAME stopped with exit code $code."
+    echo "The message above names the step that failed. A full log is in files/test-logs/setup-and-run-latest.log"
+    finish "$code"
+fi
+finish 0

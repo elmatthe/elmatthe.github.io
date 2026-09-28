@@ -23,3 +23,12 @@ projects/Stock-Data-Dashboard-Tool/files/website-assets/*
 # Secrets — never commit personal FRED API keys (created/kept locally only)
 projects/CPI_Automation/files/config.json
 projects/CPI_Automation/files/fred_api_key.md
+
+# Desktop tools on /projects/ — launcher/bootstrap runtime output (never commit)
+projects/*/files/temp/
+projects/*/files/test-logs/
+projects/*/files/runtime/
+projects/*/files/run-temp/
+# CPI Web Scraper — the launcher creates the private config (FRED key) at the tool root
+projects/CPI-Webscraper/config.toml
+projects/CPI-Webscraper/files/config.json

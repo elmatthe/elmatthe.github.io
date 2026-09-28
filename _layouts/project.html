@@ -1,0 +1,61 @@
+---
+layout: default
+---
+{%- comment -%}
+  Layout for the four tool project pages and their setup guides.
+  Front matter:
+    project:  key in _data/tool_projects.yml (version, downloads, guide/page URLs)
+    kind:     "tool" (project page) or "guide" (setup guide)
+    eyebrow, lede: hero text
+    sections: [{id, label}] for the sticky on-page navigation
+    page_css / page_js: optional extra scoped assets for this page (page_js are ES modules)
+    vendor_js: optional third-party classic scripts (e.g. Chart.js) loaded before page_js
+{%- endcomment -%}
+{%- assign p = site.data.tool_projects[page.project] -%}
+<link rel="stylesheet" href="{{ '/assets/css/project-pages.css' | relative_url }}">
+{%- for css in page.page_css %}
+<link rel="stylesheet" href="{{ css | relative_url }}">
+{%- endfor %}
+<div class="pj pj-{{ page.kind | default: 'tool' }}" id="top">
+  <header class="pj-hero">
+    <p class="pj-eyebrow">{{ page.eyebrow | default: p.category }}</p>
+    <h1>{{ page.title | escape }}</h1>
+    {%- if page.lede %}<p class="pj-lede">{{ page.lede }}</p>{% endif %}
+    <ul class="pj-chips" aria-label="Project status">
+      {%- if p.version %}<li><span>Desktop</span> v{{ p.version }}</li>{% endif %}
+      {%- if p.web_app %}<li><span>Web app</span> {{ p.web_app }}</li>{% endif %}
+      {%- if p.platforms %}<li><span>Desktop OS</span> {{ p.platforms }}</li>{% endif %}
+      {%- if page.last_updated %}<li><span>Updated</span> <time datetime="{{ page.last_updated | date: '%Y-%m-%d' }}">{{ page.last_updated | date: '%b %-d, %Y' }}</time></li>{% endif %}
+    </ul>
+    <div class="pj-cta">
+      {%- if page.kind == 'guide' %}
+      <a class="pj-btn pj-btn-primary" href="{{ p.zip | relative_url }}" download>Download {{ p.zip_name }}</a>
+      <a class="pj-btn" href="{{ p.page | relative_url }}">Back to the project page</a>
+      {%- else %}
+      {%- if p.web_app %}<a class="pj-btn pj-btn-primary" href="#web-app">Open the web app</a>{% endif %}
+      <a class="pj-btn" href="{{ p.zip | relative_url }}" download>Download desktop app</a>
+      <a class="pj-btn" href="{{ p.guide | relative_url }}">Setup guide</a>
+      {%- endif %}
+    </div>
+  </header>
+  {%- if page.sections %}
+  <nav class="pj-localnav" aria-label="On this page">
+    <ul>
+      {%- for s in page.sections %}
+      <li><a href="#{{ s.id }}">{{ s.label }}</a></li>
+      {%- endfor %}
+    </ul>
+  </nav>
+  {%- endif %}
+  <div class="pj-body">
+    {{ content }}
+  </div>
+  <p class="pj-back"><a href="#top">Back to top</a> · <a href="{{ '/projects/' | relative_url }}">All projects</a></p>
+</div>
+{%- for js in page.vendor_js %}
+<script src="{{ js }}" crossorigin="anonymous"></script>
+{%- endfor %}
+<script src="{{ '/assets/js/shared/project-page.js' | relative_url }}" defer></script>
+{%- for js in page.page_js %}
+<script type="module" src="{{ js | relative_url }}"></script>
+{%- endfor %}

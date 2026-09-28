@@ -35,59 +35,70 @@ downloading anything: <https://elmatthe.github.io/projects/portfolio-rebalancer/
 
 | Piece | Tool | Why |
 |-------|------|-----|
-| Language | **Python 3.9+** | Runs the same on Windows and macOS |
+| Language | **Python 3.11–3.14** | Runs the same on Windows and macOS; the launcher finds or installs it |
 | Window / GUI | **tkinter** | Built into Python — nothing extra to install |
 | Spreadsheet export | **openpyxl** | Writes the `.xlsx` trade plan |
 | Live prices & FX | **yfinance** | Optional Yahoo Finance lookups |
-| Tests | **pytest** | Proves the buy/sell/hold math stays correct |
 
 Everything except Python installs into a self-contained `.venv` folder inside this
-project — nothing is installed system-wide, and you can move or delete the folder
+folder — nothing is installed system-wide, and you can move or delete the folder
 freely.
 
 ---
 
 ## Download
 
-**From the website (easiest):**
-1. Go to <https://elmatthe.github.io/projects/portfolio-rebalancer/>
+1. Go to <https://elmatthe.github.io/projects/portfolio-rebalancer/>.
 2. Click **Download portfolio-rebalancer.zip**.
-3. Unzip it anywhere you like (Desktop, Documents — it doesn't matter).
+3. Extract it anywhere you can write to (Desktop, Documents). Don't run it from inside
+   the ZIP preview.
 
-**From GitHub:** download the folder as a ZIP from the public repository and unzip it.
-
-After unzipping you'll have a `portfolio-rebalancer-tool` folder containing this
-README, the two setup launchers, and the `scripts` / `md-instructions` folders.
+You'll get a `portfolio-rebalancer-tool` folder containing this README, the two setup launchers,
+`config.toml` and the `scripts` folder.
 
 ---
 
 ## Setup & run
 
-You only "set up" once. After that, the same file is your everyday launcher — and it
-re-uses the environment it built, so day-to-day starts are quick.
+One launcher does everything: it checks the folder's private Python environment,
+repairs or installs only what is missing, proves it works, then opens the program.
+Healthy later launches skip straight to opening the program; no downloads happen.
 
 ### Windows
-1. Double-click **`setup_and_run.bat`**.
-2. Because the file was downloaded from the internet, Windows or your security software
-   may flag it the first time. If you are unsure whether it is safe to run, or if this is
-   a work computer, check with your IT department before continuing.
-3. If Python isn't installed, it will ask before installing it. Everything else is
-   set up automatically inside the folder.
-4. The Portfolio Rebalancer window opens. To run it again later, just double-click
-   **`setup_and_run.bat`** again.
+1. Double-click **`Setup_and_Run-portfolio-rebalancer.bat`**.
+2. Because the file was downloaded from the internet, Windows SmartScreen or your
+   security software may flag it the first time. If you are unsure whether it is safe to
+   run, or if this is a work computer, check with your IT department before continuing.
+3. If no suitable Python (3.11–3.14) is found, it asks (Y/N) before installing Python 3.13
+   **for your user account only** with `winget`. No administrator rights are needed and
+   your PATH is not changed. The Microsoft Store `python.exe` placeholder is never used.
+4. The Portfolio Rebalancer window opens. To run it again later, double-click the same file.
 
 ### macOS
-1. Double-click **`setup_and_run.command`**.
-2. Because the file was downloaded from the internet, macOS or your security software may
-   block it the first time. If you are unsure whether it is safe to run, or if this is a
-   work computer, check with your IT department before continuing.
-3. If Python isn't installed, it will ask before installing it (no admin password
-   needed for the "just for me" option).
-4. The Portfolio Rebalancer window opens. To run it again later, just double-click
-   **`setup_and_run.command`** again.
+1. Double-click **`Setup_and_Run-portfolio-rebalancer.command`**.
+2. The first time, macOS may say it "cannot be opened". Open **System Settings → Privacy &
+   Security** and click **Open Anyway** (on a work computer, check with IT first).
+3. If no suitable Python with tkinter is found, it offers a numbered menu: install with
+   Homebrew (`python@3.13` + `python-tk@3.13`), or open the python.org download page.
+4. The Portfolio Rebalancer window opens. To run it again later, double-click the same file.
 
-> If the `.command` file won't run on a fresh download, open Terminal, type
-> `chmod +x ` (with a trailing space), drag the file onto the window, and press Enter.
+> If the `.command` file won't run, open Terminal, type `chmod +x ` (with a trailing
+> space), drag the file onto the window, and press Enter.
+
+### Repair, move and reset
+- **Moved the folder or something broke?** Just run the launcher again. It detects a
+  stale or damaged `.venv`, rebuilds it (keeping a backup until the rebuild works) and
+  reinstalls only the packages that are missing or at the wrong version.
+- **Start completely fresh:** delete the `.venv` folder and run the launcher.
+- **Logs:** the last setup log is `files/test-logs/setup-and-run-latest.log`; scratch
+  files and the package cache stay in `files/temp/`.
+- **Advanced options** (run from a terminal in this folder):
+  `--venv-check` (report health, change nothing), `--repair-venv` (force a rebuild),
+  `--setup-only` (set up without launching), `--launch-only` (launch only if already healthy).
+  On Windows run e.g. `Setup_and_Run-portfolio-rebalancer.bat --venv-check`; on macOS
+  `./Setup_and_Run-portfolio-rebalancer.command --venv-check`.
+
+The full illustrated guide, including troubleshooting, is at <https://elmatthe.github.io/projects/portfolio-rebalancer-guide/>.
 
 ---
 
@@ -111,13 +122,12 @@ see a full run immediately.
 
 ```
 portfolio-rebalancer-tool/
-  README.md                 <- this file
-  setup_and_run.bat         <- Windows setup + everyday launcher
-  setup_and_run.command     <- macOS setup + everyday launcher
-  md-instructions/
-    Briefing.md             <- project overview / context
-    Changelog.md            <- version history
+  README.md                                <- this file
+  Setup_and_Run-portfolio-rebalancer.bat      <- Windows setup + launcher
+  Setup_and_Run-portfolio-rebalancer.command  <- macOS setup + launcher
+  config.toml                              <- supported Python range + entry point
   scripts/
+    bootstrap.py            <- assess / repair / prove / launch logic used by the launchers
     main.py                 <- entry point (opens the window)
     requirements.txt        <- pinned dependencies
     portfolio_rebalancer/   <- the program, split into focused modules
@@ -127,9 +137,11 @@ portfolio-rebalancer-tool/
       ticker_helper.py      <- ticker checking and helpful messages
       export.py             <- CSV / Excel export
       ui.py                 <- the tkinter window
-    tests/
-      test_core.py          <- tests proving the math stays correct
+  files/                    <- created on first run: setup logs, temp files, state
 ```
+
+The source repository also contains `files/tests/` (pytest suite) and `md-instructions/`
+(briefing and changelog); they are not part of the user download.
 
 ---
 

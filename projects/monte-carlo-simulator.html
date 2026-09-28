@@ -1,0 +1,148 @@
+---
+layout: project
+project: monte-carlo
+kind: tool
+title: Monte Carlo Retirement Simulator
+permalink: /projects/monte-carlo-simulator/
+summary: Stress-test a retirement plan across thousands of random market paths in your browser (no install, no data leaves your device), with a downloadable desktop version that writes Excel and CSV reports.
+lede: See how often a savings-and-spending plan lasts across thousands of random market paths. The web simulator runs entirely in your browser; the desktop program adds Excel and CSV reports with an embedded fan chart.
+last_updated: 2026-09-28
+vendor_js:
+  - https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js
+page_js:
+  - /assets/js/monte-carlo/app.js
+sections:
+  - { id: overview, label: Overview }
+  - { id: web-app, label: Web app }
+  - { id: model, label: The model }
+  - { id: desktop, label: Desktop app }
+  - { id: compare, label: Web vs desktop }
+  - { id: help, label: Troubleshooting }
+---
+{%- assign p = site.data.tool_projects.monte-carlo -%}
+<section class="pj-section" id="overview" aria-labelledby="overview-h">
+  <h2 id="overview-h">Overview</h2>
+  <ul class="pj-cards">
+    <li class="pj-card"><h3>Two phases</h3><p>Years of saving with growing contributions, then years of inflation-adjusted withdrawals net of CPP, OAS or pension income.</p></li>
+    <li class="pj-card"><h3>Planner-ready outputs</h3><p>Probability of success, median values, ruin-year statistics, a percentile fan chart and checkpoint tables, in nominal or today's (real) dollars.</p></li>
+    <li class="pj-card"><h3>Private by design</h3><p>No market data or network access is needed. Every calculation happens on your device and nothing is sent anywhere.</p></li>
+  </ul>
+  <figure class="pj-figure">
+    <img src="{{ '/assets/images/monte-carlo-workflow.svg' | relative_url }}" alt="Three-step workflow: set assumptions, simulate many market paths, review outcomes and percentiles" width="960" height="300" loading="lazy">
+    <figcaption>Assumptions → simulated paths → outcome review.</figcaption>
+  </figure>
+</section>
+
+<section class="pj-section" id="web-app" aria-labelledby="web-app-h">
+  <h2 id="web-app-h">Web app</h2>
+  <div class="pj-app" id="mc-app">
+    <div class="pj-app-grid">
+      <form id="mcForm" novalidate aria-labelledby="mc-inputs-h">
+        <h3 id="mc-inputs-h" style="margin-top:0">Assumptions</h3>
+        <div class="pj-form">
+          <div class="pj-field"><label for="mc-currentPortfolio">Current portfolio ($)</label><input id="mc-currentPortfolio" type="number" min="0" step="0.01" value="150000" inputmode="decimal"></div>
+          <div class="pj-field"><label for="mc-annualContribution">Annual contribution ($)</label><input id="mc-annualContribution" type="number" min="0" step="0.01" value="10000" inputmode="decimal"></div>
+          <div class="pj-field"><label for="mc-contributionGrowth">Contribution growth (% / yr)</label><input id="mc-contributionGrowth" type="number" step="0.01" value="0" inputmode="decimal"></div>
+          <div class="pj-field"><label for="mc-yearsToRetirement">Years to retirement</label><input id="mc-yearsToRetirement" type="number" min="1" max="120" step="1" value="30" inputmode="numeric"></div>
+          <div class="pj-field"><label for="mc-yearsInRetirement">Years in retirement</label><input id="mc-yearsInRetirement" type="number" min="1" max="120" step="1" value="25" inputmode="numeric"></div>
+          <div class="pj-field"><label for="mc-expectedReturn">Expected return (% / yr)</label><input id="mc-expectedReturn" type="number" step="0.01" value="7" inputmode="decimal"></div>
+          <div class="pj-field"><label for="mc-volatility">Volatility / std dev (%)</label><input id="mc-volatility" type="number" min="0" step="0.01" value="12" inputmode="decimal"></div>
+          <div class="pj-field"><label for="mc-inflation">Inflation (% / yr)</label><input id="mc-inflation" type="number" step="0.01" value="2.5" inputmode="decimal"></div>
+          <div class="pj-field"><label for="mc-annualSpending">Retirement spending ($ / yr)</label><input id="mc-annualSpending" type="number" min="0" step="0.01" value="60000" inputmode="decimal"><small>First year of retirement, in that year's dollars.</small></div>
+          <div class="pj-field"><label for="mc-pensionIncome">CPP / OAS / pension ($ / yr)</label><input id="mc-pensionIncome" type="number" min="0" step="0.01" value="18000" inputmode="decimal"><small>Must be less than spending.</small></div>
+          <div class="pj-field"><label for="mc-simulations">Simulations</label><input id="mc-simulations" type="number" min="1" max="10000" step="1" value="1000" inputmode="numeric"><small>1 to 10,000.</small></div>
+        </div>
+        <div class="pj-actions">
+          <button type="submit" class="pj-btn pj-btn-primary" id="mcRun">Run simulation</button>
+          <button type="button" class="pj-btn" id="mcSample">Load sample scenario</button>
+          <button type="button" class="pj-btn" id="mcExportCsv" disabled>Download CSV</button>
+        </div>
+        <p class="pj-status" id="mcStatus" role="status" aria-live="polite">Loading…</p>
+      </form>
+      <div>
+        <div class="pj-actions" role="radiogroup" aria-label="Value display" style="margin-top:0">
+          <label class="pj-choice"><input type="radio" name="mcMode" value="nominal" checked> Nominal dollars</label>
+          <label class="pj-choice"><input type="radio" name="mcMode" value="real"> Real (today's) dollars</label>
+        </div>
+        <div id="mcResults" hidden>
+          <p class="muted" id="mcMeta"></p>
+          <div class="pj-tiles" id="mcTiles"></div>
+          <div class="pj-chart"><canvas id="mcChart" role="img" aria-label="Fan chart of portfolio value percentiles by year; the checkpoint table below lists the same values"></canvas></div>
+          <p class="muted" style="font-size:.85rem">Shaded bands: 10th–90th and 25th–75th percentiles; line: median. Dashed line: retirement.</p>
+          <div class="pj-table-wrap" id="mcTable"></div>
+        </div>
+        <p class="muted" id="mcEmpty">Results appear here after you run the simulation.</p>
+      </div>
+    </div>
+  </div>
+  <noscript><p class="pj-note warn">The web simulator needs JavaScript. The desktop program works without a browser.</p></noscript>
+  <p class="pj-disclaimer">Illustrative and educational only; not financial advice. Real markets are not normally distributed, returns are not independent from year to year, and taxes and fees are not modelled.</p>
+</section>
+
+<section class="pj-section" id="model" aria-labelledby="model-h">
+  <h2 id="model-h">The model</h2>
+  <dl class="pj-facts">
+    <dt>Annual return</dt><dd>Drawn independently each year from a normal distribution with your expected return and volatility.</dd>
+    <dt>Saving years</dt><dd>value × (1 + return) + contribution. Contributions grow by the contribution growth rate each year. A negative balance is floored at $0 but can recover.</dd>
+    <dt>Retirement years</dt><dd>value × (1 + return) − withdrawal. The first-year withdrawal is spending minus pension income, and it grows with inflation every year.</dd>
+    <dt>Success</dt><dd>A path fails (ruin) if its value reaches $0 during retirement; it stays at $0 afterwards. Probability of success = paths that never fail ÷ all paths.</dd>
+    <dt>Percentiles</dt><dd>10th, 25th, 50th, 75th and 90th percentiles of all paths for each year, using linear interpolation.</dd>
+    <dt>Real dollars</dt><dd>Nominal value ÷ (1 + inflation)<sup>year</sup>, i.e. today's purchasing power.</dd>
+    <dt>Initial withdrawal rate</dt><dd>First-year net withdrawal ÷ median portfolio at retirement.</dd>
+  </dl>
+</section>
+
+<section class="pj-section" id="desktop" aria-labelledby="desktop-h">
+  <h2 id="desktop-h">Desktop app</h2>
+  <div class="pj-download">
+    <div>
+      <h3>{{ p.zip_name }}</h3>
+      <p class="muted">Version {{ p.version }} · {{ p.platforms }} · Python {{ p.python }} is set up automatically{% if p.zip_size %} · {{ p.zip_size }}{% endif %}</p>
+    </div>
+    <a class="pj-btn pj-btn-primary" href="{{ p.zip | relative_url }}" download>Download ZIP</a>
+  </div>
+  <ol class="pj-steps">
+    <li><strong>Extract the ZIP</strong> into a folder you can write to.</li>
+    <li><strong>Double-click the launcher:</strong> <code>{{ p.launcher_windows }}</code> (Windows) or <code>{{ p.launcher_macos }}</code> (macOS).</li>
+    <li><strong>Answer any simple prompt.</strong> The first run finds or installs a supported Python for your user account, builds a private <code>.venv</code>, installs pinned packages and opens the simulator. Later launches start immediately.</li>
+  </ol>
+  <p>Full walkthrough and troubleshooting: <a href="{{ p.guide | relative_url }}">setup guide</a>.</p>
+</section>
+
+<section class="pj-section" id="compare" aria-labelledby="compare-h">
+  <h2 id="compare-h">Web app vs desktop app</h2>
+  <p>Both use the same model, limits and validation messages. An automated test feeds both identical random draws and confirms identical results.</p>
+  <div class="pj-table-wrap">
+    <table class="pj-table">
+      <thead><tr><th scope="col">Capability</th><th scope="col">Web app</th><th scope="col">Desktop app</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">Install needed</th><td>None</td><td>ZIP + one launcher (sets itself up)</td></tr>
+        <tr><th scope="row">Simulations</th><td>Up to 10,000</td><td>Up to 10,000</td></tr>
+        <tr><th scope="row">Nominal and real views</th><td>Both, switchable</td><td>Nominal (inflation rate recorded in the report)</td></tr>
+        <tr><th scope="row">Fan chart and checkpoint table</th><td class="yes">Yes</td><td>Yes, embedded in the Excel report</td></tr>
+        <tr><th scope="row">Exports</th><td>CSV of all yearly percentiles</td><td>Excel report (summary, percentiles, chart) and optional CSV</td></tr>
+        <tr><th scope="row">Network access</th><td>None needed</td><td>Only to install Python packages the first time</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="pj-section" id="help" aria-labelledby="help-h">
+  <h2 id="help-h">Troubleshooting</h2>
+  <details class="pj-details">
+    <summary>“CPP/OAS/Pension income must be less than annual retirement spending”</summary>
+    <div class="pj-details-body"><p>If guaranteed income already covers spending, the portfolio never needs to fund withdrawals, so there is nothing to simulate. Lower the pension figure or raise spending.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>Results change slightly every run</summary>
+    <div class="pj-details-body"><p>Each run draws new random paths. Increase the number of simulations (up to 10,000) for more stable percentages.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>The chart is missing</summary>
+    <div class="pj-details-body"><p>The chart uses Chart.js from a CDN. If that is blocked, the summary tiles, table and CSV export still work.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>The desktop launcher stops with an error</summary>
+    <div class="pj-details-body"><p>The launcher names the component that failed and keeps a log in <code>files/test-logs/setup-and-run-latest.log</code>. See the <a href="{{ p.guide | relative_url }}#troubleshooting">setup guide</a>.</p></div>
+  </details>
+</section>

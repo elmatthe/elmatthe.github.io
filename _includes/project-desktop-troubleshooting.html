@@ -1,0 +1,24 @@
+{%- comment -%}
+  Shared launcher troubleshooting items for the Python desktop tools. Place inside
+  the guide's #troubleshooting section after any tool-specific items.
+{%- endcomment -%}
+<details class="pj-details">
+  <summary>“A compatible Python was not found” and winget isn't available (Windows)</summary>
+  <div class="pj-details-body"><p>Install Python 3.13 from <a href="https://www.python.org/downloads/windows/">python.org</a> using the standard installer (<em>Install for me only</em> is fine), then run the launcher again. The launcher never uses the Microsoft Store <code>python.exe</code> placeholder.</p></div>
+</details>
+<details class="pj-details">
+  <summary>Python is installed but “missing: tkinter” (macOS)</summary>
+  <div class="pj-details-body"><p>Homebrew's Python ships without the GUI toolkit. Let the launcher install <code>python-tk@3.x</code> when it asks, or run <code>brew install python-tk@3.13</code> yourself. The python.org installer already includes it.</p></div>
+</details>
+<details class="pj-details">
+  <summary>“Dependency installation failed”</summary>
+  <div class="pj-details-body"><p>The package download needs internet access to pypi.org. On a work network, a proxy or firewall may block it: try another network or ask IT. Also check free disk space. Running the launcher again resumes from where it stopped; nothing half-installed is used.</p></div>
+</details>
+<details class="pj-details">
+  <summary>“The existing .venv is in use”</summary>
+  <div class="pj-details-body"><p>Another copy of the program (or a terminal using its Python) is still open. Close it and run the launcher again.</p></div>
+</details>
+<details class="pj-details">
+  <summary>The window closes or an error mentions a missing file</summary>
+  <div class="pj-details-body"><p>Extract the whole ZIP again into a normal folder, not a cloud-sync placeholder or the ZIP preview, and keep the folder structure intact. The setup log in <code>files/test-logs/</code> shows the last step that ran.</p></div>
+</details>

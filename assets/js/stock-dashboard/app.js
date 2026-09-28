@@ -1,17 +1,17 @@
 // Stock Comparison & Analytics dashboard controller.
 //
-// Four sections modelled on the TipRanks Automation Tool UI (Research, Compare,
-// Export, Settings). All data work happens in this browser; see proxy.js for how
-// live Yahoo Finance data is reached from a static page.
+// Four sections: Comparison, Snapshot, Export, Settings. All analysis happens in
+// this browser. Yahoo Finance is the only market-data source; see ../yahoo/ for
+// how it is reached from a static page and how responses are validated.
 
-import { ProxyPipeline, PROXIES, FetchError, validateTemplate } from "./proxy.js";
-import { fetchHistory, parseChart, chartUrls, clearCache, cacheSize } from "./yahoo.js";
-import { normalizeSymbol, normalizeSymbolList, MAX_TICKERS, MIN_COMPARE_TICKERS, SymbolError } from "./symbols.js";
+import { ProxyPipeline, PROXIES, FetchError, validateTemplate } from "../yahoo/proxy.js";
+import { fetchHistory, parseChart, quoteUrls, clearCache, cacheSize } from "../yahoo/yahoo.js";
+import { normalizeSymbol, normalizeSymbolList, MAX_TICKERS, MIN_COMPARE_TICKERS, SymbolError } from "../yahoo/symbols.js";
+import { resolveAligners, normalizeSeries } from "../yahoo/fx.js";
 import * as A from "./analytics.js";
-import { resolveAligners, normalizeSeries } from "./fx.js";
-import { parseRecordText, presentRecord, buildResearchView, analystRankLabel, safeHttpUrl, RecordError } from "./research.js";
-import { DEMO_SECURITIES, demoSeries, demoFxRates, demoResearchRecord } from "./demo.js";
-import { buildWorkbookSheets, buildXlsx, toCsv, downloadBlob, timestampSlug } from "./export.js";
+import { DEMO_SECURITIES, demoSeries, demoFxRates } from "./demo.js";
+import { buildWorkbookSheets } from "./export.js";
+import { buildXlsx, toCsv, downloadBlob, timestampSlug } from "../shared/export-files.js";
 
 const app = document.getElementById("sdd-app");
 if (app) init();
@@ -25,8 +25,6 @@ function init() {
     liveTickers: ["AAPL", "MSFT", "SPY"],
     snapshot: null,         // { series, provenance }
     snapshotController: null,
-    record: null,           // presented saved-research record
-    researchView: null,
     charts: {},
   };
   const CHART_AVAILABLE = typeof window.Chart === "function";
@@ -103,7 +101,7 @@ function init() {
     }
   }
   const hideNotice = node => { node.hidden = true; node.replaceChildren(); };
-  const describeError = error => (error instanceof FetchError || error instanceof SymbolError || error instanceof RecordError)
+  const describeError = error => (error instanceof FetchError || error instanceof SymbolError)
     ? error.message : "Unexpected error. Please try again.";
 
   /* ================= theme ================= */
@@ -183,9 +181,8 @@ function init() {
   }
   pipeline.onChange(renderPipelineStatus);
 
-  const probeRange = () => { const end = new Date(); return { start: new Date(end.getTime() - 7 * 86400000), end }; };
   async function probe(only) {
-    const urls = chartUrls("AAPL", probeRange());
+    const urls = quoteUrls("AAPL");
     return pipeline.fetchValidated(urls, text => parseChart(text, "AAPL"), { only });
   }
   $("sddTestConnection").addEventListener("click", async event => {
@@ -687,7 +684,7 @@ function init() {
     });
   }
 
-  /* ================= Research: live snapshot ================= */
+  /* ================= Snapshot: one ticker ================= */
   const snapshotForm = $("sddSnapshotForm");
   snapshotForm.addEventListener("submit", event => { event.preventDefault(); loadSnapshot($("sddSnapshotTicker").value); });
 
@@ -728,7 +725,6 @@ function init() {
       state.snapshot = { series, provenance: source };
       renderSnapshot();
       setStatus(status, `${symbol} loaded${source.cached ? " from cache" : ""}.`, "ok");
-      if (state.record && state.record.ticker === symbol) renderResearch();
       return state.snapshot;
     } catch (error) {
       if (error.kind === "aborted") return null;
@@ -776,218 +772,21 @@ function init() {
     }], `Price${series.currency ? ` (${series.currency})` : ""}`, false));
   }
 
-  /* ================= Research: saved TipRanks record ================= */
-  const recordStatus = $("sddRecordStatus");
-  $("sddRecordFile").addEventListener("change", event => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    if (file.size > 2 * 1024 * 1024) { setStatus(recordStatus, "The file is larger than 2 MB and was not read.", "error"); return; }
-    const reader = new FileReader();
-    reader.onload = () => {
-      try { setRecord(parseRecordText(String(reader.result)), `Opened ${file.name} locally. Nothing was uploaded.`); }
-      catch (error) {
-        setStatus(recordStatus, `${describeError(error)}${state.record ? ` Still showing ${state.record.ticker} research loaded earlier.` : ""}`, "error");
-      }
-    };
-    reader.onerror = () => setStatus(recordStatus, "The file could not be read.", "error");
-    reader.readAsText(file);
-  });
-  $("sddRecordDemo").addEventListener("click", () => setRecord(presentRecord(demoResearchRecord()), "Synthetic demo loaded. Values are generated, not real TipRanks data."));
-  $("sddRecordClear").addEventListener("click", () => {
-    state.record = null;
-    state.researchView = null;
-    $("sddRecordFile").value = "";
-    $("sddResearchResult").hidden = true;
-    $("sddRecordLive").disabled = true;
-    $("sddRecordClear").disabled = true;
-    setStatus(recordStatus, "No research loaded.", null);
-    updateExportState();
-  });
-  $("sddRecordLive").addEventListener("click", async () => {
-    if (!state.record) return;
-    $("sddSnapshotTicker").value = state.record.ticker;
-    setStatus(recordStatus, `Fetching the live price for ${state.record.ticker}…`, null);
-    const result = await loadSnapshot(state.record.ticker);
-    setStatus(recordStatus, result ? `Live price loaded for ${state.record.ticker}.` : "The live price could not be loaded; saved values are shown.", result ? "ok" : "warn");
-  });
-
-  function setRecord(record, message) {
-    state.record = record;
-    renderResearch();
-    $("sddRecordLive").disabled = false;
-    $("sddRecordClear").disabled = false;
-    setStatus(recordStatus, message, "ok");
-    updateExportState();
-  }
-
-  function renderResearch() {
-    const live = state.snapshot && state.snapshot.series.ticker === state.record.ticker
-      ? { market: state.snapshot.series.market, retrievedAt: state.snapshot.provenance.retrievedAt } : null;
-    const v = buildResearchView(state.record, live);
-    state.researchView = v;
-    $("sddResearchResult").hidden = false;
-    const title = $("sddResearchTitle");
-    title.textContent = `${v.ticker} — ${v.identity.display_name ?? "Name unavailable"}`;
-    if (v.synthetic) title.append(el("span", "Synthetic demo", "sdd-badge"));
-    $("sddResearchMeta").textContent = `Saved ${localTime(v.completedAt)} · ${v.partial || v.status === "partial" ? "partial result" : "complete result"} · ${v.meteredCalls ?? 0} TipRanks call(s) when it was saved · shown without contacting TipRanks.`;
-    const warn = $("sddResearchWarnings");
-    warn.replaceChildren();
-    [...v.warnings, ...v.errors].forEach(w => warn.append(el("p", w, "sdd-different")));
-
-    const currency = v.identity.currency || null;
-    const src = name => (v.identitySources[name] ? ` (${v.identitySources[name]})` : "");
-    fillDl($("sddResearchIdentity"), [
-      ["Name", `${v.identity.display_name ?? "Unavailable"}${src("display_name")}`],
-      ["Asset type", `${v.identity.asset_type ?? v.assetType ?? "Unavailable"}${src("asset_type")}`],
-      ["Exchange", `${v.identity.exchange ?? "Unavailable"}${src("exchange")}`],
-      ["Currency", `${currency ?? "Unavailable"}${src("currency")}`],
-      ["Saved price", money(v.market.price, currency)],
-      ["Market cap", big(v.market.market_cap)],
-      ["P/E ratio", isNum(v.market.pe_ratio) ? v.market.pe_ratio.toFixed(2) : "Unavailable"],
-      ["Dividend yield", isNum(v.market.dividend_yield) ? pct(v.market.dividend_yield) : "Unavailable"],
-      ["Beta", isNum(v.market.beta) ? v.market.beta.toFixed(2) : "Unavailable"],
-      ["52-week range", isNum(v.market.week_52_low) && isNum(v.market.week_52_high) ? `${money(v.market.week_52_low)} – ${money(v.market.week_52_high)}` : "Unavailable"],
-    ]);
-    $("sddSmartScore").textContent = v.smartScore ?? "Unavailable";
-    fillDl($("sddResearchTargets"), [
-      ["Consensus", v.consensus ?? "Unavailable"],
-      ["Low target", money(v.targets.low, currency)],
-      ["Average target", money(v.targets.average, currency)],
-      ["High target", money(v.targets.high, currency)],
-      ["Saved price", `${money(v.savedCurrent, currency)} · ${v.savedCurrentSource}`],
-      ["Implied move (saved)", signedPct(v.savedImpliedMove)],
-      ["Live price", v.livePrice !== null ? money(v.livePrice, currency) : "Not loaded · use “Compare with live Yahoo price”"],
-      ["Implied move (live)", signedPct(v.liveImpliedMove)],
-    ]);
-    renderTargetTrack(v, currency);
-    renderDistribution(v.distribution);
-    const insights = $("sddTopAnalysts");
-    insights.replaceChildren();
-    if (!v.topAnalysts.length) insights.append(el("p", "No ranked analyst observations available.", "muted"));
-    v.topAnalysts.forEach(a => {
-      const item = el("article", null, "sdd-insight");
-      item.append(
-        el("strong", `${a.analyst ?? "Analyst unavailable"} · ${a.firm ?? "Firm unavailable"}`),
-        el("span", `Rank ${analystRankLabel(a)} · ${a.stars ?? "—"} stars`),
-        el("span", `${a.rating ?? "Rating unavailable"}${isNum(a.target) ? ` · target ${money(a.target, currency)}` : ""} · ${a.date ?? "date unavailable"}`),
-        el("span", `Success rate ${pct(a.success_rate)} · average return ${isNum(a.average_return) ? `${a.average_return > 0 ? "+" : ""}${pct(a.average_return)}` : "—"}`, "muted"),
-      );
-      insights.append(item);
-    });
-    const actions = $("sddAnalystActions");
-    actions.replaceChildren(v.analysts.length ? table(
-      ["Rank", "Analyst", "Firm", "Rating", "Action", "Target", "Success rate", "Avg. return", "Stars", "Date"],
-      v.analysts.map(a => [analystRankLabel(a), a.analyst, a.firm, a.rating, a.action, isNum(a.target) ? money(a.target) : "—", pct(a.success_rate),
-        isNum(a.average_return) ? `${a.average_return > 0 ? "+" : ""}${pct(a.average_return)}` : "—", a.stars ?? "—", a.date]),
-      { numeric: [5, 6, 7, 8] },
-    ) : el("p", "Analyst actions unavailable in this record.", "muted"));
-    const insiders = $("sddInsiders");
-    insiders.replaceChildren(v.insiders.length ? table(
-      ["Insider", "Role", "Action", "Shares", "Price", "Value", "Date"],
-      v.insiders.map(r => [r.insider, r.role, r.action ?? r.side, isNum(r.shares) ? r.shares.toLocaleString() : "—", isNum(r.price) ? money(r.price) : "—", big(r.value), r.date]),
-      { numeric: [3, 4, 5] },
-    ) : el("p", "Insider activity unavailable in this record.", "muted"));
-    const news = $("sddNews");
-    news.replaceChildren();
-    if (!v.news.length) news.append(el("li", "News unavailable in this record."));
-    v.news.slice(0, 10).forEach(n => {
-      const li = el("li");
-      const href = safeHttpUrl(n.url);
-      if (href) { const a = el("a", n.title ?? "Untitled"); a.href = href; a.target = "_blank"; a.rel = "noopener noreferrer"; li.append(a); }
-      else li.append(el("span", n.title ?? "Untitled"));
-      li.append(el("span", ` · ${n.source ?? "source unavailable"} · ${n.sentiment ?? "sentiment unavailable"} · ${n.published_at ?? ""}`, "muted"));
-      news.append(li);
-    });
-    const coverage = $("sddCoverage");
-    coverage.replaceChildren();
-    if (!v.coverage.length) coverage.append(el("li", "Coverage details unavailable."));
-    v.coverage.forEach(item => coverage.append(el("li", `${item.section}: ${item.status === "available" ? "Available" : item.status === "not_planned" ? "Not planned" : "Unavailable"}${item.source ? ` — ${item.source}` : ""}${item.message ? ` — ${item.message}` : ""}`)));
-    const comp = $("sddSourceComparison");
-    comp.replaceChildren(v.comparisons.length ? table(
-      ["Field", "Source values", "Comparison"],
-      v.comparisons.map(item => {
-        const flag = el("span", item.different ? "Sources differ" : item.values.length > 1 ? "Consistent" : "Single source", item.different ? "sdd-different" : "");
-        return [String(item.field).replace(/_/g, " "), item.values.map(x => `${x.source}: ${typeof x.value === "number" ? money(x.value) : x.value}`).join(" · ") || "Unavailable", flag];
-      }),
-    ) : el("p", "No source comparison available.", "muted"));
-    const sources = $("sddResearchSources");
-    sources.replaceChildren();
-    v.provenance.forEach(p => sources.append(el("li", `${p.source} · ${p.dataset} · retrieved ${localTime(p.retrieved_at)}${p.as_of ? ` · as of ${p.as_of}` : ""}`)));
-    if (live) sources.append(el("li", `Yahoo Finance (live price) · retrieved ${localTime(live.retrievedAt)}`));
-  }
-
-  function renderTargetTrack(v, currency) {
-    const host = $("sddTargetTrack");
-    const text = $("sddTargetText");
-    host.replaceChildren();
-    if (!v.chart.available) { text.textContent = v.chart.message; return; }
-    const markers = [["Low", v.chart.low, "low"], ["Average", v.chart.average, "average"], ["High", v.chart.high, "high"], [v.livePrice !== null ? "Live" : "Saved", v.chart.current, "current"]];
-    const values = markers.map(m => m[1]);
-    const min = Math.min(...values);
-    const span = Math.max(...values) - min || 1;
-    const track = el("div", null, "sdd-target-track");
-    track.setAttribute("role", "img");
-    track.setAttribute("aria-label", `Targets ${markers.map(([l, val]) => `${l} ${money(val, currency)}`).join(", ")}`);
-    markers.forEach(([label, value, cls]) => {
-      const marker = el("span", `${label} ${money(value)}`, `sdd-target-marker ${cls}`);
-      marker.style.left = `${((value - min) / span) * 100}%`;
-      track.append(marker);
-    });
-    host.append(track);
-    text.textContent = `${v.livePrice !== null ? "Live" : "Saved"} price ${money(v.chart.current, currency)} against analyst targets from ${money(v.chart.low)} to ${money(v.chart.high)} (average ${money(v.chart.average)}).`;
-  }
-
-  function renderDistribution(values) {
-    const host = $("sddTargetDistribution");
-    host.replaceChildren();
-    if (!values.length) { host.append(el("p", "Individual analyst target observations unavailable; distribution chart not shown.", "muted")); return; }
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    const bins = Math.min(10, Math.max(3, values.length));
-    const width = (max - min) / bins || 1;
-    const counts = new Array(bins).fill(0);
-    values.forEach(value => { counts[Math.min(bins - 1, Math.floor((value - min) / width))] += 1; });
-    const peak = Math.max(...counts);
-    const bars = el("div", null, "sdd-bars");
-    bars.setAttribute("role", "img");
-    bars.setAttribute("aria-label", `${values.length} analyst targets from ${money(min)} to ${money(max)}`);
-    counts.forEach((count, i) => {
-      const bar = el("span");
-      bar.style.height = `${(count / peak) * 100}%`;
-      bar.title = `${money(min + i * width)} – ${money(min + (i + 1) * width)}: ${count}`;
-      bars.append(bar);
-    });
-    const axisRow = el("div", null, "sdd-bar-axis");
-    axisRow.append(el("span", money(min)), el("span", `${values.length} targets`), el("span", money(max)));
-    host.append(bars, axisRow);
-  }
-
   /* ================= Export ================= */
   function updateExportState() {
-    const hasComparison = Boolean(state.comparison);
-    const hasResearch = Boolean(state.researchView);
-    $("sddExportComparisonLabel").textContent = hasComparison
-      ? `Latest comparison (${state.comparison.tickers.join(", ")} · ${state.comparison.horizon})` : "Latest comparison (none yet)";
-    $("sddExportResearchLabel").textContent = hasResearch
-      ? `Loaded research (${state.researchView.ticker}${state.researchView.synthetic ? ", synthetic demo" : ""})` : "Loaded research (none yet)";
-    $("sddExportComparison").disabled = !hasComparison;
-    $("sddExportResearch").disabled = !hasResearch;
-    ["sddExportMetrics", "sddExportCorrelation", "sddExportPrices"].forEach(id => { $(id).disabled = !hasComparison; });
-    $("sddExportXlsx").disabled = !hasComparison && !hasResearch;
-    $("sddExportJson").disabled = !hasComparison && !hasResearch;
-    if (hasComparison || hasResearch) setStatus($("sddExportStatus"), "Ready to export.", null);
+    const c = state.comparison;
+    $("sddExportComparisonLabel").textContent = c
+      ? `Latest comparison: ${c.tickers.join(", ")} · ${c.horizon}${c.source === "Synthetic demo" ? " (synthetic demo)" : ""}`
+      : "No comparison yet. Run one on the Comparison tab.";
+    ["sddExportXlsx", "sddExportMetrics", "sddExportCorrelation", "sddExportPrices", "sddExportJson"].forEach(id => { $(id).disabled = !c; });
+    if (c) setStatus($("sddExportStatus"), "Ready to export.", null);
   }
-  const selected = () => ({
-    comparison: state.comparison && $("sddExportComparison").checked ? state.comparison : null,
-    research: state.researchView && $("sddExportResearch").checked ? state.researchView : null,
-  });
   function exported(name) { setStatus($("sddExportStatus"), `Downloaded ${name}.`, "ok"); }
   $("sddExportXlsx").addEventListener("click", () => {
-    const { comparison, research } = selected();
-    if (!comparison && !research) { setStatus($("sddExportStatus"), "Select at least one item to include.", "error"); return; }
+    if (!state.comparison) return;
     try {
       const name = `stock-comparison-${timestampSlug()}.xlsx`;
-      downloadBlob(buildXlsx(buildWorkbookSheets({ comparison, research })), name);
+      downloadBlob(buildXlsx(buildWorkbookSheets({ comparison: state.comparison })), name);
       exported(name);
     } catch (_) {
       setStatus($("sddExportStatus"), "The workbook could not be generated. CSV exports are still available.", "error");
@@ -1013,15 +812,15 @@ function init() {
   $("sddExportCorrelation").addEventListener("click", () => csvExport("correlation"));
   $("sddExportPrices").addEventListener("click", () => csvExport("prices"));
   $("sddExportJson").addEventListener("click", () => {
-    const { comparison, research } = selected();
+    const c = state.comparison;
+    if (!c) return;
     const payload = {
       generatedAt: new Date().toISOString(),
       disclaimer: "Informational analysis only; not investment advice.",
-      comparison: comparison && {
-        ...comparison, returns: undefined,
-        series: comparison.series.map(s => ({ ticker: s.ticker, currency: s.currency, observations: s.observations.map(o => [A.isoDate(o.date), o.price]) })),
+      comparison: {
+        ...c, returns: undefined,
+        series: c.series.map(s => ({ ticker: s.ticker, currency: s.currency, observations: s.observations.map(o => [A.isoDate(o.date), o.price]) })),
       },
-      research: research && state.record,
     };
     const name = `stock-comparison-${timestampSlug()}.json`;
     downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" }), name);

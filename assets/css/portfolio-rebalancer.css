@@ -1,0 +1,34 @@
+/* Portfolio Rebalancer web app. Loaded only on /projects/portfolio-rebalancer/;
+   builds on the .pj tokens from project-pages.css. */
+
+.rb-controls { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr)); gap: .75rem 1rem; align-items: end; }
+.rb-rowtools { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; }
+.rb-rowtools .pj-field { max-width: 9rem; }
+.rb-table-wrap { overflow-x: auto; margin: .8rem 0; border: 1px solid var(--pj-border); border-radius: 10px; }
+.pj table.rb-input { width: 100%; min-width: 60rem; border-collapse: collapse; margin: 0; border: 0; font-size: .9rem; background: transparent; }
+.pj table.rb-input th, .pj table.rb-input td { padding: .35rem .4rem; border: 0; border-bottom: 1px solid var(--pj-border); vertical-align: top; background: transparent; color: var(--pj-text); text-align: left; }
+.pj table.rb-input thead th { background: var(--pj-surface-2); color: var(--pj-heading); white-space: nowrap; font-size: .82rem; }
+.pj table.rb-input tbody th { color: var(--pj-muted); font-weight: 600; width: 2rem; padding-top: .8rem; }
+.pj table.rb-input input, .pj table.rb-input select { min-height: 2.2rem; padding: .3rem .45rem; font-size: .9rem; }
+.pj table.rb-input .rb-ticker { text-transform: uppercase; min-width: 7rem; }
+.pj table.rb-input .rb-shares, .pj table.rb-input .rb-price, .pj table.rb-input .rb-weight { min-width: 6rem; }
+.pj table.rb-input td.num { text-align: right; padding-top: .75rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pj table.rb-output td.num, .pj table.rb-output th.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pj table.rb-output { min-width: 62rem; }
+.rb-caption { caption-side: top; text-align: left; padding: .5rem .75rem; color: var(--pj-muted); font-size: .88rem; }
+.rb-hint { font-size: .78rem; margin-top: .25rem; max-width: 16rem; color: var(--pj-warn); }
+.rb-hint:empty { display: none; }
+.rb-hint[data-tone="ok"] { color: var(--pj-ok); }
+.rb-hint[data-tone="error"] { color: var(--pj-error); }
+.rb-hint[data-tone="info"] { color: var(--pj-muted); }
+.rb-totals { display: flex; flex-wrap: wrap; gap: .4rem 1.4rem; font-weight: 650; font-size: .92rem; }
+.rb-totals [data-tone="ok"] { color: var(--pj-ok); }
+.rb-totals [data-tone="warn"] { color: var(--pj-warn); }
+.rb-options { display: grid; gap: .45rem; margin: .8rem 0 .2rem; }
+.rb-options label { display: flex; gap: .55rem; align-items: flex-start; font-weight: 500; cursor: pointer; }
+.rb-options input { margin-top: .2rem; flex: 0 0 auto; }
+.rb-error { color: var(--pj-error); font-weight: 600; min-height: 1.2em; margin: .3rem 0; }
+.rb-pill { display: inline-block; padding: .05rem .55rem; border-radius: 999px; font-size: .8rem; font-weight: 700; border: 1px solid currentColor; }
+.rb-buy { color: var(--pj-ok); }
+.rb-sell { color: var(--pj-error); }
+.rb-hold { color: var(--pj-muted); }

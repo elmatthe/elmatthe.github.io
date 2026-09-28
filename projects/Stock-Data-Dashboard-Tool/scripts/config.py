@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import json
-import os
 from pathlib import Path
-from typing import Any
 
 
 SUPPORTED_CURRENCIES = ["USD", "CAD", "EUR", "GBP", "JPY", "AUD"]
@@ -79,26 +76,6 @@ def get_website_assets_dir() -> Path:
     path = get_files_dir() / "website-assets"
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-def load_config() -> dict[str, Any]:
-    config_path = get_project_root() / "config.json"
-    config: dict[str, Any] = {}
-    if config_path.exists():
-        with config_path.open("r", encoding="utf-8") as handle:
-            config = json.load(handle)
-
-    env_map = {
-        "alpha_vantage_api_key": "ALPHA_VANTAGE_API_KEY",
-        "twelve_data_api_key": "TWELVE_DATA_API_KEY",
-        "polygon_api_key": "POLYGON_API_KEY",
-    }
-    for key, env_name in env_map.items():
-        config[key] = os.getenv(env_name, config.get(key, ""))
-
-    config.setdefault("default_risk_free_rate", DEFAULT_RISK_FREE_RATE)
-    config.setdefault("default_currency", DEFAULT_CURRENCY)
-    return config
 
 
 def get_periods_per_year(frequency: str) -> int:

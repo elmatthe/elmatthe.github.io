@@ -1,0 +1,63 @@
+---
+layout: project
+project: monte-carlo
+kind: guide
+title: Monte Carlo Retirement Simulator Setup Guide
+permalink: /projects/monte-carlo-guide/
+redirect_from:
+  - /projects/monte-carlo-retirement-simulator/
+eyebrow: Setup & user guide
+summary: How to install, run, repair and use the Monte Carlo Retirement Simulator desktop program on Windows or macOS.
+lede: Install the desktop simulator with one launcher, run scenarios, and produce Excel and CSV reports. No manual Python setup is needed.
+last_updated: 2026-09-28
+sections:
+  - { id: before, label: Before you start }
+  - { id: install, label: Install }
+  - { id: use, label: Using the simulator }
+  - { id: outputs, label: Outputs }
+  - { id: manage, label: Update & remove }
+  - { id: troubleshooting, label: Troubleshooting }
+  - { id: developers, label: For developers }
+---
+{%- assign p = site.data.tool_projects.monte-carlo -%}
+{% include project-desktop-setup.html p=p folder="monte-carlo-retirement-simulator" disk="250 MB" %}
+
+<section class="pj-section" id="use" aria-labelledby="use-h">
+  <h2 id="use-h">Using the simulator</h2>
+  <ol class="pj-steps">
+    <li><strong>Enter your assumptions:</strong> current portfolio, annual contribution and its growth rate, years to retirement and in retirement, expected return, volatility, inflation, first-year retirement spending, CPP/OAS/pension income, and the number of simulations (1–10,000). <em>Load Sample Scenario</em> fills in a random plausible example.</li>
+    <li><strong>Choose the target <code>.xlsx</code> workbook</strong> for the report (a new or existing file), and optionally tick <em>Also export to CSV</em> and choose a CSV path.</li>
+    <li><strong>Click <em>Run Simulation</em>.</strong> Invalid inputs are named in the status line. Spending must be greater than pension income, which is the same rule the web version applies.</li>
+  </ol>
+  <p>The model (identical to the <a href="{{ p.page | relative_url }}#model">web version</a>): returns are drawn from a normal distribution each year; contributions grow yearly until retirement; withdrawals start at spending minus pension income and rise with inflation; a path fails when it reaches $0 in retirement.</p>
+</section>
+
+<section class="pj-section" id="outputs" aria-labelledby="outputs-h">
+  <h2 id="outputs-h">Outputs</h2>
+  <ul>
+    <li><strong>Excel report</strong> in the workbook you chose, as three sheets that are replaced on each run (other sheets in the workbook are left alone): <code>MC_Summary</code> (inputs and headline results), <code>MC_Percentiles</code> (10th/25th/50th/75th/90th percentile for every year, with the retirement year marked) and <code>MC_Chart</code> (fan-chart image).</li>
+    <li><strong>CSV</strong> (optional): columns <code>Year, Date, P10, P25, P50, P75, P90</code>.</li>
+    <li>Values are nominal dollars; the inflation rate used is recorded in the report. The web version can also show real (today's) dollars.</li>
+  </ul>
+</section>
+
+<section class="pj-section" id="troubleshooting" aria-labelledby="troubleshooting-h">
+  <h2 id="troubleshooting-h">Troubleshooting</h2>
+  <details class="pj-details">
+    <summary>“Pension income must be less than annual retirement spending”</summary>
+    <div class="pj-details-body"><p>If guaranteed income covers all spending, there's nothing for the portfolio to fund, so the simulation isn't needed. Adjust either value.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>The Excel report can't be saved</summary>
+    <div class="pj-details-body"><p>Close the workbook if it's open in Excel, and choose a folder you can write to (not a read-only or synced placeholder folder).</p></div>
+  </details>
+  {% include project-desktop-troubleshooting.html %}
+</section>
+
+<section class="pj-section" id="developers" aria-labelledby="developers-h">
+  <h2 id="developers-h">For developers</h2>
+  <p>The folder follows a simple layout: <code>scripts/</code> holds everything the program needs (<code>main.py</code>, the <code>monte_carlo</code> package, <code>bootstrap.py</code>, pinned <code>requirements.txt</code>), <code>config.toml</code> sets the supported Python range and entry point, and <code>files/</code> holds tests and generated scratch data. Unit tests are included in the source repository (not the ZIP); run them with the project's Python after installing pytest:</p>
+  <div class="pj-code"><pre><code id="mc-dev-cmd">.venv/bin/python -m pip install pytest
+.venv/bin/python -m pytest files/tests -q</code></pre><button type="button" data-copy-target="mc-dev-cmd" hidden>Copy</button></div>
+  <p class="muted">On Windows use <code>.venv\Scripts\python.exe</code>.</p>
+</section>

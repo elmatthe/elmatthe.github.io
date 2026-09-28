@@ -1,0 +1,31 @@
+# Declarative bootstrap settings for the desktop tools on /projects/.
+# Render with:  python _tools/bootstrap/render.py        (writes the files)
+# Check with:   python _tools/bootstrap/render.py --check (CI/tests; no writes)
+#
+# CPI Web Scraper is not listed: its canonical repository (elmatthe/CPI-Webscraper)
+# ships its own Windows-only bootstrap that already meets the same contract.
+
+[monte-carlo]
+dir = "projects/monte-carlo-retirement-simulator"
+name = "Monte Carlo Retirement Simulator"
+slug = "monte-carlo-retirement-simulator"
+version = "1.1.0"
+entry_point = "scripts/main.py"
+imports = ["tkinter", "numpy", "openpyxl", "matplotlib"]
+
+[rebalancer]
+dir = "projects/portfolio-rebalancer-tool"
+name = "Portfolio Rebalancer"
+slug = "portfolio-rebalancer"
+version = "1.1.0"
+entry_point = "scripts/main.py"
+imports = ["tkinter", "openpyxl", "yfinance", "pandas", "numpy"]
+
+[stock]
+dir = "projects/Stock-Data-Dashboard-Tool"
+name = "Stock Comparison & Analytics Tool"
+bat_name = "Stock Comparison and Analytics Tool"
+slug = "stock-data-dashboard-tool"
+version = "0.4.0"
+entry_point = "scripts/main.py"
+imports = ["tkinter", "pandas", "numpy", "matplotlib", "yfinance", "openpyxl", "PIL", "scipy"]

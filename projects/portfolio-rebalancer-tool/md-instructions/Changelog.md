@@ -1,5 +1,17 @@
 # Portfolio Rebalancer — Changelog
 
+## v1.1.0 — 2026-09-28
+- Replaced `setup_and_run.bat/.command` with the standard one-click launchers
+  `Setup_and_Run-portfolio-rebalancer.bat/.command` and `scripts/bootstrap.py`: a repo-root `.venv` is
+  proven (exact pins, imports, `pip check`) before each launch and repaired only when needed;
+  healthy launches no longer reinstall packages. Python 3.11-3.14 is found first (never the
+  Microsoft Store alias) and installed per user only with consent (no all-users option).
+- Bumped `yfinance` 1.3.0 -> 1.7.0 (verified live for US, `.TO`, `.L` pence and `=X` FX).
+- Web tool: moved to the shared Yahoo transport (multiple CORS relays with health tracking,
+  retry and payload validation) after the single keyless proxy stopped working; ticker checks
+  no longer run on page load; added CSV/XLSX export. Algorithm parity with `core.py` is tested.
+- Moved tests to `files/tests/`; `pytest` is no longer installed into the user environment.
+
 ## v1.0.1 — Mon 06/15/2026
 - Fixed the Windows launcher: `setup_and_run.bat` failed at `Checking for Python...`
   with `: was unexpected at this time.` Literal parentheses inside parenthesized

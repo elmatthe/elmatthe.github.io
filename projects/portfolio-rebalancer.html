@@ -1,0 +1,160 @@
+---
+layout: project
+project: rebalancer
+kind: tool
+title: Portfolio Rebalancer
+permalink: /projects/portfolio-rebalancer/
+summary: Rebalance a multi-currency portfolio in your browser (New Money or pure Rebalance mode) with optional live Yahoo Finance prices and FX, CSV/Excel export, and a downloadable desktop program.
+lede: Turn target weights into a buy/sell plan. New Money mode invests a budget without selling; Rebalance mode sells overweight positions to fund underweight ones. Works across currencies and account types, in your browser or as a desktop program.
+last_updated: 2026-09-28
+page_css:
+  - /assets/css/portfolio-rebalancer.css
+page_js:
+  - /assets/js/portfolio-rebalancer/app.js
+sections:
+  - { id: overview, label: How it works }
+  - { id: web-app, label: Web app }
+  - { id: desktop, label: Desktop app }
+  - { id: compare, label: Web vs desktop }
+  - { id: data, label: Data & privacy }
+  - { id: help, label: Troubleshooting }
+---
+{%- assign p = site.data.tool_projects.rebalancer -%}
+<section class="pj-section" id="overview" aria-labelledby="overview-h">
+  <h2 id="overview-h">How it works</h2>
+  <ul class="pj-cards">
+    <li class="pj-card"><h3>1 · Enter holdings</h3><p>Ticker, shares, local price, row currency, target weight and (optionally) account type for up to 50 positions.</p></li>
+    <li class="pj-card"><h3>2 · Choose a mode</h3><p><strong>New Money:</strong> buy-only, capped at your budget. <strong>Rebalance:</strong> no new cash; sells fund buys.</p></li>
+    <li class="pj-card"><h3>3 · Review the plan</h3><p>Buy/Sell/Hold actions, trade values in reporting and local currency, trade shares, post-trade shares, and warnings.</p></li>
+  </ul>
+  <h3>Three invariants the plan always respects</h3>
+  <ul>
+    <li><strong>Budget cap:</strong> in New Money mode, total buys never exceed the budget; buys are scaled down proportionally if needed.</li>
+    <li><strong>Sells fund buys:</strong> in Rebalance mode, total buys never exceed sell proceeds.</li>
+    <li><strong>Cross-account funding:</strong> with account types shown, you're warned when buys in one account (e.g. TFSA) aren't covered by sells in that same account, or when a ticker trades in several accounts.</li>
+  </ul>
+</section>
+
+<section class="pj-section" id="web-app" aria-labelledby="web-app-h">
+  <h2 id="web-app-h">Web app</h2>
+  <p>Runs entirely in this page. Leave <strong>live prices</strong> off to use the prices you type; turn it on to fetch current quotes and FX from Yahoo Finance.</p>
+  <!-- data-site-proxy: optional https URL template containing {url} for an owner-run Yahoo proxy. -->
+  <div class="pj-app" id="rb-app" data-site-proxy="" aria-busy="false">
+    <div class="rb-controls">
+      <div class="pj-field">
+        <label for="rbReporting">Reporting currency</label>
+        <select id="rbReporting">
+          <option value="USD" selected>USD</option><option value="CAD">CAD</option><option value="JPN">JPN (JPY)</option><option value="EUR">EUR</option><option value="GBP">GBP</option><option value="CHY_CNH">CHY/CNH (CNY)</option>
+        </select>
+      </div>
+      <div class="pj-field">
+        <label for="rbMode">Mode</label>
+        <select id="rbMode">
+          <option value="new_money" selected>New Money (buy only)</option>
+          <option value="rebalance">Rebalance (sells fund buys)</option>
+        </select>
+      </div>
+      <div class="pj-field" id="rbBudgetField">
+        <label for="rbBudget" id="rbBudgetLabel">New money budget (USD)</label>
+        <input id="rbBudget" type="number" min="0" step="0.01" value="10000" inputmode="decimal">
+      </div>
+      <div class="rb-rowtools">
+        <div class="pj-field"><label for="rbRowCount">Rows</label><input id="rbRowCount" type="number" min="1" max="50" step="1" value="9"></div>
+        <button type="button" class="pj-btn" id="rbApplyRows">Apply</button>
+        <button type="button" class="pj-btn" id="rbAddRow">Add row</button>
+        <button type="button" class="pj-btn" id="rbRemoveRow">Remove last</button>
+      </div>
+    </div>
+    <div class="rb-table-wrap">
+      <table class="rb-input" aria-describedby="rbTableNote">
+        <caption class="rb-caption" id="rbTableNote">Holdings. Prices are in each row's currency; FX converts to the reporting currency.</caption>
+        <thead>
+          <tr>
+            <th scope="col">#</th><th scope="col">Ticker</th><th scope="col">Shares / units</th><th scope="col">Price (local)</th><th scope="col">Row currency</th>
+            <th scope="col" class="num">FX to <span id="rbReportingLabel">USD</span></th><th scope="col" class="num">Current value (<span id="rbValueLabel">USD</span>)</th><th scope="col">Target weight %</th><th scope="col" class="rb-account-col" hidden>Account type</th>
+          </tr>
+        </thead>
+        <tbody id="rbRows"></tbody>
+      </table>
+    </div>
+    <div class="rb-totals"><span id="rbTotal">Current total: $0.00</span><span id="rbWeightTotal">Target weight total: 0.00%</span></div>
+    <div class="rb-options">
+      <label><input type="checkbox" id="rbLive"> <span>Fetch live prices and FX from Yahoo Finance. Rows with a manual price keep it if a quote can't be found.</span></label>
+      <label><input type="checkbox" id="rbShowAccount"> <span>Show the account-type column for cross-account funding checks.</span></label>
+    </div>
+    <div class="pj-actions">
+      <button type="button" class="pj-btn pj-btn-primary" id="rbRun">Run rebalance</button>
+      <button type="button" class="pj-btn" id="rbSample">Load sample portfolio</button>
+      <button type="button" class="pj-btn" id="rbExportCsv" disabled>Download CSV</button>
+      <button type="button" class="pj-btn" id="rbExportXlsx" disabled>Download Excel</button>
+    </div>
+    <p class="pj-status" id="rbStatus" role="status" aria-live="polite">Loading…</p>
+    <p class="rb-error" id="rbError" role="alert"></p>
+    <div id="rbResults" aria-live="polite"><p class="muted">Run the rebalance to see the trade plan.</p></div>
+  </div>
+  <noscript><p class="pj-note warn">The web app needs JavaScript. The desktop program works without a browser.</p></noscript>
+  <p class="pj-disclaimer">Illustrative planning only; not financial, investment, or trading advice. Always verify prices and holdings at your broker before placing orders.</p>
+</section>
+
+<section class="pj-section" id="desktop" aria-labelledby="desktop-h">
+  <h2 id="desktop-h">Desktop app</h2>
+  <div class="pj-download">
+    <div>
+      <h3>{{ p.zip_name }}</h3>
+      <p class="muted">Version {{ p.version }} · {{ p.platforms }} · Python {{ p.python }} is set up automatically{% if p.zip_size %} · {{ p.zip_size }}{% endif %}</p>
+    </div>
+    <a class="pj-btn pj-btn-primary" href="{{ p.zip | relative_url }}" download>Download ZIP</a>
+  </div>
+  <ol class="pj-steps">
+    <li><strong>Extract the ZIP</strong> into a folder you can write to.</li>
+    <li><strong>Double-click the launcher:</strong> <code>{{ p.launcher_windows }}</code> (Windows) or <code>{{ p.launcher_macos }}</code> (macOS).</li>
+    <li><strong>Answer any simple prompt.</strong> The first run finds or installs a supported Python for your user account, builds a private <code>.venv</code> in the folder, and installs pinned packages. Later launches check the environment and open the program immediately.</li>
+  </ol>
+  <p>Details, screenshots of each step and troubleshooting: <a href="{{ p.guide | relative_url }}">setup guide</a>.</p>
+</section>
+
+<section class="pj-section" id="compare" aria-labelledby="compare-h">
+  <h2 id="compare-h">Web app vs desktop app</h2>
+  <p>Both run the same rebalancing math: two modes, three invariants and a 0.01% hold threshold. An automated test checks that they produce the same trades.</p>
+  <div class="pj-table-wrap">
+    <table class="pj-table">
+      <thead><tr><th scope="col">Capability</th><th scope="col">Web app</th><th scope="col">Desktop app</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">Install needed</th><td>None</td><td>ZIP + one launcher (sets itself up)</td></tr>
+        <tr><th scope="row">Live prices &amp; FX</th><td>Yahoo Finance, relayed by a CORS proxy</td><td>Yahoo Finance via <code>yfinance</code></td></tr>
+        <tr><th scope="row">Ticker lookup while typing</th><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+        <tr><th scope="row">Exports</th><td>CSV and Excel (.xlsx)</td><td>CSV and Excel (.xlsx)</td></tr>
+        <tr><th scope="row">Works offline</th><td>Yes, with manual prices</td><td>Yes, with manual prices</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="pj-section" id="data" aria-labelledby="data-h">
+  <h2 id="data-h">Data sources &amp; privacy</h2>
+  <ul>
+    <li><strong>Your holdings never leave your device.</strong> Calculations run locally. With live prices on, only ticker symbols and FX pair symbols (for example <code>CADUSD=X</code>) are requested.</li>
+    <li><strong>Yahoo Finance is the only price and FX source.</strong> Because Yahoo blocks direct requests from other websites, the web app relays requests through public CORS proxies and checks every response is Yahoo data for the requested symbol. Quotes are cached for five minutes in this tab.</li>
+    <li><strong>Fallback FX rates</strong> (used when live data is off or unavailable) are fixed approximations and are labelled as such in the results.</li>
+  </ul>
+</section>
+
+<section class="pj-section" id="help" aria-labelledby="help-h">
+  <h2 id="help-h">Troubleshooting</h2>
+  <details class="pj-details">
+    <summary>Live prices are unavailable</summary>
+    <div class="pj-details-body"><p>Public proxies are sometimes rate-limited. Rows with a manual price keep it and the plan still runs. Retry after a minute. Proxy settings you save in the <a href="{{ '/projects/stock-data-dashboard-tool/' | relative_url }}#web-app">Stock tool's Settings tab</a> (including your own proxy) apply to this page too, in the same browser.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>“Not found on Yahoo Finance” for a Canadian or international ticker</summary>
+    <div class="pj-details-body"><p>Use Yahoo suffixes: <code>.TO</code> (TSX), <code>.V</code> (TSX-V), <code>.L</code> (London), <code>.T</code> (Tokyo), <code>.DE</code>, <code>.PA</code>, <code>.HK</code>, and so on, and set the row currency to match. Prefixes like <code>TSX:</code> are converted automatically.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>Target weights don't add up to 100%</summary>
+    <div class="pj-details-body"><p>That's allowed: weights are normalized, so 10/10/20 is treated as 25/25/50. The weight total turns amber when it isn't exactly 100% as a reminder.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>The desktop launcher stops with an error</summary>
+    <div class="pj-details-body"><p>The launcher names the component that failed and keeps a log in <code>files/test-logs/setup-and-run-latest.log</code>. See the <a href="{{ p.guide | relative_url }}#troubleshooting">setup guide</a>.</p></div>
+  </details>
+</section>
