@@ -1,0 +1,21 @@
+# Metadata for standalone software pages under /software/ that use
+# _layouts/project.html with `kind: software`. Keep versions and asset names in
+# sync with the tool's latest stable GitHub release.
+audiobook:
+  name: Audiobook Creation Tool
+  category: Desktop Application
+  version: 0.6.6
+  platforms: Windows · macOS
+  page: /software/audiobook-creation-tool/
+  repo_url: https://github.com/elmatthe/audiobook-creation-tool
+  readme_url: https://github.com/elmatthe/audiobook-creation-tool#readme
+  release_url: https://github.com/elmatthe/audiobook-creation-tool/releases/tag/v0.6.6
+  downloads:
+    windows:
+      name: AudiobookTool-Windows-v0.6.6.zip
+      url: https://github.com/elmatthe/audiobook-creation-tool/releases/download/v0.6.6/AudiobookTool-Windows-v0.6.6.zip
+      launcher: Setup_and_Run-audiobook-creation-tool.bat
+    macos:
+      name: AudiobookTool-MacOS-v0.6.6.zip
+      url: https://github.com/elmatthe/audiobook-creation-tool/releases/download/v0.6.6/AudiobookTool-MacOS-v0.6.6.zip
+      launcher: Setup_and_Run-audiobook-creation-tool.command

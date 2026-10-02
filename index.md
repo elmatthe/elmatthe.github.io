@@ -48,8 +48,8 @@ redirect_from:
   </article>
   <article class="card">
     <h3><a href="{{ '/software/audiobook-creation-tool/' | relative_url }}">Audiobook Creation Tool</a></h3>
-    <p>Turn ebooks, PDFs, and text into tagged audiobooks with cloud-based (Edge TTS) or local (Kokoro-82M) AI voices.</p>
-    <p class="muted">Release v0.4.0</p>
+    <p>Turn PDF and TXT books into narrated MP3s with Edge TTS or optional local Kokoro and Chatterbox voices, then build and tag M4B audiobooks.</p>
+    <p class="muted">Release v0.6.6</p>
   </article>
 </div>
 

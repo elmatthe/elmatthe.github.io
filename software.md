@@ -17,7 +17,7 @@ permalink: /software/
   </li>
   <li>
     <a href="{{ '/software/audiobook-creation-tool/' | relative_url }}">Audiobook Creation Tool</a>
-    <div class="muted">Cross-platform desktop app that turns ebooks, PDFs, and text into tagged audiobooks using cloud-based (Edge TTS) or local (Kokoro-82M) AI voices.</div>
+    <div class="muted">Windows and macOS desktop app (v0.6.6) that turns PDF and TXT books into narrated MP3s with Edge TTS or optional local Kokoro and Chatterbox voices, plus tools to build, convert and tag M4B and MP3 audiobooks.</div>
   </li>
   <!-- Add new app entries here -->
 </ul>

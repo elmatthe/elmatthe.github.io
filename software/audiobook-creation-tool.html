@@ -1,0 +1,132 @@
+---
+layout: project
+project: audiobook
+kind: software
+title: Audiobook Creation Tool
+permalink: /software/audiobook-creation-tool/
+summary: Windows and macOS desktop app that turns PDF and TXT books into narrated MP3s with Edge TTS or optional local Kokoro and Chatterbox voices, and builds, converts and tags audiobook files.
+lede: Turn PDF and TXT books into narrated MP3s, then combine, convert, tag and package audiobook files in one desktop app. Narrate online with Edge TTS or offline with optional local Kokoro and Chatterbox voices.
+last_updated: 2026-10-02
+sections:
+  - { id: overview, label: Overview }
+  - { id: download, label: Download }
+  - { id: tools, label: Six tools }
+  - { id: voices, label: Voices }
+  - { id: workflow, label: How it works }
+  - { id: safety, label: Output & safety }
+  - { id: requirements, label: Requirements }
+  - { id: links, label: Links & license }
+---
+{%- assign p = site.data.software_tools.audiobook -%}
+<section class="pj-section" id="overview" aria-labelledby="overview-h">
+  <h2 id="overview-h">Overview</h2>
+  <ul class="pj-cards">
+    <li class="pj-card"><h3>Book to narrated MP3</h3><p>Import PDF or TXT files or whole folders and narrate them with Microsoft Edge TTS, or with optional local Kokoro and Chatterbox voices.</p></li>
+    <li class="pj-card"><h3>Six tools, one window</h3><p>Switch between narration, M4B and MP3 utilities, cover-image prep and M4B tag editing from one sidebar. Each tool keeps its inputs and settings while you switch.</p></li>
+    <li class="pj-card"><h3>Originals stay safe</h3><p>Outputs go to new numbered folders, and filename collisions get numbered names. Only an optional, off-by-default Cover Image mode can replace originals, and it asks first.</p></li>
+  </ul>
+  <div class="pj-note">
+    <p><strong>No terminal needed.</strong> Extract the ZIP and double-click one launcher. First-run setup opens a window with progress and a log, then later launches open the app directly.</p>
+  </div>
+</section>
+
+<section class="pj-section" id="download" aria-labelledby="download-h">
+  <h2 id="download-h">Download and install</h2>
+  <p class="muted">Latest stable release: v{{ p.version }}. Both archives are official assets of the <a href="{{ p.release_url }}">v{{ p.version }} GitHub release</a>.</p>
+  <div class="pj-download">
+    <div>
+      <h3>{{ p.downloads.windows.name }}</h3>
+      <p class="muted">Windows 10/11 · launcher: <code>{{ p.downloads.windows.launcher }}</code></p>
+    </div>
+    <a class="pj-btn pj-btn-primary" href="{{ p.downloads.windows.url }}">Download for Windows</a>
+  </div>
+  <div class="pj-download">
+    <div>
+      <h3>{{ p.downloads.macos.name }}</h3>
+      <p class="muted">macOS 12+ · launcher: <code>{{ p.downloads.macos.launcher }}</code></p>
+    </div>
+    <a class="pj-btn pj-btn-primary" href="{{ p.downloads.macos.url }}">Download for macOS</a>
+  </div>
+  <ol class="pj-steps">
+    <li><strong>Extract the whole ZIP</strong> and keep its contents together. On macOS, move the extracted <code>AudiobookTool-MacOS-v{{ p.version }}</code> folder from Downloads to Desktop or Applications first.</li>
+    <li><strong>Double-click the launcher</strong> for your system: <code>{{ p.downloads.windows.launcher }}</code> on Windows or <code>{{ p.downloads.macos.launcher }}</code> on macOS. If macOS blocks it, right-click the launcher, choose <strong>Open</strong>, and confirm.</li>
+    <li><strong>Let first-run setup finish.</strong> It prepares a private Python environment and the required libraries, establishes FFmpeg/ffprobe, and offers the optional Kokoro voice-model download. Follow any guidance it shows.</li>
+    <li><strong>Start narrating or converting.</strong> Later launches skip setup and open the app using the prepared environment.</li>
+  </ol>
+  <div class="pj-note warn">
+    <p>Setup needs an internet connection and some time. Optional local voice models need additional disk space.</p>
+  </div>
+</section>
+
+<section class="pj-section" id="tools" aria-labelledby="tools-h">
+  <h2 id="tools-h">Six tools</h2>
+  <ul class="pj-cards">
+    <li class="pj-card"><h3>TTS Audiobook</h3><p>Turn PDF or TXT files into MP3 narration using online Edge TTS or optional local Kokoro/Chatterbox voices.</p></li>
+    <li class="pj-card"><h3>M4B Converter</h3><p>Convert M4B to one MP3 per book, or split into MP3s by chapter, with metadata options.</p></li>
+    <li class="pj-card"><h3>MP3 Tool</h3><p>Write tags to track copies, combine tracks into one MP3 per Book, and add or trim time at track ends.</p></li>
+    <li class="pj-card"><h3>M4B Maker</h3><p>Build chaptered M4B audiobooks from MP3s with cover art, metadata and series tags.</p></li>
+    <li class="pj-card"><h3>Cover Image</h3><p>Make square covers by padding or cropping JPG, PNG or HEIC images, and correct phone-photo orientation.</p></li>
+    <li class="pj-card"><h3>M4B Metadata Editor</h3><p>Edit tags, artwork and chapter titles in existing M4B, M4A or MP4 files without re-encoding the audio.</p></li>
+  </ul>
+</section>
+
+<section class="pj-section" id="voices" aria-labelledby="voices-h">
+  <h2 id="voices-h">Voices</h2>
+  <p>TTS Audiobook offers one online engine and two optional local engines. Pick a voice in the app; its engine and voice ID are shown beside the selector.</p>
+  <div class="pj-table-wrap">
+    <table class="pj-table">
+      <caption class="muted" style="caption-side:top;text-align:left;padding:.5rem .75rem;">Narration engines in v{{ p.version }}</caption>
+      <thead><tr><th scope="col">Engine</th><th scope="col">Type</th><th scope="col">Voices</th><th scope="col">Needs</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">Microsoft Edge TTS</th><td>Online neural voices</td><td>5 (US English)</td><td>Internet access while narrating</td></tr>
+        <tr><th scope="row">Kokoro</th><td>Optional local AI voices</td><td>5 (US and UK English)</td><td>Voice-model download in setup; Python below 3.13</td></tr>
+        <tr><th scope="row">Chatterbox</th><td>Optional local AI voices</td><td>6 (Female 1–2, Male 1–4)</td><td>Model download; the six reference voices are bundled</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>Local models run offline after they are downloaded. If a local engine isn't installed, the app still starts and offers the voices it can run.</p>
+</section>
+
+<section class="pj-section" id="workflow" aria-labelledby="workflow-h">
+  <h2 id="workflow-h">How it works</h2>
+  <ol class="pj-steps">
+    <li><strong>Choose a tool and import files or folders.</strong> Review the order. Where a tool supports it, each folder becomes a separate Book.</li>
+    <li><strong>Pick a voice or output mode</strong> and set metadata, chapters and artwork. <strong>Shared</strong> settings apply across Books; individual Book settings fill in the rest.</li>
+    <li><strong>Start and follow the Activity panel.</strong> Switch between <strong>Summary</strong> and <strong>Detailed</strong> logs. Use <strong>Pause/Resume</strong>, <strong>Cancel</strong> or <strong>Retry Failed</strong> where available.</li>
+    <li><strong>Click Open Output Folder</strong> to find your finished files.</li>
+  </ol>
+  <p>The global <strong>Light/Dark</strong> toggle changes all six tools and remembers your choice. Change the output location any time in <strong>Preferences &amp; Data</strong>.</p>
+</section>
+
+<section class="pj-section" id="safety" aria-labelledby="safety-h">
+  <h2 id="safety-h">Output and safety</h2>
+  <ul>
+    <li><strong>Default location:</strong> <code>Downloads/Audiobook-Creation-Tool-Outputs</code>, grouped by tool and numbered run, for example <code>M4B-Maker-Outputs/M4B-Maker-1/</code>.</li>
+    <li><strong>Separate runs:</strong> new runs use separate folders, and filename collisions receive numbered names.</li>
+    <li><strong>Originals preserved:</strong> the one exception is Cover Image's optional <strong>Replace original files</strong> mode. It is off by default and asks for confirmation on each run.</li>
+  </ul>
+  <div class="pj-note warn">
+    <p><strong>TTS input:</strong> PDF and TXT only. Save TXT files as <strong>UTF-8</strong> (with or without a byte-order mark) and re-save other encodings as UTF-8 before importing. PDFs must contain extractable text.</p>
+  </div>
+</section>
+
+<section class="pj-section" id="requirements" aria-labelledby="requirements-h">
+  <h2 id="requirements-h">Requirements</h2>
+  <dl class="pj-facts">
+    <dt>Operating system</dt><dd>Windows 10/11 or macOS 12+</dd>
+    <dt>Python and FFmpeg</dt><dd>Setup can acquire both when supported tools are available (winget on Windows, Homebrew on macOS) and shows guidance if automatic setup can't finish. Python 3.11 or 3.12 is recommended; setup targets 3.12 for local voices.</dd>
+    <dt>Kokoro</dt><dd>Requires Python below 3.13.</dd>
+    <dt>Network</dt><dd>Needed for first-run downloads and for Edge TTS narration. Optional local voice models run offline after download.</dd>
+    <dt>Disk space</dt><dd>Room for the Python environment, your outputs and any voice models.</dd>
+  </dl>
+</section>
+
+<section class="pj-section" id="links" aria-labelledby="links-h">
+  <h2 id="links-h">Links and license</h2>
+  <ul class="pj-cards">
+    <li class="pj-card"><h3>Release v{{ p.version }}</h3><p>Release page with both downloads.</p><p><a href="{{ p.release_url }}">View the release</a></p></li>
+    <li class="pj-card"><h3>README</h3><p>Install, use, outputs and requirements.</p><p><a href="{{ p.readme_url }}">Read the README</a></p></li>
+    <li class="pj-card"><h3>GitHub repository</h3><p>Source code, changelog and other versions.</p><p><a href="{{ p.repo_url }}">Open the repository</a></p></li>
+  </ul>
+  <p class="pj-disclaimer">Released under the GNU General Public License v3.0 (GPL-3.0), inherited from the upstream <a href="https://github.com/aedocw/epub2tts-edge">epub2tts-edge</a> project by Christopher Aedo, which is the basis of the TTS engine. The app also uses Edge TTS, Kokoro and other open-source audio and image libraries. See the <a href="https://www.gnu.org/licenses/gpl-3.0.html">full license text</a>.</p>
+</section>

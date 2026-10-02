@@ -36,7 +36,7 @@ A personal investment tracking application that consolidates holdings across 11 
 #### Audiobook Toolkit & Streaming Platform — Crimson Audiobooks
 *Ongoing development since 2025 · Built with Claude Code, OpenAI Codex, and Cursor AI agents*
 
-A desktop application that converts e-books and documents (EPUB, PDF, TXT) into audiobook files using either Microsoft's cloud-based neural voice or a fully offline AI voice model running locally on-device. Paired with Crimson Audiobooks — a privately hosted streaming service for ~20 users on iOS and Android, with offline downloads, lock screen playback controls, and cross-device progress sync. Similar in concept to a personal Audible or Spotify, built and self-hosted entirely from scratch. The desktop converter is available as the [Audiobook Creation Tool]({{ '/software/audiobook-creation-tool/' | relative_url }}).
+A desktop application that converts PDF and TXT documents into audiobook files using either Microsoft's cloud-based neural voice or optional offline AI voice models running locally on-device. Paired with Crimson Audiobooks — a privately hosted streaming service for ~20 users on iOS and Android, with offline downloads, lock screen playback controls, and cross-device progress sync. Similar in concept to a personal Audible or Spotify, built and self-hosted entirely from scratch. The desktop converter is available as the [Audiobook Creation Tool]({{ '/software/audiobook-creation-tool/' | relative_url }}).
 
 ---
 

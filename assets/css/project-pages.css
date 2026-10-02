@@ -1,5 +1,6 @@
 /* Tool project pages and setup guides (Monte Carlo, CPI Web Scraper, Portfolio
-   Rebalancer, Stock Comparison & Analytics). Loaded only by _layouts/project.html;
+   Rebalancer, Stock Comparison & Analytics) and the Audiobook Creation Tool software
+   page. Loaded only by _layouts/project.html;
    everything is scoped under .pj so other pages are unaffected. Colors follow the
    site's dark navy theme tokens from assets/main.scss. */
 

@@ -2,16 +2,20 @@
 layout: default
 ---
 {%- comment -%}
-  Layout for the four tool project pages and their setup guides.
+  Layout for the four tool project pages and their setup guides, and for
+  standalone software pages under /software/.
   Front matter:
-    project:  key in _data/tool_projects.yml (version, downloads, guide/page URLs)
-    kind:     "tool" (project page) or "guide" (setup guide)
+    project:  key in _data/tool_projects.yml (version, downloads, guide/page URLs),
+              or in _data/software_tools.yml for kind "software"
+    kind:     "tool" (project page), "guide" (setup guide) or "software"
+              (/software/ page: release chips, per-platform download buttons,
+              release link and a back link to /software/)
     eyebrow, lede: hero text
     sections: [{id, label}] for the sticky on-page navigation
     page_css / page_js: optional extra scoped assets for this page (page_js are ES modules)
     vendor_js: optional third-party classic scripts (e.g. Chart.js) loaded before page_js
 {%- endcomment -%}
-{%- assign p = site.data.tool_projects[page.project] -%}
+{%- assign p = site.data.tool_projects[page.project] | default: site.data.software_tools[page.project] -%}
 <link rel="stylesheet" href="{{ '/assets/css/project-pages.css' | relative_url }}">
 {%- for css in page.page_css %}
 <link rel="stylesheet" href="{{ css | relative_url }}">
@@ -21,8 +25,12 @@ layout: default
     <p class="pj-eyebrow">{{ page.eyebrow | default: p.category }}</p>
     <h1>{{ page.title | escape }}</h1>
     {%- if page.lede %}<p class="pj-lede">{{ page.lede }}</p>{% endif %}
-    <ul class="pj-chips" aria-label="Project status">
+    <ul class="pj-chips" aria-label="{% if page.kind == 'software' %}Release details{% else %}Project status{% endif %}">
+      {%- if page.kind == 'software' %}
+      {%- if p.version %}<li><span>Latest release</span> v{{ p.version }}</li>{% endif %}
+      {%- else %}
       {%- if p.version %}<li><span>Desktop</span> v{{ p.version }}</li>{% endif %}
+      {%- endif %}
       {%- if p.web_app %}<li><span>Web app</span> {{ p.web_app }}</li>{% endif %}
       {%- if p.platforms %}<li><span>Desktop OS</span> {{ p.platforms }}</li>{% endif %}
       {%- if page.last_updated %}<li><span>Updated</span> <time datetime="{{ page.last_updated | date: '%Y-%m-%d' }}">{{ page.last_updated | date: '%b %-d, %Y' }}</time></li>{% endif %}
@@ -31,6 +39,10 @@ layout: default
       {%- if page.kind == 'guide' %}
       <a class="pj-btn pj-btn-primary" href="{{ p.zip | relative_url }}" download>Download {{ p.zip_name }}</a>
       <a class="pj-btn" href="{{ p.page | relative_url }}">Back to the project page</a>
+      {%- elsif page.kind == 'software' %}
+      {%- if p.downloads.windows %}<a class="pj-btn pj-btn-primary" href="{{ p.downloads.windows.url }}">Download for Windows</a>{% endif %}
+      {%- if p.downloads.macos %}<a class="pj-btn pj-btn-primary" href="{{ p.downloads.macos.url }}">Download for macOS</a>{% endif %}
+      {%- if p.release_url %}<a class="pj-btn" href="{{ p.release_url }}">Release v{{ p.version }}</a>{% endif %}
       {%- else %}
       {%- if p.web_app %}<a class="pj-btn pj-btn-primary" href="#web-app">Open the web app</a>{% endif %}
       <a class="pj-btn" href="{{ p.zip | relative_url }}" download>Download desktop app</a>
@@ -50,7 +62,11 @@ layout: default
   <div class="pj-body">
     {{ content }}
   </div>
+  {%- if page.kind == 'software' %}
+  <p class="pj-back"><a href="#top">Back to top</a> · <a href="{{ '/software/' | relative_url }}">All software</a></p>
+  {%- else %}
   <p class="pj-back"><a href="#top">Back to top</a> · <a href="{{ '/projects/' | relative_url }}">All projects</a></p>
+  {%- endif %}
 </div>
 {%- for js in page.vendor_js %}
 <script src="{{ js }}" crossorigin="anonymous"></script>

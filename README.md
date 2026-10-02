@@ -23,7 +23,7 @@ The four desktop tools download as ZIPs from their project pages and start with 
 
 ## Featured Applications
 - **Portfolio Dashboard** (v0.5.3, early release) — local-first multi-broker portfolio tracker with 11 brokers, 10 currencies, analytics, tax reporting, and rebalancing tools.
-- **Audiobook Creation Tool** (v0.4.0) — cross-platform desktop app that turns ebooks, PDFs, and text into tagged audiobooks using cloud-based (Edge TTS) or local (Kokoro-82M) AI voices.
+- **Audiobook Creation Tool** (v0.6.6) — Windows and macOS desktop app that turns PDF and TXT books into narrated MP3s with Edge TTS or optional local Kokoro and Chatterbox voices, with six tools for building, converting and tagging audiobook files.
 
 ## Run Locally (optional)
 If you use Jekyll locally:
