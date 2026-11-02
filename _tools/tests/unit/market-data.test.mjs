@@ -474,3 +474,95 @@ test("the API key never appears in error messages", async () => {
     fetchImpl: async () => F.response(200, JSON.stringify({ Information: "Unusual notice mentioning SECRETKEY99 for your account." })) });
   await assert.rejects(client.globalQuote("AAPL"), e => !e.message.includes("SECRETKEY99") && e.message.includes("[redacted]"));
 });
+
+/* ---------------- regressions from the independent review ---------------- */
+test("CSV import and provider search keep pence as pence (GBp/GBX -> GBP / 100)", () => {
+  for (const code of ["GBp", "GBX"]) {
+    const { histories, warnings } = parsePriceCsv(`Date,Ticker,Close,Adj Close,Currency\n2024-01-02,TSCO.L,812.5,800,${code}\n2024-01-03,TSCO.L,820,810,${code}\n2024-01-04,TSCO.L,815,805,${code}\n`, "uk.csv");
+    const h = histories["TSCO.L"];
+    assert.equal(h.currency, "GBP"); assert.equal(h.rawCurrency, code); assert.equal(h.unitScale, 0.01);
+    assert.ok(Math.abs(h.observations[0].close - 8.125) < 1e-12);
+    assert.match(warnings.join(" "), /converted to GBP/);
+  }
+  assert.throws(() => parsePriceCsv("Date,Ticker,Close,Currency\n2024-01-02,A,1,pounds\n", "x.csv"), /3-letter/);
+});
+
+test("an unfinished daily bar is never cached as a completed close", async () => {
+  const at = Date.parse("2026-11-02T18:00:00Z"); // 13:00 New York, session in progress
+  const fetchImpl = F.stubFetch(url => {
+    const fn = url.searchParams.get("function");
+    if (fn === "SYMBOL_SEARCH") return F.response(200, F.avSearch([["AAPL", "United States", "USD"]]));
+    return F.response(200, F.avDaily("AAPL", [["2026-10-29", 100], ["2026-10-30", 101], ["2026-11-02", 150]]));
+  });
+  const md = createMarketData({ local: F.memory(), fetchImpl, now: () => at, sleep: noSleep, minSpacingMs: 0 });
+  md.setApiKey("TESTKEY123");
+  const range = { start: new Date("2026-08-02T00:00:00Z"), end: new Date(at) };
+  const { history } = await md.history("AAPL", range);
+  assert.equal(history.observations.at(-1).date.toISOString().slice(0, 10), "2026-10-30");
+  assert.ok(!history.observations.some(o => o.close === 150));
+});
+
+test("a per-second burst notice is retried, not treated as the daily limit", async () => {
+  let n = 0;
+  const BURST = JSON.stringify({ Information: "Thank you for using Alpha Vantage! Please consider spreading out your free API requests more sparingly (1 request per second)." });
+  const fetchImpl = async () => { n += 1; return n === 1 ? F.response(200, BURST) : F.response(200, F.avGlobalQuote("AAPL", 230, "2026-10-30")); };
+  const client = createAlphaVantageClient({ apiKey: "TESTKEY123", fetchImpl, minSpacingMs: 0, sleep: noSleep });
+  const body = await client.globalQuote("AAPL");
+  assert.equal(body["Global Quote"]["05. price"], "230");
+  assert.equal(client.exhausted, false);
+  const limited = createAlphaVantageClient({ apiKey: "TESTKEY123", fetchImpl: async () => F.response(200, F.AV_RATE_LIMIT), minSpacingMs: 0, sleep: noSleep });
+  await assert.rejects(limited.globalQuote("AAPL"), e => e.kind === "rate_limited" && e.definitive);
+  assert.equal(limited.exhausted, true);
+});
+
+test("concurrent callers are serialized with the provider spacing", async () => {
+  const stamps = [];
+  const client = createAlphaVantageClient({ apiKey: "TESTKEY123", minSpacingMs: 40,
+    fetchImpl: async () => { stamps.push(Date.now()); return F.response(200, F.avGlobalQuote("AAPL", 1, "2026-10-30")); } });
+  await Promise.all([client.globalQuote("AAPL"), client.globalQuote("MSFT"), client.globalQuote("NVDA")]);
+  assert.equal(stamps.length, 3);
+  assert.ok(stamps[1] - stamps[0] >= 35 && stamps[2] - stamps[1] >= 35, JSON.stringify(stamps));
+});
+
+test("one caller cancelling does not cancel another caller sharing the request", async () => {
+  let release;
+  const gate = new Promise(r => { release = r; });
+  const fetchImpl = async url => {
+    await gate;
+    const fn = new URL(String(url)).searchParams.get("function");
+    return fn === "SYMBOL_SEARCH" ? F.response(200, F.avSearch([["AAPL", "United States", "USD"]])) : F.response(200, F.avGlobalQuote("AAPL", 230, "2026-10-30"));
+  };
+  const md = createMarketData({ local: F.memory(), fetchImpl, now: () => NOW, sleep: noSleep, minSpacingMs: 0 });
+  md.setApiKey("TESTKEY123");
+  const first = new AbortController();
+  const a = md.quote("AAPL", { signal: first.signal });
+  const b = md.quote("AAPL", { signal: new AbortController().signal });
+  first.abort();
+  release();
+  await assert.rejects(a, e => e.kind === "aborted");
+  assert.equal((await b).quote.price, 230);
+});
+
+test("after the daily limit, remaining cached symbols are still served; listing misses expire after a day", async () => {
+  const local = F.memory();
+  let t = NOW;
+  let limited = false;
+  const base = avServer();
+  const fetchImpl = async (url, init) => (limited ? F.response(200, F.AV_RATE_LIMIT) : base(url, init));
+  const md = createMarketData({ local, fetchImpl, now: () => t, sleep: noSleep, minSpacingMs: 0 });
+  md.setApiKey("TESTKEY123");
+  await md.quote("AAPL");
+  limited = true;
+  const out = await md.quotes(["MSFT", "AAPL"]);
+  assert.equal(out.get("MSFT").error.kind, "rate_limited");
+  assert.equal(out.get("AAPL").quote.price, 230.5, "cached quote served after the limit");
+  // A listing miss is retried after a day, not after 30.
+  const searches = [];
+  const md2 = createMarketData({ local: F.memory(), now: () => t, sleep: noSleep, minSpacingMs: 0,
+    fetchImpl: async url => { const u = new URL(String(url)); if (u.searchParams.get("function") === "SYMBOL_SEARCH") searches.push(t); return u.searchParams.get("function") === "SYMBOL_SEARCH" ? F.response(200, F.avSearch([])) : F.response(200, F.avGlobalQuote("XYZ", 5, "2026-10-30")); } });
+  md2.setApiKey("TESTKEY123");
+  await md2.quote("XYZ");
+  t += 2 * 86400000;
+  await md2.quote("XYZ", { useCache: false });
+  assert.equal(searches.length, 2);
+});

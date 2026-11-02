@@ -32,7 +32,7 @@ export function buildWorkbookSheets({ comparison, generatedAt = new Date().toISO
   }
 
   const summary = [
-    header([`Comparison · ${comparison.horizon} · ${comparison.requestedStart} to ${comparison.requestedEnd}${comparison.normalizedTo ? ` · normalized to ${comparison.normalizedTo}` : ""}`]),
+    header([`Comparison · ${comparison.horizon} · ${comparison.requestedStart} to ${comparison.requestedEnd}${comparison.normalizedTo ? (comparison.notNormalized?.length ? ` · normalization to ${comparison.normalizedTo} incomplete (${comparison.notNormalized.join(", ")} in native currency)` : ` · normalized to ${comparison.normalizedTo}`) : ""}`]),
     header(["Ticker", "Currency", "Price basis", "Total return", "Annualized return", "Annualized volatility", "Sharpe ratio", "Max drawdown", "Return observations", "Actual start", "Actual end"]),
     ...comparison.metrics.map(m => [m.ticker, m.currency || "", m.priceBasis || "", m.totalReturn, m.annualizedReturn, m.annualizedVolatility, m.sharpe, m.maxDrawdown, m.returnObservations, m.actualStart || "", m.actualEnd || ""]),
   ];

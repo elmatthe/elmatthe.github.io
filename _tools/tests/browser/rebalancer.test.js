@@ -125,6 +125,8 @@ const num = text => Number(String(text).replace(/[^0-9.\-]/g, ""));
   const err = await page.locator("#rbError").innerText();
   check(/No price for: ZZZBAD/.test(err), `live run lists rows that still need a price (${err.slice(0, 120)})`);
   check(await bad.locator(".rb-ticker").inputValue() === "ZZZBAD" && await page.locator("#rbRows tr").count() === 11, "inputs preserved after a failed run");
+  check(/Entered by you/.test(await page.locator("#rbRows tr:nth-child(1) .rb-source").innerText()) && /Sample price/.test(await page.locator("#rbRows tr:nth-child(2) .rb-source").innerText()),
+    "a failed live run does not relabel typed or sample prices as fetched");
 
   // With a typed price it continues; live prices replace sample prices and are labelled.
   await bad.locator(".rb-price").fill("12.5");
@@ -165,7 +167,18 @@ const num = text => Number(String(text).replace(/[^0-9.\-]/g, ""));
   check(await page.locator(".rb-output tbody tr").count() === 9 && /request limit reached/.test(downText) && /typed price/.test(downText), "rate-limited run falls back to typed prices with warnings");
   check(/built-in estimates from 2026-10-30/.test(downText), "plan warns that exchange rates are built-in estimates");
   check(calls.av.filter(c => c.startsWith("SYMBOL_SEARCH") || c.startsWith("GLOBAL_QUOTE")).length <= 2 + avCount, "no further requests after the limit was reported");
+  // A rate typed while official rates were unavailable keeps its value when they load later (CAD reporting).
+  await page.uncheck("#rbLive");
+  await page.selectOption("#rbReporting", "CAD");
+  const gbpInput = page.locator('.rb-fx-input[data-key="GBP"]');
+  await gbpInput.fill("1.8");
+  await gbpInput.dispatchEvent("change");
   Object.assign(mode, { avLimit: undefined, bocDown: false, ecbDown: false });
+  await page.click("#rbRun");
+  await waitIdle();
+  check(await page.locator('.rb-fx-input[data-key="GBP"]').inputValue() === "1.8" && /Bank of Canada/.test(await page.locator("#rbFxRows").innerText()),
+    `typed CAD-per-GBP rate unchanged after official rates load (${await page.locator('.rb-fx-input[data-key="GBP"]').inputValue()})`);
+  await page.selectOption("#rbReporting", "USD");
 
   // Remove the key.
   await page.click("#rbKeyRemove");

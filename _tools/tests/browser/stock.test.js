@@ -159,6 +159,18 @@ function sampleCsv() {
   await waitCompare();
   check(/CAD→USD from European Central Bank daily rates/.test(await page.locator("#sddCompareWarnings").innerText()), "FX falls back to the ECB when the Bank of Canada is down");
   mode.bocDown = false;
+  // A currency neither central bank publishes is left in its own currency and the result says so.
+  const ars = ["Date,Close,Adj Close,Currency", ...sampleCsv().split("\n").filter(l => l.includes(",CCC,")).map(l => { const [d, , c, a] = l.split(","); return `${d},${c},${a},ARS`; })].join("\n");
+  await page.setInputFiles("#sddCsvFiles", [
+    { name: "my-prices.csv", mimeType: "text/csv", buffer: Buffer.from(sampleCsv()) },
+    { name: "DDD.BA.csv", mimeType: "text/csv", buffer: Buffer.from(ars) },
+  ]);
+  await page.waitForFunction(() => /Loaded 4 tickers/.test(document.querySelector("#sddCompareStatus").textContent));
+  await page.click("#sddRunCompare");
+  await waitCompare();
+  const incompleteMeta = await page.locator("#sddCompareMeta").innerText();
+  check(/normalization to USD INCOMPLETE \(DDD\.BA/.test(incompleteMeta) && /CAD→USD/.test(await page.locator("#sddCompareWarnings").innerText()),
+    "an unsupported currency is reported as not normalized without blocking the others");
   // A malformed file is rejected with its line number.
   await page.setInputFiles("#sddCsvFiles", { name: "bad.csv", mimeType: "text/csv", buffer: Buffer.from("Date,Ticker,Close\n2024-01-02,AAA,abc\n") });
   await page.waitForFunction(() => /Could not read the file/.test(document.querySelector("#sddCompareStatus").textContent));

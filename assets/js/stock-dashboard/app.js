@@ -8,7 +8,7 @@
 // Currency normalization uses official central-bank rates (Bank of Canada, ECB
 // fallback). See ../market-data/ for providers, validation and caching.
 
-import { createMarketData, DataError, selectBasis, describeAge, FRESHNESS_LABEL } from "../market-data/index.js";
+import { createMarketData, DataError, selectBasis, describeAge, FRESHNESS_LABEL, fxSupported } from "../market-data/index.js";
 import { normalizeSymbol, normalizeSymbolList, MAX_TICKERS, MIN_COMPARE_TICKERS, SymbolError } from "../market-data/symbols.js";
 import { buildFxAligner, normalizeSeries } from "../market-data/fx-align.js";
 import { parsePriceCsv } from "../market-data/price-import.js";
@@ -401,7 +401,7 @@ function init() {
           provenance.push({ ticker: symbol, ...prov, basis: BASIS_LABEL[chosen.priceBasis], frequency: history.frequency });
           chip(symbol, prov.stale ? "error" : "ok", prov.stale ? "saved copy (refresh failed)" : prov.cached ? "cached" : source === "csv" ? "from file" : "fetched");
         } catch (error) {
-          if (error.kind === "aborted" || aborted()) break;
+          if (aborted()) break;
           failures.push({ symbol, message: describeError(error), error });
           chip(symbol, "error", error.kind === "not_found" ? "no data" : error.kind === "rate_limited" ? "limit reached" : "failed");
         } finally {
@@ -429,21 +429,25 @@ function init() {
       const frequencies = [...new Set(Object.values(histories).map(h => h.frequency))];
       if (frequencies.length > 1) throw new DataError(`Your files mix ${frequencies.join(" and ")} prices; use one frequency per comparison.`, { kind: "invalid" });
       let normalizedTo = null;
+      let notNormalized = [];
       const fxSources = {};
       if (target && Object.keys(histories).length) {
         setStatus(status, `Normalizing to ${target} with official exchange rates…`, null);
         const natives = [...new Set(Object.values(histories).map(h => String(h.currency || "").toUpperCase()).filter(c => c && c !== target))];
         const aligners = {};
+        const official = natives.filter(fxSupported);
         if (demo) {
           for (const native of natives) {
             const points = demoFxRates(native, target, now);
             if (points) { aligners[native] = buildFxAligner(points.map(p => ({ date: p.date, rate: p.price }))); fxSources[native] = "Synthetic demo FX"; }
           }
-        } else if (natives.length) {
+        } else if (official.length) {
+          // Currencies neither central bank publishes are left out of the request (and
+          // reported below) so they cannot block the others.
           const start = new Date(range.start.getTime() - 14 * 86400000).toISOString().slice(0, 10);
           try {
-            const fx = await md.fx.history([...natives, target], start, A.isoDate(range.end), { signal: controller.signal });
-            for (const native of natives) {
+            const fx = await md.fx.history([...official, target], start, A.isoDate(range.end), { signal: controller.signal });
+            for (const native of official) {
               const points = md.fx.crossHistory(native, target, fx.series);
               if (points.length) {
                 aligners[native] = buildFxAligner(points);
@@ -459,6 +463,7 @@ function init() {
         histories = normalized.series;
         warnings.push(...normalized.warnings);
         normalizedTo = target;
+        notNormalized = Object.values(histories).filter(h => h.currency !== target).map(h => h.ticker);
       }
       if (aborted()) throw new DataError("Comparison cancelled.", { kind: "aborted" });
 
@@ -481,7 +486,7 @@ function init() {
       const result = A.runComparison(Object.fromEntries(usable.map(s => [s, histories[s]])), { riskFreeAnnual: riskFree });
       const allWarnings = [...new Set([...result.warnings, ...warnings])];
       state.comparison = {
-        tickers: usable, horizon, riskFree, normalizedTo, fxSources, basis, frequency: result.frequency, periodsPerYear: result.periodsPerYear,
+        tickers: usable, horizon, riskFree, normalizedTo, notNormalized: notNormalized.filter(t => usable.includes(t)), fxSources, basis, frequency: result.frequency, periodsPerYear: result.periodsPerYear,
         requestedStart: A.isoDate(range.start), requestedEnd: A.isoDate(range.end),
         completedAt: new Date().toISOString(), source: demo ? "Synthetic demo" : source === "csv" ? "Your CSV file" : "Alpha Vantage (your key)",
         series: usable.map(s => histories[s]), metrics: result.metrics, matrix: result.matrix, counts: result.counts,
@@ -532,7 +537,7 @@ function init() {
     $("sddCompareResult").hidden = false;
     $("sddCompareMeta").textContent = `${c.horizon} · requested ${c.requestedStart} to ${c.requestedEnd} · ${c.source} · ${c.frequency} prices (${c.periodsPerYear} periods per year)` +
       ` · ${c.basis === "adjusted" ? "adjusted closes requested" : "plain closes (price return)"}` +
-      `${c.normalizedTo ? ` · normalized to ${c.normalizedTo}` : " · native currencies"} · completed ${localTime(c.completedAt)}`;
+      `${c.normalizedTo ? (c.notNormalized.length ? ` · normalization to ${c.normalizedTo} INCOMPLETE (${c.notNormalized.join(", ")} still in native currency)` : ` · normalized to ${c.normalizedTo}`) : " · native currencies"} · completed ${localTime(c.completedAt)}`;
     const starts = c.metrics.map(m => m.actualStart).filter(Boolean).sort();
     const ends = c.metrics.map(m => m.actualEnd).filter(Boolean).sort();
     const best = c.metrics.filter(m => isNum(m.totalReturn)).sort((a, b) => b.totalReturn - a.totalReturn)[0];

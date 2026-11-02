@@ -10,6 +10,7 @@
 import { csvRecords } from "./csv.js";
 import { normalizeSymbol } from "./symbols.js";
 import { validateHistory } from "./contract.js";
+import { MINOR_UNITS } from "./providers/alphavantage.js";
 
 export const IMPORT_PROVIDER = "Your CSV file";
 const ALIASES = { date: ["date"], ticker: ["ticker", "symbol"], close: ["close"], adj: ["adj close", "adjusted close", "adj_close", "adjclose"], currency: ["currency"] };
@@ -66,8 +67,11 @@ export function parsePriceCsv(text, fileName = "prices.csv") {
     const close = value(closeCol);
     const adjClose = value(adjCol);
     if (close === null && adjClose === null) return;
-    const currency = currencyCol ? r[currencyCol].toUpperCase() : "";
-    if (currency && !/^[A-Z]{3}$/.test(currency)) throw new Error(`${fileName} line ${line}: currency "${currency.slice(0, 10)}" is not a 3-letter code.`);
+    // Minor-unit codes (GBp/GBX pence, ZAc, ILA) are kept as written and converted below;
+    // upper-casing "GBp" first would silently relabel pence as pounds.
+    const rawCode = currencyCol ? r[currencyCol].trim() : "";
+    const currency = MINOR_UNITS[rawCode] ? rawCode : rawCode.toUpperCase();
+    if (currency && !MINOR_UNITS[currency] && !/^[A-Z]{3}$/.test(currency)) throw new Error(`${fileName} line ${line}: currency "${currency.slice(0, 10)}" is not a 3-letter code.`);
     if (!groups.has(ticker)) groups.set(ticker, { rows: new Map(), currencies: new Set() });
     const group = groups.get(ticker);
     if (group.rows.has(day)) throw new Error(`${fileName} line ${line}: ${ticker} has more than one row for ${day}.`);
@@ -83,12 +87,19 @@ export function parsePriceCsv(text, fileName = "prices.csv") {
     let frequency;
     try { frequency = detectFrequency(observations.map(o => o.date)); }
     catch (error) { throw new Error(`${fileName}: ${ticker} ${error.message}`); }
-    const currency = [...group.currencies][0] || null;
+    const rawCurrency = [...group.currencies][0] || null;
+    const minor = rawCurrency ? MINOR_UNITS[rawCurrency] : null;
+    const currency = minor ? minor[0] : rawCurrency;
+    const unitScale = minor ? minor[1] : 1;
+    if (minor) {
+      observations.forEach(o => { if (o.close !== null) o.close *= unitScale; if (o.adjClose !== null) o.adjClose *= unitScale; });
+      warnings.push(`${ticker}: prices in ${rawCurrency} (1/100 ${currency}) were converted to ${currency}.`);
+    }
     if (!currency) warnings.push(`${ticker}: the file gives no currency; it cannot be converted to another currency.`);
     const hasAdj = observations.some(o => o.adjClose !== null);
     histories[ticker] = validateHistory({
       requestedSymbol: ticker, symbol: ticker, name: null, instrumentType: null, exchange: null, timezone: null,
-      currency, rawCurrency: currency, unitScale: 1, frequency, observations,
+      currency, rawCurrency, unitScale, frequency, observations,
       adjustment: { adjCloseAvailable: hasAdj, adjClose: "Adjusted close as supplied in your file.", close: "Close as supplied in your file." },
       market: {}, provider: IMPORT_PROVIDER, fileName: String(fileName).slice(0, 120),
     }, IMPORT_PROVIDER);

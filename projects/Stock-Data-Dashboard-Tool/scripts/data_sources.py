@@ -83,12 +83,14 @@ PRICE_COLUMN_ALIASES = {
     "Adj Close": ["Adjusted Close", "Adj Close", "adjusted close", "adj close", "adj_close"],
 }
 
+# Last-resort guess used only when Yahoo reports no currency at all; the guess is
+# reported as a warning. London (.L) is deliberately absent: its listings may be
+# quoted in pence, pounds or US dollars, so no single guess is safe.
 TICKER_SUFFIX_CURRENCY_MAP = {
     ".TO": "CAD",
     ".V": "CAD",
     ".NE": "CAD",
     ".CN": "CAD",
-    ".L": "GBP",
     ".AX": "AUD",
 }
 
@@ -431,12 +433,17 @@ class YahooFinanceSource(BaseDataSource):
         except Exception:
             info = {}
         currency = currency or info.get("currency")
+        inferred_warnings: list[str] = []
         if not currency:
             for suffix, suffix_currency in TICKER_SUFFIX_CURRENCY_MAP.items():
                 if ticker_key.endswith(suffix):
                     currency = suffix_currency
+                    inferred_warnings.append(f"{ticker_key}: Yahoo Finance reported no currency; assumed {suffix_currency} from the {suffix} suffix.")
                     break
+            else:
+                inferred_warnings.append(f"{ticker_key}: Yahoo Finance reported no currency; it is treated as unknown and is not FX-normalized.")
         frame, currency, unit_warnings = convert_minor_units(frame, currency, ticker_key)
+        unit_warnings = inferred_warnings + unit_warnings
         currency = normalize_currency(currency) if currency else None
         display_name = info.get("shortName") or info.get("longName") or ticker_key
         if currency:

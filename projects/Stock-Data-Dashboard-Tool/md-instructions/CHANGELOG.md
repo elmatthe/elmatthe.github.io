@@ -5,6 +5,8 @@
   without dividing by 100, so price levels, charts, exports and FX-normalized levels were 100x
   too large (returns and correlations were unaffected). Yahoo and offline-CSV prices quoted in
   `GBp`/`GBX` (also `ZAc`, `ILA`) are now converted to the major currency with a warning.
+- When Yahoo reports no currency at all, a London (`.L`) listing is no longer assumed to be in
+  GBP (it may be pence, pounds or USD); other suffix guesses are reported as warnings.
 - Web tool (same release): price data comes from your own CSV files or your own free Alpha
   Vantage key (no public relays); normalization uses Bank of Canada rates (ECB fallback); weekly
   and monthly data are supported; the price basis (adjusted vs close) is shown everywhere.

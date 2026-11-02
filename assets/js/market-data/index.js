@@ -19,8 +19,32 @@ import { AV_PROVIDER, AV_DAILY_LIMIT, createAlphaVantageClient, createUsageCount
 export { DataError } from "./http.js";
 export { classifyFreshness, describeAge, FRESHNESS_LABEL, selectBasis, isoDay } from "./contract.js";
 export { AV_DAILY_LIMIT, validKey } from "./providers/alphavantage.js";
+export { fxSupported } from "./fx.js";
 
 const SETTINGS_KEY = "md.settings.v1";
+
+// Resolves with `promise` unless this caller's own signal aborts first. Shared
+// in-flight work is never cancelled by one caller.
+function forCaller(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(new DataError("Request cancelled.", { kind: "aborted" }));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(new DataError("Request cancelled.", { kind: "aborted" }));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(v => { signal.removeEventListener("abort", onAbort); resolve(v); }, e => { signal.removeEventListener("abort", onAbort); reject(e); });
+  });
+}
+
+// Drops observations for a period that may still be trading at `at`, so a cached
+// series can never later present an unfinished bar as a completed close.
+function dropUnfinished(observations, kind, at) {
+  const day = new Date(at).toISOString().slice(0, 10);
+  if (kind === "daily") return observations.filter(o => o.date.toISOString().slice(0, 10) < day);
+  const weekday = new Date(at).getUTCDay();
+  if (weekday === 0 || weekday === 6) return observations;
+  const monday = new Date(Date.parse(`${day}T00:00:00Z`) - ((weekday + 6) % 7) * DAY);
+  return observations.filter(o => o.date < monday);
+}
 const MINUTE = 60000;
 const HOUR = 60 * MINUTE;
 const DAY = 24 * HOUR;
@@ -70,15 +94,16 @@ export function createMarketData({ local = safeStorage("localStorage"), fetchImp
   // a miss is cached for a day so a mistyped symbol does not drain the quota.
   async function listing(avSymbol, { signal } = {}) {
     const hit = listings.get(avSymbol, { freshMs: 30 * DAY });
-    if (hit) return hit.value.found ? hit.value.listing : null;
-    return dedupe.run(`listing:${avSymbol}`, async () => {
+    // Hits are kept 30 days; a miss only for a day.
+    if (hit && (hit.value.found || hit.ageMs <= DAY)) return hit.value.found ? hit.value.listing : null;
+    return forCaller(dedupe.run(`listing:${avSymbol}`, async () => {
       const c = requireClient();
-      let found = pickListing(await c.search(avSymbol, { signal, symbol: avSymbol }), avSymbol);
+      let found = pickListing(await c.search(avSymbol, { symbol: avSymbol }), avSymbol);
       const stem = avSymbol.includes(".") ? avSymbol.slice(0, avSymbol.lastIndexOf(".")) : null;
-      if (!found && stem) found = pickListing(await c.search(stem, { signal, symbol: avSymbol }), avSymbol);
+      if (!found && stem) found = pickListing(await c.search(stem, { symbol: avSymbol }), avSymbol);
       listings.set(avSymbol, found ? { found: true, listing: found } : { found: false });
       return found;
-    });
+    }), signal);
   }
 
   const provenance = (extra = {}) => ({ provider: AV_PROVIDER, via: "your Alpha Vantage key", retrievedAt: new Date(now()).toISOString(), cached: false, stale: false, ageMs: 0, ...extra });
@@ -91,11 +116,11 @@ export function createMarketData({ local = safeStorage("localStorage"), fetchImp
     if (miss) throw new DataError(miss.value.message, { kind: "not_found", definitive: true, provider: AV_PROVIDER });
     const hit = quotesCache.get(avSymbol, { freshMs: 15 * MINUTE, staleMs: DAY });
     if (useCache && hit?.fresh) return withFreshness({ quote: { ...hit.value, requestedSymbol: symbol }, provenance: provenance({ cached: true, ageMs: hit.ageMs, retrievedAt: new Date(hit.savedAt).toISOString() }) });
-    return dedupe.run(`quote:${avSymbol}`, async () => {
+    return forCaller(dedupe.run(`quote:${avSymbol}`, async () => {
       try {
         const c = requireClient();
-        const info = await listing(avSymbol, { signal });
-        const q = parseGlobalQuote(await c.globalQuote(avSymbol, { signal, symbol }), symbol, info || { avSymbol });
+        const info = await listing(avSymbol);
+        const q = parseGlobalQuote(await c.globalQuote(avSymbol, { symbol }), symbol, info || { avSymbol });
         q.currencyVerified = Boolean(info?.currency);
         quotesCache.set(avSymbol, q);
         return withFreshness({ quote: q, provenance: provenance() });
@@ -106,7 +131,7 @@ export function createMarketData({ local = safeStorage("localStorage"), fetchImp
         }
         throw error;
       }
-    });
+    }), signal);
   }
 
   function withFreshness(result) {
@@ -121,15 +146,12 @@ export function createMarketData({ local = safeStorage("localStorage"), fetchImp
     const unique = [...new Set(symbols)];
     for (const [i, symbol] of unique.entries()) {
       onProgress?.(symbol, i, unique.length);
+      // After a daily limit or key rejection the client sends no further requests, so
+      // continuing still serves every remaining symbol that is cached.
       try { out.set(symbol, await quote(symbol, { signal })); }
       catch (error) {
         if (error?.kind === "aborted") throw error;
         out.set(symbol, { error });
-        if (error?.kind === "rate_limited" || error?.kind === "auth" || error?.kind === "not_configured") {
-          // The remaining symbols would fail the same way; do not spend requests.
-          unique.slice(i + 1).forEach(s => out.set(s, { error }));
-          break;
-        }
       }
     }
     return out;
@@ -146,12 +168,13 @@ export function createMarketData({ local = safeStorage("localStorage"), fetchImp
     const hit = historyCache.get(key, { freshMs: 12 * HOUR, staleMs: 7 * DAY });
     const revive = value => ({ ...value, requestedSymbol: symbol, observations: value.observations.map(([d, c, a]) => ({ date: new Date(`${d}T00:00:00Z`), close: c, adjClose: a })) });
     if (hit?.fresh) return { history: revive(hit.value), provenance: provenance({ cached: true, ageMs: hit.ageMs, retrievedAt: new Date(hit.savedAt).toISOString() }) };
-    return dedupe.run(`history:${key}`, async () => {
+    return forCaller(dedupe.run(`history:${key}`, async () => {
       try {
         const c = requireClient();
-        const info = await listing(avSymbol, { signal });
-        const body = kind === "daily" ? await c.daily(avSymbol, { signal, symbol }) : await c.weeklyAdjusted(avSymbol, { signal, symbol });
+        const info = await listing(avSymbol);
+        const body = kind === "daily" ? await c.daily(avSymbol, { symbol }) : await c.weeklyAdjusted(avSymbol, { symbol });
         const h = parseSeries(body, symbol, info || { avSymbol }, kind);
+        h.observations = dropUnfinished(h.observations, kind, now());
         h.currencyVerified = Boolean(info?.currency);
         // Keep six years: enough for the 5Y horizon, small enough for storage.
         const cutoff = now() - 6 * 366 * DAY;
@@ -165,7 +188,7 @@ export function createMarketData({ local = safeStorage("localStorage"), fetchImp
         }
         throw error;
       }
-    });
+    }), signal);
   }
 
   return {

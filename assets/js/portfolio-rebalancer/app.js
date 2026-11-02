@@ -236,7 +236,9 @@ function init() {
     const value = Number(input.value);
     if (!(value > 0) || !Number.isFinite(value)) { errorNode.textContent = "Exchange rates must be positive numbers."; renderFxTable(); return; }
     const rep = reportingKey();
-    state.fx[input.dataset.key] = { usd: value * state.fx[rep].usd, kind: "manual", label: "Entered by you", date: null };
+    // Remember the rate as typed (units of `rep` per unit) so later official updates
+    // to `rep` itself do not change what the user entered.
+    state.fx[input.dataset.key] = { usd: value * state.fx[rep].usd, kind: "manual", label: "Entered by you", date: null, rel: value, relTo: rep };
     errorNode.textContent = "";
     refreshTotals();
     recalc();
@@ -252,6 +254,10 @@ function init() {
         if (!force && state.fx[key].kind === "manual") continue; // keep the user's own rates
         const r = md.fx.rate(meta.code, "USD", fx.cadPer);
         state.fx[key] = { usd: r.rate, kind: "official", label: `${fx.provider}, ${r.date || "latest"}${r.method === "cross" ? " (derived via CAD)" : ""}`, date: r.date, stale: fx.stale, provider: fx.provider };
+      }
+      // Re-anchor typed rates to the currency they were typed against.
+      for (const entry of Object.values(state.fx)) {
+        if (entry.kind === "manual" && entry.relTo && state.fx[entry.relTo] !== entry) entry.usd = entry.rel * state.fx[entry.relTo].usd;
       }
       state.fxNote = `${fx.attribution}${fx.stale ? ` Showing the copy saved ${describeAge(fx.ageMs)}; the latest refresh failed.` : ""}`;
       if (!quiet) setStatus(`Exchange rates loaded from the ${fx.provider}.`, fx.stale ? "warn" : "ok");
@@ -392,7 +398,9 @@ function init() {
     return keys.map(k => `${E.currencyMeta(k).code}: ${sourceLabel(k, rep)}`).join("; ");
   };
 
-  function applyQuote(p, tr, result, warnings, notes) {
+  // Updates the position only; the row's displayed source is written after the whole
+  // run succeeds (see run), so a failed run never relabels a typed or sample price.
+  function applyQuote(p, result, warnings, notes) {
     const q = result.quote;
     const wanted = E.currencyMeta(p.currencyKey).code;
     const fresh = result.freshness;
@@ -420,7 +428,6 @@ function init() {
     else if (fresh.status === "stale") p.source.label = `${label} · ${FRESHNESS_LABEL.stale}`;
     if (q.unitScale !== 1) notes.push(`${p.ticker}: quoted in ${q.rawCurrency} (pence); converted to ${q.currency} (÷100).`);
     if (q.symbol !== p.ticker) notes.push(`${p.ticker}: priced as ${q.symbol}${q.exchange ? ` (${q.exchange})` : ""}.`);
-    state.sources.set(tr, p.source);
   }
 
   async function run() {
@@ -457,18 +464,18 @@ function init() {
         const missing = [];
         for (const p of positions) {
           const result = results.get(querySymbol(p));
-          const tr = trs[p.rowIndex];
-          if (result?.quote) { applyQuote(p, tr, result, warnings, notes); continue; }
+          if (result?.quote) { applyQuote(p, result, warnings, notes); continue; }
           const error = result?.error || new DataError("no result");
           if (p.price === null) { missing.push(`${p.ticker} (${error.message})`); continue; }
           warnings.push(`${p.ticker}: ${error.kind === "not_found" ? "no quote found" : "live price unavailable"} (${error.message}); your typed price ${priceText(p.price)} was used.`);
         }
         if (missing.length) throw new Error(`No price for: ${missing.join("; ")}. Enter these prices manually and run again.`);
-        // Show the prices and currencies actually used in the input table.
+        // The run succeeded: show the prices, currencies and sources actually used.
         positions.forEach(p => {
           const tr = trs[p.rowIndex];
           tr.querySelector(".rb-currency").value = p.currencyKey;
           tr.querySelector(".rb-price").value = priceText(p.price);
+          state.sources.set(tr, p.source);
         });
       } else {
         positions.forEach((p, i) => {
@@ -493,6 +500,9 @@ function init() {
 
   function finishPlan() {
     const run = state.lastPlan;
+    // Rates and their labels as used by this plan (exports must not mix in later edits).
+    const keys = [...new Set([run.reportingKey, ...run.positions.map(p => p.currencyKey)])];
+    run.fxRows = keys.map(k => [E.currencyMeta(k).code, state.fx[k].usd, E.fxToReporting(k, run.reportingKey, fxToUsd()), state.fx[k].kind === "default" ? `Built-in estimate (${E.DEFAULT_FX_AS_OF})` : k === run.reportingKey ? "Reporting currency" : sourceLabel(k, run.reportingKey)]);
     run.warnings = [...run.runWarnings, ...provenanceWarnings(run.positions, run.reportingKey)];
     run.priceSummary = summarizePrices(run.positions);
     run.fxSummary = summarizeFx(run.positions, run.reportingKey);
@@ -515,7 +525,10 @@ function init() {
       errorNode.textContent = "";
       finishPlan();
     } catch (error) {
-      errorNode.textContent = error.message;
+      // The plan on screen no longer matches the inputs: say so and block exports.
+      errorNode.textContent = `${error.message} The plan shown is out of date until this is fixed.`;
+      $("rbExportCsv").disabled = true;
+      $("rbExportXlsx").disabled = true;
     }
   }
 
@@ -528,7 +541,7 @@ function init() {
       ...run.plan.results.map((r, i) => [r.ticker, r.accountType || "", r.currencyLabel, r.shares, r.price, run.positions[i].source.label, r.currentValue, r.targetWeightNorm, r.targetValue, r.tradeValue, r.tradeValueLocal, r.tradeShares, r.action, r.postTradeShares]),
     ];
   }
-  const fxRows = run => [...new Set([run.reportingKey, ...run.positions.map(p => p.currencyKey)])].map(k => [E.currencyMeta(k).code, state.fx[k].usd, E.fxToReporting(k, run.reportingKey, fxToUsd()), state.fx[k].kind === "default" ? `Built-in estimate (${E.DEFAULT_FX_AS_OF})` : state.fx[k].label]);
+  const fxRows = run => run.fxRows;
   $("rbExportCsv").addEventListener("click", () => {
     if (!state.lastPlan) return;
     const run = state.lastPlan;

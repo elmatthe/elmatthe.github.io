@@ -52,3 +52,25 @@ def test_offline_csv_pence_converted(tmp_path):
     result = OfflineCsvSource(str(tmp_path)).fetch_prices("TSCO.L", "2024-01-01", "2024-01-31", "Adjusted Close", "Daily")
     assert result.currency == "GBP"
     assert result.prices["Adj Close"].round(4).tolist() == [4.0, 4.1]
+
+
+def test_london_listing_without_currency_is_not_guessed(monkeypatch):
+    history = pd.DataFrame({"Close": [412.0], "Adj Close": [400.0]}, index=pd.to_datetime(["2026-10-30"]).tz_localize("Europe/London"))
+
+    class NoCurrencyTicker:
+        def __init__(self, symbol):
+            self.fast_info = {}
+
+        def history(self, **kwargs):
+            return history
+
+        def get_info(self):
+            return {}
+
+    monkeypatch.setattr(data_sources, "yf", types.SimpleNamespace(Ticker=NoCurrencyTicker, set_tz_cache_location=lambda path: None))
+    monkeypatch.setattr(data_sources, "get_files_dir", lambda: Path(__file__).resolve().parents[2] / "files" / "run-temp")
+    result = YahooFinanceSource().fetch_prices("TSCO.L", "2026-10-29", "2026-10-31", "Adjusted Close", "Daily")
+    assert result.currency is None
+    assert any("treated as unknown" in w for w in result.warnings)
+    result = YahooFinanceSource().fetch_prices("XIU.TO", "2026-10-29", "2026-10-31", "Adjusted Close", "Daily")
+    assert result.currency == "CAD" and any("assumed CAD" in w for w in result.warnings)

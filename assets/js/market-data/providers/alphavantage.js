@@ -29,7 +29,8 @@ export const AV_ADJUSTMENT = {
 
 // Yahoo-style suffix typed by users -> Alpha Vantage exchange suffix (documented examples).
 const SUFFIX_MAP = { ".TO": ".TRT", ".V": ".TRV", ".L": ".LON", ".DE": ".DEX", ".BO": ".BSE", ".SS": ".SHH", ".SZ": ".SHZ" };
-const MINOR_UNITS = { GBX: ["GBP", 0.01], ZAC: ["ZAR", 0.01], ILA: ["ILS", 0.01] };
+// Minor-unit codes as providers spell them; "GBp"/"ZAc" differ from GBP/ZAR only by case.
+export const MINOR_UNITS = { GBX: ["GBP", 0.01], GBp: ["GBP", 0.01], ZAC: ["ZAR", 0.01], ZAc: ["ZAR", 0.01], ILA: ["ILS", 0.01] };
 const KEY_PATTERN = /^[A-Za-z0-9]{8,64}$/;
 
 export const validKey = key => typeof key === "string" && KEY_PATTERN.test(key.trim());
@@ -74,7 +75,10 @@ export function parseAvBody(text, { symbol = "" } = {}) {
   const info = String(body.Information || body.Note || "");
   if (info) {
     // Rate-limit notices also mention "premium plans", so they are recognised first.
-    if (/rate limit|requests per day|per minute|spreading out|call frequency/i.test(info)) throw new DataError("Alpha Vantage request limit reached for this API key (the free plan allows 25 requests per day).", { kind: "rate_limited", definitive: true, provider: AV_PROVIDER });
+    // A burst notice ("spreading out ... 1 request per second") is transient; only
+    // the daily notice means the key is done for the day.
+    if (/per day|daily/i.test(info) && /rate limit|requests/i.test(info)) throw new DataError("Alpha Vantage daily request limit reached for this API key (the free plan allows 25 requests per day).", { kind: "rate_limited", definitive: true, provider: AV_PROVIDER, scope: "daily" });
+    if (/rate limit|per second|per minute|spreading out|call frequency|burst/i.test(info)) throw Object.assign(new DataError("Alpha Vantage asked for slower requests; retrying shortly.", { kind: "rate_limited", provider: AV_PROVIDER, retryAfterMs: 1500 }), { scope: "burst" });
     if (/demo/i.test(info)) throw new DataError("The Alpha Vantage demo key only works for the documentation examples. Add your own free key.", { kind: "auth", definitive: true, provider: AV_PROVIDER });
     if (/premium endpoint|premium feature|premium plan/i.test(info)) throw new DataError(`${symbol ? `${symbol}: ` : ""}this data is a premium Alpha Vantage feature, not available with a free key.`, { kind: "not_found", definitive: true, provider: AV_PROVIDER });
     throw new DataError(`Alpha Vantage: ${redactKey(info).slice(0, 160)}`, { kind: "unavailable", provider: AV_PROVIDER });
@@ -88,8 +92,9 @@ export function parseAvBody(text, { symbol = "" } = {}) {
 }
 
 export function currencyFromSearch(raw) {
-  const code = String(raw || "").trim().toUpperCase();
-  if (MINOR_UNITS[code]) return { currency: MINOR_UNITS[code][0], rawCurrency: raw, unitScale: MINOR_UNITS[code][1] };
+  const trimmed = String(raw || "").trim();
+  if (MINOR_UNITS[trimmed]) return { currency: MINOR_UNITS[trimmed][0], rawCurrency: trimmed, unitScale: MINOR_UNITS[trimmed][1] };
+  const code = trimmed.toUpperCase();
   return /^[A-Z]{3}$/.test(code) ? { currency: code, rawCurrency: raw, unitScale: 1 } : { currency: null, rawCurrency: raw || null, unitScale: 1 };
 }
 
@@ -176,30 +181,46 @@ export function createAlphaVantageClient({ apiKey, fetchImpl = (...a) => globalT
   if (!validKey(apiKey)) return null;
   const key = apiKey.trim();
   let last = 0;
-  let exhausted = false;
-  async function call(params, { signal, symbol } = {}) {
-    if (exhausted) throw new DataError("Alpha Vantage request limit reached for this API key (the free plan allows 25 requests per day).", { kind: "rate_limited", definitive: true, provider: AV_PROVIDER });
-    const wait = last + minSpacingMs - now();
-    if (wait > 0) await sleep(wait);
-    last = now();
-    usage?.increment();
-    const query = new URLSearchParams({ ...params, apikey: key });
-    const res = await fetchText(`${AV_BASE}?${query}`, { fetchImpl, signal, provider: AV_PROVIDER, timeoutMs: 15000 });
-    if (!res.ok) throw httpError(res.status, { provider: AV_PROVIDER, headers: res.headers, text: res.text });
-    try {
-      return parseAvBody(res.text, { symbol });
-    } catch (error) {
-      if (error.kind === "rate_limited" || error.kind === "auth") exhausted = true; // stop spending requests this run
-      error.message = redactKey(error.message, key);
-      throw error;
+  let exhaustedDay = null; // UTC day on which the daily limit (or a key rejection) was reported
+  let chain = Promise.resolve();
+  const today = () => new Date(now()).toISOString().slice(0, 10);
+  const exhausted = () => exhaustedDay === today();
+  const limitError = () => new DataError("Alpha Vantage daily request limit reached for this API key (the free plan allows 25 requests per day).", { kind: "rate_limited", definitive: true, provider: AV_PROVIDER });
+
+  async function send(params, { signal, symbol } = {}) {
+    if (exhausted()) throw limitError();
+    for (let attempt = 0; ; attempt += 1) {
+      const wait = last + minSpacingMs - now();
+      if (wait > 0) await sleep(wait);
+      if (signal?.aborted) throw new DataError("Request cancelled.", { kind: "aborted", provider: AV_PROVIDER });
+      last = now();
+      usage?.increment();
+      const query = new URLSearchParams({ ...params, apikey: key });
+      const res = await fetchText(`${AV_BASE}?${query}`, { fetchImpl, signal, provider: AV_PROVIDER, timeoutMs: 15000 });
+      if (!res.ok) throw httpError(res.status, { provider: AV_PROVIDER, headers: res.headers, text: res.text });
+      try {
+        return parseAvBody(res.text, { symbol });
+      } catch (error) {
+        error.message = redactKey(error.message, key);
+        if (error.scope === "burst" && attempt === 0) { await sleep(error.retryAfterMs || 1500); continue; }
+        if ((error.kind === "rate_limited" && error.definitive) || error.kind === "auth") exhaustedDay = today(); // stop spending requests today
+        throw error;
+      }
     }
+  }
+  // Requests are serialized so concurrent callers (a comparison and a snapshot) keep
+  // the provider's spacing.
+  function call(params, opts) {
+    const run = chain.then(() => send(params, opts));
+    chain = run.catch(() => {});
+    return run;
   }
   return {
     async search(keywords, opts) { return call({ function: "SYMBOL_SEARCH", keywords }, opts); },
     async globalQuote(avSymbol, opts) { return call({ function: "GLOBAL_QUOTE", symbol: avSymbol }, opts); },
     async daily(avSymbol, opts) { return call({ function: "TIME_SERIES_DAILY", symbol: avSymbol, outputsize: "compact" }, opts); },
     async weeklyAdjusted(avSymbol, opts) { return call({ function: "TIME_SERIES_WEEKLY_ADJUSTED", symbol: avSymbol }, opts); },
-    get exhausted() { return exhausted; },
+    get exhausted() { return exhausted(); },
   };
 }
 
