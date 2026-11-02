@@ -72,16 +72,21 @@ const DAY = 86400000;
     await st.fill("#sddKey", KEY);
     await st.click("#sddKeyForm button[type=submit]");
     await st.click("#sddTab-snapshot");
-    for (const ticker of ["AAPL", "XIU.TO"]) {
+    // A US stock and a TSX-listed ETF: live quote with its trading date, listing
+    // currency confirmed by the provider, and a year of (weekly adjusted) history.
+    for (const [ticker, currency] of [["AAPL", "USD"], ["XIU.TO", "CAD"]]) {
       await st.fill("#sddSnapshotTicker", ticker);
       await st.click("#sddSnapshotRun");
       await st.waitForFunction(() => !document.querySelector("#sddSnapshotRun").disabled, null, { timeout: 120000 });
       const market = await st.locator("#sddSnapshotMarket").innerText().catch(() => "");
       const ident = await st.locator("#sddSnapshotIdentity").innerText().catch(() => "");
+      const source = await st.locator("#sddSnapshotSource").innerText().catch(() => "");
       console.log(`  ${ticker}: ${market.replace(/\s+/g, " ").slice(0, 160)} | ${ident.replace(/\s+/g, " ").slice(0, 120)}`);
       check(/\d{4}-\d{2}-\d{2}/.test(market), `${ticker}: live price with a trading date`);
+      check(new RegExp(`Currency\\s+${currency}`).test(ident), `${ticker}: listing currency ${currency} confirmed by the provider`);
+      check(/weekly prices/.test(ident) && /1Y volatility\s+-?\d/.test(market), `${ticker}: one year of weekly history retrieved and analysed`);
+      check(/Alpha Vantage/.test(source), `${ticker}: source shown as Alpha Vantage`);
     }
-    check(/CAD/.test(await st.locator("#sddSnapshotIdentity").innerText()), "XIU.TO reported in CAD by the provider");
     await st.click("#sddTab-settings");
     await st.click("#sddKeyRemove");
   }
