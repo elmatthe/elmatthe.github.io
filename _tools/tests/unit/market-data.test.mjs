@@ -8,7 +8,7 @@ import { classifyFreshness, validateQuote, validateHistory, selectBasis, INTRADA
 import { parseObservations, crossFromCad, crossHistory, observationsUrl, fetchLatestCadRates } from "../../../assets/js/market-data/providers/boc.js";
 import { parseEcbCsv, toCadPer, ecbUrl } from "../../../assets/js/market-data/providers/ecb.js";
 import { createFxService } from "../../../assets/js/market-data/fx.js";
-import { toAvSymbol, parseAvBody, pickListing, parseGlobalQuote, parseSeries, createUsageCounter } from "../../../assets/js/market-data/providers/alphavantage.js";
+import { toAvSymbol, parseAvBody, pickListing, parseGlobalQuote, parseSeries, createUsageCounter, redactKey, createAlphaVantageClient } from "../../../assets/js/market-data/providers/alphavantage.js";
 import { createMarketData, historyKind, loadSettings } from "../../../assets/js/market-data/index.js";
 import { parsePriceCsv, detectFrequency } from "../../../assets/js/market-data/price-import.js";
 import { buildFxAligner, normalizeSeries } from "../../../assets/js/market-data/fx-align.js";
@@ -466,4 +466,11 @@ test("FX matrix from one set of Bank of Canada fixings: USD/CAD, CAD/USD, EUR/US
   assert.ok(Math.abs(pair("USD", "JPY") - 157.384) < 1e-3);
   // Triangular consistency: EUR->JPY = EUR->USD x USD->JPY.
   assert.ok(Math.abs(pair("EUR", "JPY") - pair("EUR", "USD") * pair("USD", "JPY")) < 1e-9);
+});
+
+test("the API key never appears in error messages", async () => {
+  assert.equal(redactKey("We have detected your API key as ABCD1234XYZ and ..."), "We have detected your API key as [redacted] and ...");
+  const client = createAlphaVantageClient({ apiKey: "SECRETKEY99", minSpacingMs: 0, sleep: noSleep,
+    fetchImpl: async () => F.response(200, JSON.stringify({ Information: "Unusual notice mentioning SECRETKEY99 for your account." })) });
+  await assert.rejects(client.globalQuote("AAPL"), e => !e.message.includes("SECRETKEY99") && e.message.includes("[redacted]"));
 });

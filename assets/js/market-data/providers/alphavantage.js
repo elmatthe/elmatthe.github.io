@@ -58,6 +58,14 @@ const num = value => {
   return Number.isFinite(n) ? n : null;
 };
 
+// Alpha Vantage notices can quote the caller's key ("detected your API key as ...").
+// Messages shown to the user (and possibly exported) never contain it.
+export function redactKey(message, key = "") {
+  let text = String(message ?? "").replace(/(api ?key (?:as|is|=)\s*)[A-Za-z0-9]+/gi, "$1[redacted]");
+  if (key && key.length >= 4) text = text.split(key).join("[redacted]");
+  return text;
+}
+
 // Maps Alpha Vantage's HTTP-200 error bodies to DataError; returns the parsed body otherwise.
 export function parseAvBody(text, { symbol = "" } = {}) {
   let body;
@@ -69,7 +77,7 @@ export function parseAvBody(text, { symbol = "" } = {}) {
     if (/rate limit|requests per day|per minute|spreading out|call frequency/i.test(info)) throw new DataError("Alpha Vantage request limit reached for this API key (the free plan allows 25 requests per day).", { kind: "rate_limited", definitive: true, provider: AV_PROVIDER });
     if (/demo/i.test(info)) throw new DataError("The Alpha Vantage demo key only works for the documentation examples. Add your own free key.", { kind: "auth", definitive: true, provider: AV_PROVIDER });
     if (/premium endpoint|premium feature|premium plan/i.test(info)) throw new DataError(`${symbol ? `${symbol}: ` : ""}this data is a premium Alpha Vantage feature, not available with a free key.`, { kind: "not_found", definitive: true, provider: AV_PROVIDER });
-    throw new DataError(`Alpha Vantage: ${info.slice(0, 160)}`, { kind: "unavailable", provider: AV_PROVIDER });
+    throw new DataError(`Alpha Vantage: ${redactKey(info).slice(0, 160)}`, { kind: "unavailable", provider: AV_PROVIDER });
   }
   if (body["Error Message"]) {
     const message = String(body["Error Message"]);
@@ -182,6 +190,7 @@ export function createAlphaVantageClient({ apiKey, fetchImpl = (...a) => globalT
       return parseAvBody(res.text, { symbol });
     } catch (error) {
       if (error.kind === "rate_limited" || error.kind === "auth") exhausted = true; // stop spending requests this run
+      error.message = redactKey(error.message, key);
       throw error;
     }
   }

@@ -448,12 +448,15 @@ function init() {
       if (needed.some(k => state.fx[k].kind === "default")) await loadOfficialFx({ quiet: true });
       if (live) {
         const trs = [...rowsNode.querySelectorAll("tr")];
-        const results = await md.quotes(positions.map(p => p.ticker), {
+        // Query the listing that matches the row currency first (RY in a CAD row -> RY.TO,
+        // TSX:RY -> RY.TO): one request per ticker, no guessing across markets.
+        const querySymbol = p => E.buildTickerCandidates(p.ticker, p.currencyKey)[0] || p.ticker;
+        const results = await md.quotes(positions.map(querySymbol), {
           onProgress: (symbol, i, n) => setStatus(`Fetching ${symbol} (${i + 1}/${n}) with your Alpha Vantage key…`, null),
         });
         const missing = [];
         for (const p of positions) {
-          const result = results.get(p.ticker);
+          const result = results.get(querySymbol(p));
           const tr = trs[p.rowIndex];
           if (result?.quote) { applyQuote(p, tr, result, warnings, notes); continue; }
           const error = result?.error || new DataError("no result");

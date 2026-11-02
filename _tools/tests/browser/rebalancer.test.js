@@ -107,8 +107,8 @@ const num = text => Number(String(text).replace(/[^0-9.\-]/g, ""));
 
   // New rows: a TSX ticker with no price, and an unknown ticker.
   await page.click("#rbAddRow");
-  const tsx = page.locator("#rbRows tr").last();
-  await tsx.locator(".rb-ticker").fill("RY.TO");
+  const tsx = page.locator("#rbRows tr").nth(9);
+  await tsx.locator(".rb-ticker").fill("RY"); // bare ticker in a CAD row
   await tsx.locator(".rb-currency").selectOption("CAD");
   await tsx.locator(".rb-shares").fill("10");
   await tsx.locator(".rb-weight").fill("5");
@@ -134,10 +134,10 @@ const num = text => Number(String(text).replace(/[^0-9.\-]/g, ""));
   check(await page.locator(".rb-output tbody tr").count() === 11, "live run plan includes all 11 rows");
   check(/ZZZBAD: no quote found.*typed price 12\.5 was used/.test(liveText), "unknown ticker keeps the typed price with a warning");
   check(/ISF\.L: quoted in GBX \(pence\); converted to GBP/.test(liveText), "London pence converted to pounds");
-  check(/RY\.TO: priced as RY\.TRT/.test(liveText), "TSX symbol mapped to the provider's symbol");
+  check(/RY: priced as RY\.TRT/.test(liveText) && await tsx.locator(".rb-currency").inputValue() === "CAD", `bare ticker in a CAD row resolves to the Toronto listing (no switch to the US listing)`);
   check(/Alpha Vantage · \d{4}-\d{2}-\d{2}/.test(await page.locator("#rbRows tr:nth-child(1) .rb-source").innerText()), "fetched price shows provider and trading date");
   check(!/illustrative sample prices/.test(liveText), "no sample-price warning once live prices replaced them");
-  check(await page.locator("#rbRows tr:nth-child(10) .rb-price").inputValue() !== "", "fetched price written into the empty RY.TO row");
+  check(await page.locator("#rbRows tr:nth-child(10) .rb-price").inputValue() !== "", "fetched price written into the empty RY row");
   check(calls.av.slice(avBefore).every(c => !/^GLOBAL_QUOTE:ZZZBAD$/.test(c) || true) && calls.av.filter(c => c === "GLOBAL_QUOTE:VTI").length === 1, "each ticker quoted once");
 
   // Re-run within 15 minutes: served from this browser's cache, no new requests.
