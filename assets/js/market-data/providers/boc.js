@@ -10,7 +10,7 @@
 // These are indicative daily averages, not executable market quotes; the UI says so.
 
 import { DataError, fetchText, httpError, withRetry } from "../http.js";
-import { validateFx } from "../contract.js";
+import { validateFx, isIsoDay } from "../contract.js";
 
 export const BOC_PROVIDER = "Bank of Canada";
 export const BOC_BASE = "https://www.bankofcanada.ca/valet";
@@ -18,7 +18,6 @@ export const BOC_ATTRIBUTION = "Source: Bank of Canada daily average exchange ra
 // Series currently published in the FX_RATES_DAILY group (RUB and VND are discontinued).
 export const BOC_CURRENCIES = ["AUD", "BRL", "CHF", "CNY", "EUR", "GBP", "HKD", "IDR", "INR", "JPY", "KRW", "MXN", "MYR", "NOK", "NZD", "PEN", "PLN", "SAR", "SEK", "SGD", "THB", "TRY", "TWD", "USD", "ZAR"];
 
-const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 
 export const bocSupports = code => code === "CAD" || BOC_CURRENCIES.includes(code);
 const seriesId = code => `FX${code}CAD`;
@@ -43,7 +42,7 @@ export function parseObservations(text, codes) {
   if (!payload || !Array.isArray(payload.observations)) throw new DataError("Bank of Canada response had no observations", { kind: "invalid", provider: BOC_PROVIDER });
   const out = Object.fromEntries(codes.filter(c => c !== "CAD").map(c => [c, []]));
   for (const row of payload.observations) {
-    if (!row || !ISO_DAY.test(row.d || "")) continue;
+    if (!row || !isIsoDay(row.d)) continue;
     for (const code of Object.keys(out)) {
       const cell = row[seriesId(code)];
       if (!cell || cell.v === undefined || cell.v === null || cell.v === "") continue;

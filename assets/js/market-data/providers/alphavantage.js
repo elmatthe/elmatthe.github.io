@@ -17,7 +17,7 @@
 // bodies ("Error Message", "Information", "Note") and are mapped to DataError here.
 
 import { DataError, fetchText, httpError } from "../http.js";
-import { validateQuote, validateHistory } from "../contract.js";
+import { validateQuote, validateHistory, parseIsoDay, isIsoDay } from "../contract.js";
 
 export const AV_PROVIDER = "Alpha Vantage";
 export const AV_BASE = "https://www.alphavantage.co/query";
@@ -138,7 +138,7 @@ export function parseGlobalQuote(body, symbol, listing) {
     volume: num(q["06. volume"]),
     priceKind: "latest_trading_day",
     priceTime: null,
-    sessionDate: /^\d{4}-\d{2}-\d{2}$/.test(day) ? day : null,
+    sessionDate: isIsoDay(day) ? day : null,
     provider: AV_PROVIDER,
   };
   return validateQuote(quote, AV_PROVIDER);
@@ -152,9 +152,9 @@ export function parseSeries(body, symbol, listing, kind) {
   const scale = listing?.unitScale ?? 1;
   const positive = v => { const n = num(v); return n !== null && n > 0 ? n * scale : null; };
   const observations = Object.keys(series)
-    .filter(day => /^\d{4}-\d{2}-\d{2}$/.test(day))
+    .filter(isIsoDay)
     .sort()
-    .map(day => ({ date: new Date(`${day}T00:00:00Z`), close: positive(series[day]["4. close"]), adjClose: kind === "weekly" ? positive(series[day]["5. adjusted close"]) : null }))
+    .map(day => ({ date: parseIsoDay(day), close: positive(series[day]["4. close"]), adjClose: kind === "weekly" ? positive(series[day]["5. adjusted close"]) : null }))
     .filter(o => o.close !== null || o.adjClose !== null);
   return validateHistory({
     requestedSymbol: symbol,

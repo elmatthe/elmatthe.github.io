@@ -4,12 +4,13 @@
 //   2. one file per ticker (ticker taken from the file name, e.g. XIU.TO.csv):
 //      Date, Close[, Adj Close][, Currency]
 // "Adjusted Close", "adj close" and "adj_close" are accepted for Adj Close.
-// Dates are YYYY-MM-DD. Prices must be positive numbers; a blank cell is a missing
+// Dates are YYYY-MM-DD and must be real calendar days (2026-02-30 is refused, 2024-02-29
+// accepted). Prices must be positive numbers; a blank cell is a missing
 // value, anything else invalid stops the import with the row number.
 
 import { csvRecords } from "./csv.js";
 import { normalizeSymbol } from "./symbols.js";
-import { validateHistory } from "./contract.js";
+import { validateHistory, parseIsoDay } from "./contract.js";
 import { MINOR_UNITS } from "./providers/alphavantage.js";
 
 export const IMPORT_PROVIDER = "Your CSV file";
@@ -56,8 +57,12 @@ export function parsePriceCsv(text, fileName = "prices.csv") {
     const line = i + 2;
     if (!Object.values(r).some(v => v !== "")) return;
     const ticker = tickerCol ? normalizeSymbol(r[tickerCol]) : fallbackTicker;
-    const day = r[dateCol];
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || !Number.isFinite(Date.parse(`${day}T00:00:00Z`))) throw new Error(`${fileName} line ${line}: date "${day.slice(0, 20)}" is not YYYY-MM-DD.`);
+    const day = r[dateCol].trim();
+    const date = parseIsoDay(day);
+    if (!date) {
+      const reason = /^\d{4}-\d{2}-\d{2}$/.test(day) ? "is not a real calendar date" : "is not in YYYY-MM-DD format";
+      throw new Error(`${fileName} line ${line}: date "${day.slice(0, 20)}" ${reason}.`);
+    }
     const value = name => {
       if (!name || r[name] === "") return null;
       const n = Number(r[name].replace(/,/g, ""));
@@ -75,7 +80,7 @@ export function parsePriceCsv(text, fileName = "prices.csv") {
     if (!groups.has(ticker)) groups.set(ticker, { rows: new Map(), currencies: new Set() });
     const group = groups.get(ticker);
     if (group.rows.has(day)) throw new Error(`${fileName} line ${line}: ${ticker} has more than one row for ${day}.`);
-    group.rows.set(day, { date: new Date(`${day}T00:00:00Z`), close, adjClose });
+    group.rows.set(day, { date, close, adjClose });
     if (currency) group.currencies.add(currency);
   });
   if (!groups.size) throw new Error(`${fileName}: no price rows found.`);

@@ -37,8 +37,21 @@ export const STALE_AFTER_MS = 4 * 86400000;
 
 export const isPositive = value => typeof value === "number" && Number.isFinite(value) && value > 0;
 export const isoDay = date => date.toISOString().slice(0, 10);
-const ISO_DAY = /^\d{4}-\d{2}-\d{2}$/;
 const CURRENCY = /^[A-Z]{3}$/;
+
+// Strict YYYY-MM-DD: returns the UTC-midnight Date of a real calendar day, or null.
+// JavaScript's own parser rolls impossible days forward ("2026-02-30" becomes
+// 2 March), so the parsed date must round-trip to the same year, month and day.
+// UTC midnight keeps the calendar day independent of the visitor's time zone.
+export function parseIsoDay(text) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(typeof text === "string" ? text : "");
+  if (!match) return null;
+  const [year, month, day] = match.slice(1).map(Number);
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day); // also correct for years 0-99
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day ? date : null;
+}
+export const isIsoDay = text => parseIsoDay(text) !== null;
 
 function invalid(message, provider) {
   return new DataError(message, { kind: "invalid", provider });
@@ -77,7 +90,7 @@ export function validateQuote(q, provider = null) {
   if (!isPositive(q.price)) throw invalid(`${q.symbol}: price is missing, zero or invalid`, provider);
   if (q.currency !== null && (typeof q.currency !== "string" || !CURRENCY.test(q.currency))) throw invalid(`${q.symbol}: invalid currency`, provider);
   if (q.priceTime !== null && q.priceTime !== undefined && !Number.isFinite(Date.parse(q.priceTime))) throw invalid(`${q.symbol}: invalid price time`, provider);
-  if (q.sessionDate && !ISO_DAY.test(q.sessionDate)) throw invalid(`${q.symbol}: invalid session date`, provider);
+  if (q.sessionDate && !isIsoDay(q.sessionDate)) throw invalid(`${q.symbol}: invalid session date`, provider);
   if (!isPositive(q.unitScale ?? 1)) throw invalid(`${q.symbol}: invalid unit scale`, provider);
   return q;
 }
@@ -114,6 +127,6 @@ export function selectBasis(history, basis = "adjusted") {
 export function validateFx(rate, provider = null) {
   if (!rate || !CURRENCY.test(rate.base || "") || !CURRENCY.test(rate.quote || "")) throw invalid("FX rate has invalid currencies", provider);
   if (!isPositive(rate.rate)) throw invalid(`${rate.base}/${rate.quote}: invalid rate`, provider);
-  if (!ISO_DAY.test(rate.date || "")) throw invalid(`${rate.base}/${rate.quote}: invalid rate date`, provider);
+  if (!isIsoDay(rate.date)) throw invalid(`${rate.base}/${rate.quote}: invalid rate date`, provider);
   return rate;
 }

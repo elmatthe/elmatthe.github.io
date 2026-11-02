@@ -10,6 +10,7 @@
 
 import { DataError, fetchText, httpError, withRetry } from "../http.js";
 import { csvRecords } from "../csv.js";
+import { isIsoDay } from "../contract.js";
 
 export const ECB_PROVIDER = "European Central Bank";
 export const ECB_BASE = "https://data-api.ecb.europa.eu/service/data/EXR";
@@ -39,7 +40,7 @@ export function parseEcbCsv(text) {
   const out = {};
   for (const r of records) {
     if (r.CURRENCY_DENOM && r.CURRENCY_DENOM !== "EUR") continue;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(r.TIME_PERIOD) || r.OBS_VALUE === "" || r.OBS_VALUE === "NaN") continue;
+    if (!isIsoDay(r.TIME_PERIOD) || r.OBS_VALUE === "" || r.OBS_VALUE === "NaN") continue;
     const value = Number(r.OBS_VALUE);
     if (!Number.isFinite(value) || value <= 0) throw new DataError(`ECB ${r.CURRENCY} had an invalid value on ${r.TIME_PERIOD}`, { kind: "invalid", provider: ECB_PROVIDER });
     (out[r.CURRENCY] ||= []).push({ date: r.TIME_PERIOD, perEur: value });
