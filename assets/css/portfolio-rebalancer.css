@@ -52,3 +52,4 @@
 .rb-key-form { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; }
 .rb-key-form .pj-field { flex: 1 1 12rem; margin: 0; }
 .rb-key-form .pj-field > span { font-weight: 650; font-size: .92rem; color: var(--pj-heading); }
+.rb-remember { display: inline-flex; align-items: center; gap: .35rem; font-size: .92rem; min-height: 2.5rem; }

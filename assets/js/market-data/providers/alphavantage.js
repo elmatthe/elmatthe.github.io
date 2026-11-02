@@ -4,7 +4,8 @@
 // both US and TSX/TSX-V listings and answers browsers with
 // `Access-Control-Allow-Origin: *`. Its terms limit free keys to personal,
 // non-commercial use, so the key is entered by each visitor, stays in that
-// visitor's browser (localStorage), is sent only to www.alphavantage.co, and the
+// visitor's browser (session or local storage, the visitor's choice), is sent only
+// to www.alphavantage.co (as the apikey query parameter it requires), and the
 // data it returns is used only in that visitor's own browser. The site never
 // stores, shares or republishes it.
 //
@@ -184,7 +185,9 @@ export function createAlphaVantageClient({ apiKey, fetchImpl = (...a) => globalT
   let exhaustedDay = null; // UTC day on which the daily limit (or a key rejection) was reported
   let chain = Promise.resolve();
   const today = () => new Date(now()).toISOString().slice(0, 10);
-  const exhausted = () => exhaustedDay === today();
+  // The daily limit is also remembered in this key's usage record, so a reload (or
+  // switching back to this key) does not spend another request to rediscover it.
+  const exhausted = () => exhaustedDay === today() || Boolean(usage?.exhausted);
   const limitError = () => new DataError("Alpha Vantage daily request limit reached for this API key (the free plan allows 25 requests per day).", { kind: "rate_limited", definitive: true, provider: AV_PROVIDER });
 
   async function send(params, { signal, symbol } = {}) {
@@ -204,6 +207,7 @@ export function createAlphaVantageClient({ apiKey, fetchImpl = (...a) => globalT
         error.message = redactKey(error.message, key);
         if (error.scope === "burst" && attempt === 0) { await sleep(error.retryAfterMs || 1500); continue; }
         if ((error.kind === "rate_limited" && error.definitive) || error.kind === "auth") exhaustedDay = today(); // stop spending requests today
+        if (error.kind === "rate_limited" && error.definitive) usage?.markExhausted?.();
         throw error;
       }
     }
@@ -224,17 +228,25 @@ export function createAlphaVantageClient({ apiKey, fetchImpl = (...a) => globalT
   };
 }
 
-// Per-browser daily request counter (UTC day).
+// Per-browser daily request counter (UTC day) for ONE key: the caller gives each key
+// its own storage name, so a different key never inherits this count. The count is
+// an estimate (other devices using the same key are not seen). Unreadable or
+// unavailable storage counts as zero and never throws.
 export function createUsageCounter(storage, { now = () => Date.now(), key = "md.av.usage.v1" } = {}) {
   const today = () => new Date(now()).toISOString().slice(0, 10);
   const read = () => {
     try {
       const entry = JSON.parse(storage?.getItem(key) || "null");
-      return entry && entry.day === today() && Number.isInteger(entry.count) ? entry : { day: today(), count: 0 };
-    } catch (_) { return { day: today(), count: 0 }; }
+      return entry && entry.day === today() && Number.isInteger(entry.count) && entry.count >= 0
+        ? { day: entry.day, count: entry.count, exhausted: entry.exhausted === true }
+        : { day: today(), count: 0, exhausted: false };
+    } catch (_) { return { day: today(), count: 0, exhausted: false }; }
   };
+  const write = e => { try { storage?.setItem(key, JSON.stringify(e)); } catch (_) { /* optional */ } };
   return {
     get count() { return read().count; },
-    increment() { const e = read(); e.count += 1; try { storage?.setItem(key, JSON.stringify(e)); } catch (_) { /* optional */ } return e.count; },
+    get exhausted() { return read().exhausted; },
+    increment() { const e = read(); e.count += 1; write(e); return e.count; },
+    markExhausted() { const e = read(); e.exhausted = true; write(e); },
   };
 }

@@ -19,6 +19,18 @@ export function memoryStorage() {
   };
 }
 
+// Every key in a storage area; an unreadable storage yields none instead of throwing.
+export function storageKeys(store) {
+  const out = [];
+  try {
+    for (let i = 0; i < store.length; i += 1) {
+      const key = store.key(i);
+      if (typeof key === "string") out.push(key);
+    }
+  } catch (_) { /* storage became unavailable: treat as empty */ }
+  return out;
+}
+
 export function safeStorage(kind) {
   try {
     const store = globalThis[kind];
@@ -34,14 +46,7 @@ export function safeStorage(kind) {
 
 export function createCache({ storage = null, prefix = "md.cache.v1:", maxEntries = 60, now = () => Date.now() } = {}) {
   const store = storage || memoryStorage();
-  const keys = () => {
-    const out = [];
-    for (let i = 0; i < store.length; i += 1) {
-      const key = store.key(i);
-      if (key && key.startsWith(prefix)) out.push(key);
-    }
-    return out;
-  };
+  const keys = () => storageKeys(store).filter(key => key.startsWith(prefix));
   function readRaw(fullKey) {
     try {
       const entry = JSON.parse(store.getItem(fullKey) || "null");

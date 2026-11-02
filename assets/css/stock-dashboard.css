@@ -112,6 +112,7 @@
 .sdd-form { display: flex; flex-wrap: wrap; gap: .9rem 1.1rem; align-items: end; margin: .5rem 0 .9rem; }
 .sdd-field { display: grid; gap: .35rem; flex: 1 1 11rem; min-width: min(100%, 11rem); }
 .sdd-field small { color: var(--sdd-muted); font-weight: 400; }
+.sdd-check { display: inline-flex; align-items: center; gap: .4rem; flex-basis: 100%; font-size: .95rem; }
 .sdd-actions { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; }
 .sdd-fieldset { border: 1px solid var(--sdd-border); border-radius: .4rem; padding: .6rem .8rem .8rem; margin: 0; flex: 1 1 100%; min-width: 0; }
 .sdd-fieldset legend { font-weight: 700; padding: 0 .35rem; color: var(--sdd-heading); }

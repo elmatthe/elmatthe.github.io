@@ -10,7 +10,10 @@ last_updated: 2026-11-02
 page_css:
   - /assets/css/stock-dashboard.css
 vendor_js:
-  - https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js
+  # Chart.js 4.4.2 as published to npm (dist/chart.umd.js is its minified build);
+  # the hash was checked against the npm tarball. Update both together.
+  - src: https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.js
+    integrity: sha384-zuFoHkJ6+XzUchVtS39qBWxb+LvdA7aQ/ze8jYdufBf/A1jeuKGDBg4crfxvZAr8
 page_js:
   - /assets/js/stock-dashboard/app.js
 sections:
@@ -201,12 +204,19 @@ sections:
       </div>
       <div class="sdd-panel">
         <h3>Live prices with your own key (optional)</h3>
-        <p class="muted">Live prices use <strong>your own</strong> free <a href="https://www.alphavantage.co/support/#api-key">Alpha Vantage API key</a>. It covers US and TSX/TSX-V stocks and ETFs and some US mutual funds, but not market indexes; the free plan allows 25 requests per day, and its terms allow personal, non-commercial use. The key is saved only in this browser's local storage and sent only to Alpha Vantage. Fetched prices stay in this browser. This page never sends your key or data anywhere else.</p>
+        <p class="muted">Live prices use <strong>your own</strong> free <a href="https://www.alphavantage.co/support/#api-key">Alpha Vantage API key</a>. It covers US and TSX/TSX-V stocks and ETFs and some US mutual funds, but not market indexes; the free plan allows 25 requests per day, and its terms allow personal, non-commercial use. Fetched prices stay in this browser, and this page never sends your key or data anywhere except Alpha Vantage.</p>
+        <ul class="sdd-list">
+          <li><strong>Where the key is kept:</strong> by default for this tab only (session storage; the browser forgets it when the tab closes). Tick <em>Remember on this device</em> to keep it in local storage until you press <em>Remove key</em>.</li>
+          <li><strong>Where it is sent:</strong> only to <code>www.alphavantage.co</code>, inside each request's address, which is how Alpha Vantage accepts keys.</li>
+          <li><strong>Who can read it:</strong> any script running on this website can read browser storage. This page's only outside script is the chart library, loaded from jsDelivr with an integrity check so a modified copy is refused. Use a free key that you can replace.</li>
+          <li><strong>Removing it:</strong> <em>Remove key</em> deletes the key and every response fetched with it. Changing the key does the same for the old key.</li>
+        </ul>
         <form id="sddKeyForm" class="sdd-form" novalidate>
           <div class="sdd-field">
             <label for="sddKey">Alpha Vantage API key</label>
             <input id="sddKey" type="password" autocomplete="off" spellcheck="false" maxlength="64" placeholder="Paste your key">
           </div>
+          <label class="sdd-check"><input type="checkbox" id="sddKeyRemember"> Remember on this device</label>
           <div class="sdd-actions">
             <button type="submit">Save key</button>
             <button id="sddKeyRemove" type="button" class="secondary">Remove key</button>
@@ -226,7 +236,7 @@ sections:
       </div>
       <div class="sdd-panel">
         <h3>Cache</h3>
-        <p class="muted">Responses fetched with your key are saved in this browser (quotes for 15 minutes, price history for 12 hours, listing details for 30 days) to save your daily requests. A saved copy is used and labelled when a refresh fails.</p>
+        <p class="muted">Responses fetched with your key are saved in this browser (quotes for 15 minutes, price history for 12 hours, listing details for 30 days) to save your daily requests. They are kept for that key only: changing or removing the key deletes them, so data is never relabelled as coming from another key. A saved copy is used and labelled when a refresh fails.</p>
         <div class="sdd-actions"><button id="sddClearCache" type="button" class="secondary">Clear cached responses</button><span id="sddCacheCount" class="muted"></span></div>
       </div>
     </section>
@@ -280,7 +290,7 @@ sections:
     <li><strong>Live prices use your own free Alpha Vantage key.</strong> No free market-data service allows a public website to show its prices to anonymous visitors. With your own key, the data is licensed to you for personal use and stays in your browser. Coverage: US and TSX/TSX-V stocks and ETFs and some US mutual funds. Not covered: market indexes such as <code>^GSPC</code> or <code>^GSPTSE</code> (a premium feature), Canadian mutual-fund codes such as <code>TDB902</code>, and most other exchanges. Windows up to about four months use daily closes as traded (not adjusted for splits or dividends; unusually large moves are flagged); longer windows use weekly closes adjusted for splits and dividends.</li>
     <li><strong>Exchange rates</strong> come from the Bank of Canada's daily averages (<a href="https://www.bankofcanada.ca/terms/">terms</a>), with the European Central Bank's reference rates as a fallback. Pairs not involving CAD are derived through CAD. Prices are converted on each date with the latest rate published on or before that date.</li>
     <li><strong>No public relays.</strong> Earlier versions fetched Yahoo Finance through free public CORS relays. They proved unreliable, could not be verified, and Yahoo's terms do not allow that use, so they have been removed.</li>
-    <li><strong>Saved in your browser:</strong> your key (local storage, until you remove it), fetched responses (see Settings for how long), and the theme. Nothing is stored on a server.</li>
+    <li><strong>Saved in your browser:</strong> your key (for the current tab, or until you remove it if you choose <em>Remember on this device</em>), responses fetched with it (kept under that key only and deleted when the key changes or is removed; see Settings for how long), a count of today's requests per key, and the theme. Nothing is stored on a server.</li>
     <li><strong>The offline demo makes no requests.</strong> Its prices are generated from a fixed seed and are clearly labelled synthetic.</li>
   </ul>
   <p class="pj-disclaimer">Informational and educational analysis only; not investment, financial, legal, or tax advice. Data may be delayed, adjusted, incomplete, or unavailable. Check a primary source before acting.</p>

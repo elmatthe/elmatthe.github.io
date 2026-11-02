@@ -8,7 +8,7 @@
 // Currency normalization uses official central-bank rates (Bank of Canada, ECB
 // fallback). See ../market-data/ for providers, validation and caching.
 
-import { createMarketData, DataError, selectBasis, describeAge, FRESHNESS_LABEL, fxSupported } from "../market-data/index.js";
+import { createMarketData, DataError, selectBasis, describeAge, FRESHNESS_LABEL, fxSupported, KEY_STORAGE_TEXT } from "../market-data/index.js";
 import { normalizeSymbol, normalizeSymbolList, MAX_TICKERS, MIN_COMPARE_TICKERS, SymbolError } from "../market-data/symbols.js";
 import { buildFxAligner, normalizeSeries } from "../market-data/fx-align.js";
 import { parsePriceCsv } from "../market-data/price-import.js";
@@ -171,9 +171,11 @@ function init() {
     const cached = md.cacheSize();
     $("sddCacheState").textContent = `Cache: ${cached} saved response${cached === 1 ? "" : "s"}`;
     $("sddCacheCount").textContent = `${cached} saved response${cached === 1 ? "" : "s"}`;
+    const where = md.settings.persistence;
     $("sddKeyState").textContent = md.liveAvailable()
-      ? `A key is saved in this browser. About ${md.usage().count} of ${md.usage().limit} free requests used today here.`
+      ? `Your key is ${KEY_STORAGE_TEXT[where] || "saved in this browser"}. About ${md.usage().count} of ${md.usage().limit} free requests used today here.`
       : "No key saved. Live data is off.";
+    if (md.liveAvailable()) $("sddKeyRemember").checked = where === "local";
     $("sddKeyRemove").disabled = !md.liveAvailable();
   }
   const openSettings = () => { selectTab($("sddTab-settings")); app.scrollIntoView({ behavior: "smooth", block: "start" }); };
@@ -402,6 +404,7 @@ function init() {
           chip(symbol, prov.stale ? "error" : "ok", prov.stale ? "saved copy (refresh failed)" : prov.cached ? "cached" : source === "csv" ? "from file" : "fetched");
         } catch (error) {
           if (aborted()) break;
+          if (error.kind === "key_changed") throw error; // one comparison never mixes two keys
           failures.push({ symbol, message: describeError(error), error });
           chip(symbol, "error", error.kind === "not_found" ? "no data" : error.kind === "rate_limited" ? "limit reached" : "failed");
         } finally {
@@ -888,10 +891,10 @@ function init() {
     const input = $("sddKey");
     const out = $("sddKeyStatus");
     try {
-      md.setApiKey(input.value);
+      const { persistence } = md.setApiKey(input.value, { remember: $("sddKeyRemember").checked });
       input.value = "";
       input.removeAttribute("aria-invalid");
-      setStatus(out, md.liveAvailable() ? "Saved in this browser only." : "Key removed.", "ok");
+      setStatus(out, md.liveAvailable() ? `Key ${KEY_STORAGE_TEXT[persistence]}.` : "Key removed.", "ok");
     } catch (error) {
       input.setAttribute("aria-invalid", "true");
       setStatus(out, error.message, "error");
@@ -901,7 +904,7 @@ function init() {
   });
   $("sddKeyRemove").addEventListener("click", () => {
     md.setApiKey("");
-    setStatus($("sddKeyStatus"), "Key removed from this browser.", null);
+    setStatus($("sddKeyStatus"), "Key removed from this browser, with the responses fetched with it.", null);
     renderDataStatus();
     if (sourceValue() === "live") syncSource();
   });

@@ -105,6 +105,9 @@ const num = text => Number(String(text).replace(/[^0-9.\-]/g, ""));
   await page.click("#rbKeyForm button[type=submit]");
   check(!(await page.locator("#rbLive").isDisabled()) && await page.locator("#rbLive").isChecked(), "saving a key enables live prices");
   check(await page.inputValue("#rbKey") === "", "key field cleared after saving (not left on screen)");
+  check(/kept for this tab only/.test(await page.locator("#rbKeyStatus").innerText())
+    && await page.evaluate(k => sessionStorage.getItem("md.settings.v1")?.includes(k) && !JSON.stringify(localStorage).includes(k), TEST_KEY),
+    "by default the key is kept for this tab only (session storage, not local storage)");
 
   // New rows: a TSX ticker with no price, and an unknown ticker.
   await page.click("#rbAddRow");
@@ -180,9 +183,23 @@ const num = text => Number(String(text).replace(/[^0-9.\-]/g, ""));
     `typed CAD-per-GBP rate unchanged after official rates load (${await page.locator('.rb-fx-input[data-key="GBP"]').inputValue()})`);
   await page.selectOption("#rbReporting", "USD");
 
-  // Remove the key.
+  // "Remember on this device" moves the key to local storage (one copy only) and survives a new tab.
+  await page.check("#rbKeyRemember");
+  await page.fill("#rbKey", TEST_KEY);
+  await page.click("#rbKeyForm button[type=submit]");
+  check(/saved on this device/.test(await page.locator("#rbKeyStatus").innerText())
+    && await page.evaluate(k => localStorage.getItem("md.settings.v1")?.includes(k) && sessionStorage.getItem("md.settings.v1") === null, TEST_KEY),
+    "remembered key is kept in local storage only");
+  const second = await page.context().newPage();
+  await second.goto(`${SITE_URL}/projects/portfolio-rebalancer/`, { waitUntil: "networkidle" });
+  check(/saved on this device/.test(await second.locator("#rbKeyState").innerText()) && await second.locator("#rbKeyRemember").isChecked(), "a new tab sees the remembered key and its storage choice");
+  await second.close();
+  check(await page.evaluate(k => Object.keys(localStorage).concat(Object.keys(sessionStorage)).every(name => !name.includes(k)), TEST_KEY), "the key never appears in a storage entry name");
+
+  // Remove the key: gone from both storages, along with prices fetched with it.
   await page.click("#rbKeyRemove");
-  check(await page.locator("#rbLive").isDisabled() && await page.evaluate(() => !/TESTKEY/.test(JSON.stringify(localStorage))), "removing the key deletes it from storage");
+  check(await page.locator("#rbLive").isDisabled() && await page.evaluate(k => !JSON.stringify(localStorage).includes(k) && !JSON.stringify(sessionStorage).includes(k), TEST_KEY), "removing the key deletes it from both storages");
+  check(await page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith("md.av.") && !k.endsWith(".usage")).length === 0), "responses fetched with the removed key are deleted");
 
   // Validation.
   await page.locator("#rbRows tr:nth-child(1) .rb-shares").fill("-5");

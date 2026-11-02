@@ -8,7 +8,10 @@ summary: Stress-test a retirement plan across thousands of random market paths i
 lede: See how often a savings-and-spending plan lasts across thousands of random market paths. The web simulator runs entirely in your browser; the desktop program adds Excel and CSV reports with an embedded fan chart.
 last_updated: 2026-11-02
 vendor_js:
-  - https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js
+  # Chart.js 4.4.2 as published to npm (dist/chart.umd.js is its minified build);
+  # the hash was checked against the npm tarball. Update both together.
+  - src: https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.js
+    integrity: sha384-zuFoHkJ6+XzUchVtS39qBWxb+LvdA7aQ/ze8jYdufBf/A1jeuKGDBg4crfxvZAr8
 page_js:
   - /assets/js/monte-carlo/app.js
 sections:

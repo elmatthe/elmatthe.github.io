@@ -92,9 +92,10 @@ sections:
       </section>
       <section class="rb-panel" aria-labelledby="rbLiveHeading">
         <h3 id="rbLiveHeading">Live prices (optional)</h3>
-        <p class="muted rb-small">Uses <strong>your own</strong> free <a href="https://www.alphavantage.co/support/#api-key">Alpha Vantage API key</a> (US and TSX/TSX-V stocks and ETFs, some US mutual funds; 25 requests per day). The key is saved only in this browser and sent only to Alpha Vantage. Free keys are for personal use.</p>
+        <p class="muted rb-small">Uses <strong>your own</strong> free <a href="https://www.alphavantage.co/support/#api-key">Alpha Vantage API key</a> (US and TSX/TSX-V stocks and ETFs, some US mutual funds; 25 requests per day). Free keys are for personal use. The key stays in this browser and is sent only to Alpha Vantage, inside each request's address as Alpha Vantage requires. By default it is kept for this tab only; tick <em>Remember</em> to keep it on this device until you remove it. Scripts running on this website can read either storage, so use a free key that you can replace.</p>
         <form id="rbKeyForm" class="rb-key-form" novalidate>
           <label class="pj-field"><span>API key</span><input id="rbKey" type="password" autocomplete="off" spellcheck="false" maxlength="64" placeholder="Paste your key"></label>
+          <label class="rb-remember"><input type="checkbox" id="rbKeyRemember"> <span>Remember on this device</span></label>
           <button type="submit" class="pj-btn">Save key</button>
           <button type="button" class="pj-btn" id="rbKeyRemove">Remove key</button>
         </form>
@@ -160,7 +161,7 @@ sections:
   <ul>
     <li><strong>Your holdings never leave your device.</strong> Calculations run locally and nothing about your portfolio is stored or sent. The page requests only currency codes from the central banks and, if you add a key, ticker symbols from Alpha Vantage.</li>
     <li><strong>Exchange rates:</strong> Bank of Canada daily average rates (<a href="https://www.bankofcanada.ca/terms/">terms</a>), with the European Central Bank's reference rates as a fallback. Pairs not involving CAD are derived through CAD and labelled as such. Rates are cached in this browser for an hour. Until they load, built-in estimates dated in the table are used and flagged in the plan.</li>
-    <li><strong>Prices:</strong> what you type, or the latest price from Alpha Vantage using your own key (saved in this browser's local storage; remove it any time). The price's trading date is shown, and older than four days is flagged. Quotes are cached for 15 minutes to save your 25 daily requests. Market indexes, mutual-fund codes such as Canadian <code>TDB902</code>, and exchanges outside the US, Toronto, London, Frankfurt, Bombay and Shanghai/Shenzhen are not available; enter those prices yourself.</li>
+    <li><strong>Prices:</strong> what you type, or the latest price from Alpha Vantage using your own key. The key is kept in this browser only: for the current tab (session storage) unless you tick <em>Remember</em>, which keeps it in local storage until you press <em>Remove key</em>. It is sent only to Alpha Vantage. Prices fetched with a key are cached under that key alone and deleted when you change or remove it. Browser storage can be read by any script on this website; this page loads no third-party scripts. The price's trading date is shown, and older than four days is flagged. Quotes are cached for 15 minutes to save your 25 daily requests. Market indexes, mutual-fund codes such as Canadian <code>TDB902</code>, and exchanges outside the US, Toronto, London, Frankfurt, Bombay and Shanghai/Shenzhen are not available; enter those prices yourself.</li>
     <li><strong>No public relays.</strong> Earlier versions fetched Yahoo Finance through free public CORS relays. They were unreliable and Yahoo's terms do not permit that use, so they have been removed.</li>
   </ul>
 </section>

@@ -11,7 +11,7 @@
 // Vantage, and only currency codes go to the central banks.
 
 import * as E from "./engine.js";
-import { createMarketData, DataError, describeAge, FRESHNESS_LABEL } from "../market-data/index.js";
+import { createMarketData, DataError, describeAge, FRESHNESS_LABEL, KEY_STORAGE_TEXT } from "../market-data/index.js";
 import { buildXlsx, toCsv, downloadBlob, timestampSlug } from "../shared/export-files.js";
 
 const root = document.getElementById("rb-app");
@@ -276,9 +276,11 @@ function init() {
   function renderLivePanel() {
     const available = md.liveAvailable();
     const usage = md.usage();
+    const where = md.settings.persistence;
     $("rbKeyState").textContent = available
-      ? `Key saved in this browser. About ${usage.count} of ${usage.limit} free requests used today here.`
+      ? `Your key is ${KEY_STORAGE_TEXT[where] || "saved in this browser"}. About ${usage.count} of ${usage.limit} free requests used today here.`
       : "No key saved. Live prices are off; prices you type are used.";
+    if (available) $("rbKeyRemember").checked = where === "local";
     $("rbKeyRemove").disabled = !available;
     liveInput.disabled = !available;
     if (!available) liveInput.checked = false;
@@ -290,16 +292,16 @@ function init() {
     event.preventDefault();
     const input = $("rbKey");
     try {
-      md.setApiKey(input.value);
+      const { persistence } = md.setApiKey(input.value, { remember: $("rbKeyRemember").checked });
       input.value = "";
-      $("rbKeyStatus").textContent = md.liveAvailable() ? "Saved in this browser only." : "Key removed.";
+      $("rbKeyStatus").textContent = md.liveAvailable() ? `Key ${KEY_STORAGE_TEXT[persistence]}.` : "Key removed.";
       if (md.liveAvailable()) liveInput.checked = true;
     } catch (error) {
       $("rbKeyStatus").textContent = error.message;
     }
     renderLivePanel();
   });
-  $("rbKeyRemove").addEventListener("click", () => { md.setApiKey(""); $("rbKeyStatus").textContent = "Key removed from this browser."; renderLivePanel(); });
+  $("rbKeyRemove").addEventListener("click", () => { md.setApiKey(""); $("rbKeyStatus").textContent = "Key removed from this browser, with the prices fetched with it."; renderLivePanel(); });
 
   /* ---------------- rendering ---------------- */
   function renderPlan(run) {
