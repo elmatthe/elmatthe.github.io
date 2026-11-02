@@ -1,0 +1,6 @@
+# Test-only dependencies for _tools/tests (CI and local). Versions match the
+# desktop apps' pinned requirements where they overlap.
+numpy==2.4.6
+scipy==1.17.1
+openpyxl==3.1.5
+pytest==9.1.1
