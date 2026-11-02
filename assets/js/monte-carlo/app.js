@@ -2,7 +2,7 @@
 // Runs entirely in the browser: no network requests and no backend. The model is
 // in ./engine.js and matches the desktop program (see _tools/tests/test_engine_parity.py).
 
-import { validateInputs, runSimulation, LIMITS, ValidationError } from "./engine.js";
+import { validateInputs, runSimulation, LIMITS, ValidationError, boxMuller, mulberry32, parseSeed, MAX_SEED } from "./engine.js";
 import { toCsv, downloadBlob, timestampSlug } from "../shared/export-files.js";
 
 const root = document.getElementById("mc-app");
@@ -13,10 +13,10 @@ function init() {
   const FIELDS = ["currentPortfolio", "annualContribution", "contributionGrowth", "yearsToRetirement", "yearsInRetirement",
     "expectedReturn", "volatility", "inflation", "annualSpending", "pensionIncome", "simulations"];
   const input = field => $(`mc-${field}`);
-  const state = { mode: "nominal", result: null, runtimeMs: 0, chart: null };
+  const state = { mode: "nominal", result: null, runtimeMs: 0, chart: null, seed: null };
   const CHART = typeof window.Chart === "function";
 
-  const money = v => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(v);
+  const money = v => (Number.isFinite(v) ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(v) : "n/a");
   const count = v => new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(v);
   const pick = pair => (state.mode === "real" ? pair.real : pair.nominal);
   const unit = () => (state.mode === "real" ? "real $" : "nominal $");
@@ -31,7 +31,7 @@ function init() {
     node.textContent = text;
     if (tone) node.dataset.tone = tone; else delete node.dataset.tone;
   }
-  function clearInvalid() { FIELDS.forEach(f => input(f).removeAttribute("aria-invalid")); }
+  function clearInvalid() { [...FIELDS, "seed"].forEach(f => input(f).removeAttribute("aria-invalid")); }
 
   // Randomized but plausible sample, same ranges as the desktop "Load Sample Scenario".
   function loadSample() {
@@ -58,7 +58,7 @@ function init() {
     add(`Median final value (${unit()})`, money(pick(s.medianFinal)));
     add("Initial withdrawal rate", `${s.swr.toFixed(2)}%`);
     add("Failed simulations", `${count(s.failedRuns)} of ${count(s.totalRuns)}`);
-    add("Median ruin year", s.medianRuinYear === null ? "None" : `Year ${s.medianRuinYear.toFixed(1)} of retirement`);
+    add("Median ruin year (failed paths)", s.medianRuinYear === null ? "None" : `Year ${s.medianRuinYear.toFixed(1)} of retirement`);
     add(`10th percentile final (${unit()})`, money(pick(s.finalP10)));
     add(`90th percentile final (${unit()})`, money(pick(s.finalP90)));
   }
@@ -160,18 +160,23 @@ function init() {
     if (!r) return;
     $("mcResults").hidden = false;
     $("mcEmpty").hidden = true;
-    $("mcMeta").textContent = `${count(r.summary.totalRuns)} simulations · ${r.inputs.yearsToRetirement} years saving · ${r.inputs.yearsInRetirement} years in retirement · first-year net withdrawal ${money(r.summary.netWithdrawal)} · ${state.runtimeMs.toFixed(0)} ms`;
+    $("mcMeta").textContent = `${count(r.summary.totalRuns)} simulations · ${r.inputs.yearsToRetirement} years saving · ${r.inputs.yearsInRetirement} years in retirement · first-year net withdrawal ${money(r.summary.netWithdrawal)} · seed ${state.seed} (enter it to reproduce this run) · ${state.runtimeMs.toFixed(0)} ms`;
     renderTiles(r);
     renderChart(r);
     renderTable(r);
+    if (!r.summary.realAvailable && state.mode === "real") setStatus("Real (today's) dollars are undefined when inflation is −100%; showing n/a. Switch to nominal dollars.", "warn");
     $("mcExportCsv").disabled = false;
   }
 
   function run() {
     clearInvalid();
     let inputs;
+    let seed;
     try {
       inputs = validateInputs(Object.fromEntries(FIELDS.map(f => [f, input(f).value])));
+      seed = parseSeed(input("seed").value);
+      // A blank seed draws a fresh one, which is shown with the results.
+      if (seed === null) seed = Math.floor(Math.random() * MAX_SEED);
     } catch (error) {
       if (error instanceof ValidationError && error.field) { input(error.field).setAttribute("aria-invalid", "true"); input(error.field).focus(); }
       setStatus(error.message, "error");
@@ -183,7 +188,8 @@ function init() {
     setTimeout(() => {
       try {
         const started = performance.now();
-        state.result = runSimulation(inputs);
+        state.result = runSimulation(inputs, { normal: boxMuller(mulberry32(seed)) });
+        state.seed = seed;
         state.runtimeMs = performance.now() - started;
         renderAll();
         setStatus(`Done. ${count(inputs.simulations)} simulations complete.`, "ok");
@@ -202,7 +208,7 @@ function init() {
     state.mode = radio.value;
     renderAll();
   }));
-  FIELDS.forEach(f => input(f).addEventListener("input", () => input(f).removeAttribute("aria-invalid")));
+  [...FIELDS, "seed"].forEach(f => input(f).addEventListener("input", () => input(f).removeAttribute("aria-invalid")));
   $("mcExportCsv").addEventListener("click", () => {
     const r = state.result;
     if (!r) return;
@@ -212,6 +218,8 @@ function init() {
       ["Failed simulations", r.summary.failedRuns, "of", r.summary.totalRuns],
       ["Initial withdrawal rate (%)", r.summary.swr],
       ["Inputs", ...FIELDS.map(f => `${f}=${r.inputs[f]}`)],
+      ["Random seed", state.seed],
+      ["Model", "Annual return ~ Normal(expected return, volatility), independent each year; year-end contributions and withdrawals; withdrawal grows with inflation; real = nominal / (1 + inflation)^year; percentiles by linear interpolation."],
       [],
       ["Year", "P10 nominal", "P25 nominal", "Median nominal", "P75 nominal", "P90 nominal", "P10 real", "P25 real", "Median real", "P75 real", "P90 real"],
       ...r.percentilesByYear.map(row => [row.year, ...["p10", "p25", "p50", "p75", "p90"].map(k => row.nominal[k]), ...["p10", "p25", "p50", "p75", "p90"].map(k => row.real[k])]),
