@@ -122,17 +122,47 @@ bring-your-own-key provider.
   - Live data uses Alpha Vantage daily closes (as traded, not adjusted for splits or
     dividends) for windows of up to 135 days, and weekly adjusted closes (splits and
     dividends) for longer windows.
-  - Falling back from adjusted to plain closes is always stated.
+  - Falling back from adjusted to plain closes is always stated, and the result's
+    metadata and exports report the basis actually used, not the one requested.
+  - Every live result carries a note that the window decides frequency and basis,
+    so a 3M (daily, unadjusted) and a 6M (weekly, adjusted) result are not
+    like-for-like.
+  - Several series with different bases are flagged, and "Best total return" reads
+    "Not comparable".
   - One-period moves above +80% / −44% are flagged as a possible unadjusted split.
 - **Frequency.** 252, 52 or 12 periods per year. Weekly returns are aligned by ISO
-  week. The period that may still be trading is excluded.
+  week. The period that may still be trading is excluded. One comparison never mixes
+  frequencies.
+  - Daily and weekly samples of the same window give the same total return.
+  - Their annualized returns differ by exactly 260/252 in log terms, because 52 weeks
+    × 5 sessions is 260 sessions but daily data is annualized with 252. This is a
+    convention, not an error.
+  - Volatility agrees within sampling error.
+  - Weekly drawdowns can be shallower, because weekly closes miss troughs inside a
+    week.
+  - `_tools/tests/unit/analytics-consistency.test.mjs` checks each of these points.
 - **FX.**
   - The Bank of Canada publishes CAD per unit once per business day (by 16:30 ET).
   - Pairs not involving CAD are derived as `cadPer[from] / cadPer[to]`, and that is
     labelled.
   - The ECB fallback converts EUR-based rates to the same CAD-per-unit form.
   - Price dates use the latest fixing on or before that date. Prices before the first
-    fixing are dropped and reported, never left unconverted.
+    fixing, or more than 7 days after the latest one (stale or missing rates), are
+    dropped and reported, never converted with an unrelated rate.
+  - With "Normalize to …", a comparison holds only series fully in that currency. A
+    series is left out, and named with the reason, when:
+    - its currency is unknown (for example a CSV without a Currency column);
+    - neither central bank publishes it;
+    - fewer than two of its prices have a usable rate.
+    It can still be compared in "Native currencies" mode or viewed in Snapshot.
+  - In native mode an unknown currency counts as a different currency. With mixed
+    currencies, the rankings, chart legends and the regression note say each series
+    is in its own currency.
+  - Each ticker's native currency, the currency its values are shown in, and the
+    conversion source are shown in the metrics table and in every export.
+- **Dates.** Imported and provider dates must be real calendar days (`2026-02-30` and
+  `2026-04-31` are refused with the file and line; leap days are accepted). They are
+  stored as UTC midnight, so the time zone never shifts a date.
 - **Freshness.** Alpha Vantage gives a trading day, not a time. A price whose day ended
   within the last 4 days is "last available price"; older is "stale", which is
   flagged. Cached and saved-copy (stale-if-error) values are labelled with their age.
@@ -141,28 +171,78 @@ bring-your-own-key provider.
 
 | Data | Storage | Fresh | Used if refresh fails |
 |---|---|---|---|
-| Alpha Vantage listing (name/region/currency) | localStorage | 30 days | – (misses kept 1 day) |
-| Alpha Vantage quote | localStorage | 15 min | up to 24 h, labelled |
-| Alpha Vantage "no data" answer | localStorage | 1 h | – |
-| Alpha Vantage history | localStorage, 6 years kept | 12 h | up to 7 days, labelled |
+| Alpha Vantage listing (name/region/currency) | localStorage, per key | 30 days | – (misses kept 1 day) |
+| Alpha Vantage quote | localStorage, per key | 15 min | up to 24 h, labelled |
+| Alpha Vantage "no data" answer | localStorage, per key | 1 h | – |
+| Alpha Vantage history | localStorage, per key, 6 years kept | 12 h | up to 7 days, labelled |
+| Alpha Vantage request count (and "limit reached") | localStorage, per key | until the UTC day ends | – |
 | Official FX latest | localStorage | 1 h | up to 7 days, labelled |
 | Official FX history | localStorage | 12 h | up to 7 days, labelled |
 
+- **Per-key isolation.** Everything fetched with a key lives under
+  `md.av.v2.<fingerprint>.<kind>:`.
+  - The fingerprint is 32 bits of a string hash of the key. It names the namespace
+    and cannot identify or recover the key; the raw key is never part of a storage
+    name.
+  - Each key has its own client, caches, request count and in-flight requests.
+  - Changing or removing the key retires the old key's session. Its requests are
+    aborted, and any answer that arrives later is discarded with a `key_changed`
+    error. Nothing more is cached for it, and responses saved with any other key are
+    deleted.
+  - Re-saving the same key keeps everything.
+  - A batch (`quotes()` or a Stock comparison) stops on a key change instead of
+    mixing two keys.
+  - Data from other keys is also removed on page load.
+  - Request counts are kept until their UTC day ends, so returning to a key the same
+    day does not under-count. Exchange rates need no key and are shared.
 - **Quota.** The free key allows 25 requests a day. A new ticker costs about 2 (search
   + data), then 1. Requests are serialized ~1.2 s apart and de-duplicated. The first
-  rate-limit, invalid-key or demo-key answer stops the rest of the batch. A per-browser
-  daily counter is shown (it can't see other devices using the same key).
+  rate-limit, invalid-key or demo-key answer stops the rest of the batch. Reaching the
+  daily limit is remembered for that key until the UTC day ends, so reloading does not
+  spend another request. A per-key daily counter is shown (it can't see other devices
+  using the same key).
 - **Network.** 10–15 s timeouts and a 4 MB response cap. Bounded exponential backoff
   with full jitter (≤ 2 retries; Retry-After honoured up to 5 s) for network, timeout,
   429 and 5xx errors only.
-- **Storage.** Only market data and the visitor's key are stored. Portfolio holdings
-  and analysis inputs are never stored or sent.
+- **Storage.** Only market data, per-key request counts and the visitor's key are
+  stored. Portfolio holdings and analysis inputs are never stored or sent.
+  - If browser storage is unavailable or throws, caches and counts live in memory for
+    the page view.
+  - Corrupted entries are treated as missing.
 
 ## 8. Security notes
 
-- **The key.** It is entered by the visitor, kept in their own localStorage (removable
-  in Settings), and sent only to `www.alphavantage.co` over HTTPS. It is redacted from
-  every message, so it can't reach exports.
+- **The key: where it is kept.** The visitor chooses.
+  - By default a new key is kept for the current tab only (`sessionStorage`; the
+    browser forgets it when the tab closes).
+  - "Remember on this device" keeps it in `localStorage` until it is removed.
+  - Only one copy is kept: saving one way deletes the other.
+  - A key saved in `localStorage` by an earlier build is still loaded.
+  - If the chosen storage refuses the write, the key is held in memory for the page
+    only; it is never silently written to the other storage.
+- **The key: where it goes.** It is sent only to `www.alphavantage.co` over HTTPS, as
+  the `apikey` query parameter Alpha Vantage requires. Requests use
+  `referrerPolicy: no-referrer` and `credentials: omit`.
+  - It is redacted from every message, so it can't reach exports.
+  - The settings getter doesn't return it.
+  - Tests check that it appears in no other request, result, error, export, storage
+    name or storage value.
+- **Removing the key.** "Remove key" deletes both copies and every response fetched
+  with the key.
+- **Same-origin scripts.** Any script running on `elmatthe.github.io` can read both
+  storages; the pages say so.
+  - The Rebalancer loads no third-party script.
+  - The Stock and Monte Carlo pages load only Chart.js 4.4.2 from jsDelivr. It is
+    pinned with Subresource Integrity (`sha384-zuFoHkJ6…`, checked against the npm
+    tarball), so a modified file is refused. The layout requires `{src, integrity}`
+    for every `vendor_js` entry.
+  - `chart.umd.js` is the package's own minified build. jsDelivr generates `.min.js`
+    on the fly, so that file's hash is not guaranteed.
+- **No Content-Security-Policy.** GitHub Pages cannot send CSP headers. A `<meta>`
+  CSP would need `'unsafe-inline'` for the site-wide inline script, and could not
+  protect other pages on the same origin, which can read the same storage. SRI on the
+  only third-party script, no third-party scripts on the Rebalancer, and
+  session-only storage by default are the controls used instead.
 - **Request URLs.** Built with `URLSearchParams` from validated symbols (pattern-checked;
   path, query and whitespace characters rejected). FX series codes come from fixed
   allow-lists. No user-supplied URLs are fetched.
@@ -178,8 +258,16 @@ bring-your-own-key provider.
 ## 9. Deployment, configuration and operations
 
 - **GitHub Pages.** Nothing to configure. The site needs no secrets, repository
-  settings, Actions workflows, Cloudflare account or DNS changes. Merging to `main`
-  publishes it as before.
+  settings, Cloudflare account or DNS changes. Merging to `main` publishes it as
+  before.
+- **CI.** `.github/workflows/ci.yml` runs on pull requests to `main` (and on demand),
+  with a read-only token and no secrets. Every market-data provider is mocked. It
+  runs:
+  - unit and reference tests;
+  - ZIP and launcher checks;
+  - a strict Jekyll build and the four Chromium browser suites;
+  - each desktop tool's tests on Linux. The CPI scraper's six Windows-only bootstrap
+    tests are excluded there by name.
 - **Visitors.** Live prices are optional. A visitor who wants them gets a free key at
   https://www.alphavantage.co/support/#api-key and pastes it into the Rebalancer's
   "Live prices" panel or the Stock tool's Settings tab.
@@ -250,7 +338,9 @@ Live checks are opt-in and small. Never commit a key.
 - No free source is available for market indexes or Canadian mutual-fund codes.
 - Free Alpha Vantage daily data is as traded (unadjusted) and limited to ~100
   sessions. Longer windows use weekly adjusted data, so a 1Y live comparison has ~52
-  weekly returns, not ~252 daily ones.
+  weekly returns, not ~252 daily ones. Adjusted daily prices are not invented. Live
+  results for short and long windows therefore differ in frequency and basis, and
+  every live result says so.
 - Alpha Vantage's free quote is the latest trading day's price, without an intraday
   timestamp.
 - Bank of Canada and ECB rates are indicative daily rates, not executable broker
