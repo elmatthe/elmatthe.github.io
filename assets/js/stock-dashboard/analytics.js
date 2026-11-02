@@ -193,6 +193,7 @@ export function comparisonMetrics(histories, returns, riskFreeAnnual = 0, period
     return {
       ticker,
       currency: history.currency || null,
+      nativeCurrency: history.nativeCurrency || history.currency || null,
       priceBasis: history.priceBasis || null,
       frequency: history.frequency || "daily",
       priceObservations: prices.length,
@@ -321,10 +322,13 @@ export function runComparison(histories, { riskFreeAnnual = 0 } = {}) {
   const frequency = frequencies[0] || "daily";
   const periodsPerYear = PERIODS_PER_YEAR[frequency];
   const currencies = [...new Set(list.map(h => h.currency).filter(Boolean))].sort();
+  // A series without a currency counts as its own, unknown currency: it cannot be
+  // assumed to match the others.
+  const currencyLabels = [...currencies, ...(list.some(h => !h.currency) ? ["unknown"] : [])];
   const bases = [...new Set(list.map(h => h.priceBasis).filter(Boolean))];
   const warnings = [];
-  if (currencies.length > 1) {
-    warnings.push(`Mixed currencies (${currencies.join(", ")}): returns and correlations include each currency's own exchange-rate moves; choose "Normalize to currency" to compare in one currency.`);
+  if (currencyLabels.length > 1) {
+    warnings.push(`Mixed currencies (${currencyLabels.join(", ")}): each series is measured in its own currency, so returns, rankings, correlations and betas include exchange-rate moves; choose "Normalize to currency" to compare in one currency.`);
   }
   if (bases.length > 1) {
     warnings.push("Some series use adjusted closes (dividends included) and others plain closes (price only), so their returns are not directly comparable.");
@@ -336,5 +340,5 @@ export function runComparison(histories, { riskFreeAnnual = 0 } = {}) {
   }
   const { matrix, counts } = correlationMatrix(returns);
   const metrics = comparisonMetrics(histories, returns, riskFreeAnnual, periodsPerYear);
-  return { returns, matrix, counts, metrics, currencies, warnings, frequency, periodsPerYear };
+  return { returns, matrix, counts, metrics, currencies, mixedCurrencies: currencyLabels.length > 1, mixedBases: bases.length > 1, warnings, frequency, periodsPerYear };
 }

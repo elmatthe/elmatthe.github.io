@@ -14,7 +14,7 @@ import { buildFxAligner, normalizeSeries } from "../market-data/fx-align.js";
 import { parsePriceCsv } from "../market-data/price-import.js";
 import * as A from "./analytics.js";
 import { DEMO_SECURITIES, demoSeries, demoFxRates } from "./demo.js";
-import { buildWorkbookSheets } from "./export.js";
+import { buildWorkbookSheets, basisSummary, currencySummary, LIVE_DATA_NOTE } from "./export.js";
 import { buildXlsx, toCsv, downloadBlob, timestampSlug } from "../shared/export-files.js";
 
 const app = document.getElementById("sdd-app");
@@ -432,7 +432,7 @@ function init() {
       const frequencies = [...new Set(Object.values(histories).map(h => h.frequency))];
       if (frequencies.length > 1) throw new DataError(`Your files mix ${frequencies.join(" and ")} prices; use one frequency per comparison.`, { kind: "invalid" });
       let normalizedTo = null;
-      let notNormalized = [];
+      let excludedForCurrency = [];
       const fxSources = {};
       if (target && Object.keys(histories).length) {
         setStatus(status, `Normalizing to ${target} with official exchange rates…`, null);
@@ -459,14 +459,18 @@ function init() {
             }
           } catch (error) {
             if (aborted()) throw error;
-            warnings.push(`Official exchange rates are unavailable (${error.message}); series stay in their own currencies.`);
+            warnings.push(`Official exchange rates are unavailable (${error.message}); series in other currencies were left out (see the skipped tickers).`);
           }
         }
+        // Only series fully converted to the target stay in a comparison labelled with
+        // it; the rest are skipped with the reason (individual results remain
+        // available in native-currency mode and in Snapshot).
         const normalized = normalizeSeries(histories, target, aligners);
         histories = normalized.series;
         warnings.push(...normalized.warnings);
         normalizedTo = target;
-        notNormalized = Object.values(histories).filter(h => h.currency !== target).map(h => h.ticker);
+        excludedForCurrency = normalized.excluded.map(e => e.ticker);
+        failures.push(...normalized.excluded.map(e => ({ symbol: e.ticker, message: e.message })));
       }
       if (aborted()) throw new DataError("Comparison cancelled.", { kind: "aborted" });
 
@@ -489,7 +493,8 @@ function init() {
       const result = A.runComparison(Object.fromEntries(usable.map(s => [s, histories[s]])), { riskFreeAnnual: riskFree });
       const allWarnings = [...new Set([...result.warnings, ...warnings])];
       state.comparison = {
-        tickers: usable, horizon, riskFree, normalizedTo, notNormalized: notNormalized.filter(t => usable.includes(t)), fxSources, basis, frequency: result.frequency, periodsPerYear: result.periodsPerYear,
+        tickers: usable, horizon, riskFree, normalizedTo, excludedForCurrency, fxSources, basis, frequency: result.frequency, periodsPerYear: result.periodsPerYear,
+        mixedCurrencies: result.mixedCurrencies, mixedBases: result.mixedBases, liveNote: source === "live" && !demo ? LIVE_DATA_NOTE : null,
         requestedStart: A.isoDate(range.start), requestedEnd: A.isoDate(range.end),
         completedAt: new Date().toISOString(), source: demo ? "Synthetic demo" : source === "csv" ? "Your CSV file" : "Alpha Vantage (your key)",
         series: usable.map(s => histories[s]), metrics: result.metrics, matrix: result.matrix, counts: result.counts,
@@ -539,19 +544,20 @@ function init() {
     const c = state.comparison;
     $("sddCompareResult").hidden = false;
     $("sddCompareMeta").textContent = `${c.horizon} · requested ${c.requestedStart} to ${c.requestedEnd} · ${c.source} · ${c.frequency} prices (${c.periodsPerYear} periods per year)` +
-      ` · ${c.basis === "adjusted" ? "adjusted closes requested" : "plain closes (price return)"}` +
-      `${c.normalizedTo ? (c.notNormalized.length ? ` · normalization to ${c.normalizedTo} INCOMPLETE (${c.notNormalized.join(", ")} still in native currency)` : ` · normalized to ${c.normalizedTo}`) : " · native currencies"} · completed ${localTime(c.completedAt)}`;
+      ` · ${basisSummary(c)} · ${currencySummary(c)} · completed ${localTime(c.completedAt)}`;
     const starts = c.metrics.map(m => m.actualStart).filter(Boolean).sort();
     const ends = c.metrics.map(m => m.actualEnd).filter(Boolean).sort();
     const best = c.metrics.filter(m => isNum(m.totalReturn)).sort((a, b) => b.totalReturn - a.totalReturn)[0];
     const calm = c.metrics.filter(m => isNum(m.annualizedVolatility)).sort((a, b) => a.annualizedVolatility - b.annualizedVolatility)[0];
+    // Rankings across series are only like-for-like in one currency and one basis.
+    const own = c.mixedCurrencies ? " (each in own currency)" : "";
     const tiles = $("sddTiles");
     tiles.replaceChildren();
     [["Securities compared", String(c.tickers.length)],
       ["Price range", starts.length ? `${starts[0]} → ${ends[ends.length - 1]}` : "—"],
       ["Return observations", String(Math.max(...c.metrics.map(m => m.returnObservations)))],
-      ["Best total return", best ? `${best.ticker} ${pct(best.totalReturn)}` : "—"],
-      ["Lowest volatility", calm ? `${calm.ticker} ${pct(calm.annualizedVolatility)}` : "—"],
+      [`Best total return${own}`, c.mixedBases ? "Not comparable (mixed price bases)" : best ? `${best.ticker} ${pct(best.totalReturn)}` : "—"],
+      [`Lowest volatility${own}`, calm ? `${calm.ticker} ${pct(calm.annualizedVolatility)}` : "—"],
     ].forEach(([label, value]) => {
       const tile = el("div", null, "sdd-tile");
       tile.append(el("span", label), el("strong", value));
@@ -564,7 +570,8 @@ function init() {
       const tr = el("tr");
       const th = el("th", m.ticker);
       th.scope = "row";
-      tr.append(th, el("td", m.currency ?? "Unknown"), el("td", BASIS_LABEL[m.priceBasis] || "—"));
+      const converted = m.nativeCurrency && m.currency && m.nativeCurrency !== m.currency;
+      tr.append(th, el("td", converted ? `${m.currency} (from ${m.nativeCurrency})` : m.currency ?? "Unknown"), el("td", BASIS_LABEL[m.priceBasis] || "—"));
       [pct(m.totalReturn), pct(m.annualizedReturn), pct(m.annualizedVolatility), num(m.sharpe), pct(m.maxDrawdown), String(m.returnObservations)]
         .forEach(v => tr.append(el("td", v, "num")));
       tr.append(el("td", `${m.actualStart ?? "—"} → ${m.actualEnd ?? "—"}`));
@@ -575,6 +582,7 @@ function init() {
     if (c.normalizedTo && Object.keys(c.fxSources).length) {
       warn.append(el("p", `FX normalization on: ${Object.entries(c.fxSources).map(([cur, src]) => `${cur}→${c.normalizedTo} from ${src}`).join("; ")}.`, "muted"));
     }
+    if (c.liveNote) warn.append(el("p", c.liveNote, "muted"));
     c.warnings.forEach(w => warn.append(el("p", w, "sdd-different")));
 
     renderCorrelation(c);
@@ -645,7 +653,7 @@ function init() {
       rows.map(r => [r.ticker, pct(r.alphaAnnualized), `${num(r.beta, 3)}${stars(r.p)}`, num(r.r2, 3), num(r.p, 4), String(r.n)]),
       { numeric: [1, 2, 3, 4, 5] },
     ));
-    host.append(el("p", `Excess ${c.frequency} log returns over identical intervals; alpha annualized × ${c.periodsPerYear}. Beta significance: * p<0.10, ** p<0.05, *** p<0.01.`, "muted"));
+    host.append(el("p", `Excess ${c.frequency} log returns over identical intervals; alpha annualized × ${c.periodsPerYear}. Beta significance: * p<0.10, ** p<0.05, *** p<0.01.${c.mixedCurrencies ? " The series are in different currencies, so betas include exchange-rate moves." : ""}`, "muted"));
   }
   $("sddBenchmark").addEventListener("change", renderRegression);
 
@@ -693,7 +701,7 @@ function init() {
     const labels = [...new Set(c.series.flatMap(s => s.observations.map(o => A.isoDate(o.date))))].sort();
     const datasets = c.series.map((s, i) => {
       const map = new Map(transform(s.observations).map(p => [p.date, p.value]));
-      return { label: s.ticker, data: labels.map(d => (map.has(d) ? map.get(d) : null)), borderColor: PALETTE[i % PALETTE.length], backgroundColor: PALETTE[i % PALETTE.length], spanGaps: true, pointRadius: 0, borderWidth: 2, tension: 0.1 };
+      return { label: c.mixedCurrencies ? `${s.ticker} (${s.currency || "unknown currency"})` : s.ticker, data: labels.map(d => (map.has(d) ? map.get(d) : null)), borderColor: PALETTE[i % PALETTE.length], backgroundColor: PALETTE[i % PALETTE.length], spanGaps: true, pointRadius: 0, borderWidth: 2, tension: 0.1 };
     });
     return { labels, datasets };
   }
@@ -855,12 +863,13 @@ function init() {
     if (!c) return;
     let rows;
     if (kind === "metrics") {
-      rows = [["Ticker", "Currency", "Price basis", "Frequency", "Total return", "Annualized return", "Annualized volatility", "Sharpe ratio", "Max drawdown", "Return observations", "Actual start", "Actual end", "Source"],
-        ...c.metrics.map(m => [m.ticker, m.currency, BASIS_LABEL[m.priceBasis] || "", m.frequency, m.totalReturn, m.annualizedReturn, m.annualizedVolatility, m.sharpe, m.maxDrawdown, m.returnObservations, m.actualStart, m.actualEnd, c.source])];
+      rows = [["Ticker", "Currency", "Price basis", "Frequency", "Total return", "Annualized return", "Annualized volatility", "Sharpe ratio", "Max drawdown", "Return observations", "Actual start", "Actual end", "Source", "Native currency"],
+        ...c.metrics.map(m => [m.ticker, m.currency || "unknown", BASIS_LABEL[m.priceBasis] || "", m.frequency, m.totalReturn, m.annualizedReturn, m.annualizedVolatility, m.sharpe, m.maxDrawdown, m.returnObservations, m.actualStart, m.actualEnd, c.source, m.nativeCurrency || "unknown"]),
+        [], ["Price basis", basisSummary(c)], ["Currency", currencySummary(c)], ...(c.liveNote ? [["Note", c.liveNote]] : [])];
     } else if (kind === "correlation") {
       rows = [["Ticker", ...c.tickers], ...c.tickers.map(l => [l, ...c.tickers.map(r => c.matrix[l][r])]), [], ["Shared returns", ...c.tickers], ...c.tickers.map(l => [l, ...c.tickers.map(r => c.counts[l][r])])];
     } else {
-      rows = [["Date", "Ticker", "Price", "Price basis", "Currency", "Source"], ...c.series.flatMap(s => s.observations.map(o => [A.isoDate(o.date), s.ticker, o.price, BASIS_LABEL[s.priceBasis] || "", s.currency, c.source]))];
+      rows = [["Date", "Ticker", "Price", "Price basis", "Currency", "Source", "Native currency"], ...c.series.flatMap(s => s.observations.map(o => [A.isoDate(o.date), s.ticker, o.price, BASIS_LABEL[s.priceBasis] || "", s.currency || "unknown", c.source, s.nativeCurrency || s.currency || "unknown"]))];
     }
     const name = `stock-comparison-${kind}-${timestampSlug()}.csv`;
     downloadBlob(new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" }), name);

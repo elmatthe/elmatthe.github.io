@@ -59,7 +59,8 @@ function sampleCsv() {
   await page.click("#sddTab-settings");
   await page.fill("#sddKey", TEST_KEY);
   await page.click("#sddKeyForm button[type=submit]");
-  check(/Saved in this browser only/.test(await page.locator("#sddKeyStatus").innerText()), "key saved locally");
+  check(/kept for this tab only/.test(await page.locator("#sddKeyStatus").innerText())
+    && await page.evaluate(k => sessionStorage.getItem("md.settings.v1")?.includes(k) && !JSON.stringify(localStorage).includes(k), TEST_KEY), "key kept for this tab only by default");
   check(/Your key/.test(await page.locator("#sddPipelineState").innerText()), "masthead shows live data via the visitor's key");
   await page.click("#sddTab-compare");
 
@@ -103,6 +104,10 @@ function sampleCsv() {
   check(/1M, daily prices/.test(await status()), `1M uses daily prices (${await status()})`);
   check(calls.av.some(c => c === "TIME_SERIES_DAILY:AAPL"), "daily series requested for a short window");
   check(/no adjusted closes; unadjusted closes/.test(await page.locator("#sddCompareWarnings").innerText()), "fallback from adjusted to plain closes is stated");
+  check(/plain closes \(price return\); adjusted closes were requested but are not available/.test(await page.locator("#sddCompareMeta").innerText()),
+    "metadata reports the price basis actually used, not the one requested");
+  check(/windows up to about 4 months use daily closes as traded/.test(await page.locator("#sddCompareWarnings").innerText()),
+    "live results explain that the window decides frequency and price basis");
   check(/indexes are a premium/.test(await page.locator("#sddCompareNotice").innerText()), "index symbol explained as unavailable on a free key");
   check(!calls.av.some(c => /\^GSPC/.test(c)), "no request made for an index symbol");
 
@@ -124,6 +129,8 @@ function sampleCsv() {
       "import sys,openpyxl,warnings;warnings.simplefilter('error');wb=openpyxl.load_workbook(sys.argv[1]);ws=wb['Read Me & Sources'];print('|'.join(wb.sheetnames));print(' '.join(str(c.value) for r in ws.iter_rows() for c in r if c.value))", xlsxPath]).toString().trim().split("\n");
     check(out[0] === "Read Me & Sources|Executive Summary|Model & Calculations|Portfolio Risk|Raw Data Ingestion", `XLSX opens cleanly with five sheets (${out[0]})`);
     check(/Alpha Vantage, fetched with the user's own API key/.test(out[1]) && /weekly log returns/.test(out[1]) && /52 periods per year/.test(out[1]), "workbook read-me states source, frequency and annualization");
+    check(/Live data note/.test(out[1]) && /Native currency/.test(out[1]) && /Converted from CAD/.test(out[1]), "workbook read-me states the live-data basis note and each ticker's currency conversion");
+    check(!out.join(" ").includes(TEST_KEY) && !fs.readFileSync(csvPath, "utf8").includes(TEST_KEY), "exports never contain the API key");
   } catch (error) {
     check(false, `XLSX validation via openpyxl: ${String(error.message).slice(0, 160)}`);
   }
@@ -168,9 +175,14 @@ function sampleCsv() {
   await page.waitForFunction(() => /Loaded 4 tickers/.test(document.querySelector("#sddCompareStatus").textContent));
   await page.click("#sddRunCompare");
   await waitCompare();
-  const incompleteMeta = await page.locator("#sddCompareMeta").innerText();
-  check(/normalization to USD INCOMPLETE \(DDD\.BA/.test(incompleteMeta) && /CAD→USD/.test(await page.locator("#sddCompareWarnings").innerText()),
-    "an unsupported currency is reported as not normalized without blocking the others");
+  const leftOutMeta = await page.locator("#sddCompareMeta").innerText();
+  check(/normalized to USD \(left out, not convertible: DDD\.BA\)/.test(leftOutMeta) && /CAD→USD/.test(await page.locator("#sddCompareWarnings").innerText()),
+    `an unconvertible currency is left out of the USD comparison and named (${leftOutMeta.slice(0, 160)})`);
+  check(/DDD\.BA: no ARS→USD exchange rates/.test(await page.locator("#sddCompareNotice").innerText()) && /3 securities/.test(await status()),
+    "the skipped ticker is explained; the other three are compared");
+  check(!/DDD\.BA/.test(await page.locator("#sddMetricsTable").innerText()) && !/DDD\.BA/.test(await page.locator("#sddCorrelation").innerText()),
+    "no metric, ranking or correlation is shown for the unconverted series");
+  check(/USD \(from CAD\)/.test(await page.locator("#sddMetricsTable").innerText()), "converted series show their native currency");
   // A malformed file is rejected with its line number.
   await page.setInputFiles("#sddCsvFiles", { name: "bad.csv", mimeType: "text/csv", buffer: Buffer.from("Date,Ticker,Close\n2024-01-02,AAA,abc\n") });
   await page.waitForFunction(() => /Could not read the file/.test(document.querySelector("#sddCompareStatus").textContent));
@@ -196,7 +208,9 @@ function sampleCsv() {
   // Remove the key.
   await page.click("#sddTab-settings");
   await page.click("#sddKeyRemove");
-  check(await page.evaluate(() => !/TESTKEY/.test(JSON.stringify(localStorage))), "removing the key deletes it from storage");
+  check(await page.evaluate(k => !JSON.stringify(localStorage).includes(k) && !JSON.stringify(sessionStorage).includes(k), TEST_KEY), "removing the key deletes it from both storages");
+  check(await page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith("md.av.") && !k.endsWith(".usage")).length === 0), "responses fetched with the removed key are deleted");
+  check(await page.evaluate(() => [...document.querySelectorAll("script[src^='http']")].every(s => /^sha384-/.test(s.integrity) && s.crossOrigin === "anonymous")), "every third-party script is pinned with Subresource Integrity");
 
   // Mobile layout.
   await page.setViewportSize({ width: 390, height: 844 });

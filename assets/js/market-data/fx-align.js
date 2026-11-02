@@ -2,9 +2,9 @@
 //
 // Fixings are "target units per one native unit". A price dated D uses the latest
 // fixing dated on or before D (forward fill across weekends and holidays). Price
-// dates that precede every fixing are dropped rather than converted with a later
-// rate, and an observation is never left in its native currency inside a series
-// that claims to be converted.
+// dates that precede every fixing, or that are more than a week past the latest
+// fixing, are dropped rather than converted with an unrelated rate, and a series is
+// never left in its native currency inside a comparison that claims to be converted.
 
 const DAY_MS = 86400000;
 
@@ -31,39 +31,62 @@ export function buildFxAligner(points) {
   return aligner;
 }
 
-// Converts every series to `target`. alignerByCurrency[native] converts native ->
-// target. Returns { series, warnings, details }. Inputs are not mutated.
-export function normalizeSeries(seriesByTicker, target, alignerByCurrency, { maxGapDays = 7 } = {}) {
+// Converts series to `target` for a comparison. alignerByCurrency[native] converts
+// native -> target. Returns { series, excluded, details, warnings }:
+//   series    only series that are entirely in `target` (already in it, or converted
+//             price by price). A series is never left partly or wholly in another
+//             currency inside a comparison that claims to be in `target`.
+//   excluded  [{ ticker, native, reason, message }] for series that could not be
+//             converted: reason "unknown_currency" | "no_rates" | "no_overlap".
+//   details   per ticker { native, status: "same" | "converted" | <reason>,
+//             dropped, staleDropped, maxGapDays }.
+// A price uses the latest fixing on or before its date. Prices dated before the
+// first fixing, or more than maxGapDays after the latest fixing (stale or missing
+// rates), are dropped and counted rather than converted with an unrelated rate.
+export function normalizeSeries(seriesByTicker, target, alignerByCurrency, { maxGapDays = 7, minObservations = 2 } = {}) {
   const warnings = [];
   const details = {};
+  const excluded = [];
   const out = {};
+  const exclude = (ticker, native, reason, message) => {
+    details[ticker] = { ...(details[ticker] || { native, dropped: 0, staleDropped: 0, maxGapDays: 0 }), status: reason };
+    excluded.push({ ticker, native, reason, message });
+  };
   for (const [ticker, series] of Object.entries(seriesByTicker)) {
-    const native = String(series.currency || "").toUpperCase();
+    const native = String(series.currency || "").toUpperCase() || null;
     if (!native) {
-      warnings.push(`${ticker}: listing currency unknown; left unconverted.`);
-      out[ticker] = series;
+      exclude(ticker, null, "unknown_currency", `${ticker}: its currency is unknown, so it cannot be converted to ${target}. It was left out of this ${target} comparison; choose "Native currencies" to include it, or add a Currency column to your file.`);
       continue;
     }
-    if (native === target) { out[ticker] = series; continue; }
+    if (native === target) {
+      out[ticker] = series;
+      details[ticker] = { native, status: "same", dropped: 0, staleDropped: 0, maxGapDays: 0 };
+      continue;
+    }
     const aligner = alignerByCurrency[native];
     if (!aligner) {
-      warnings.push(`${ticker}: no ${native}→${target} exchange rates were available; shown in ${native}, so it is not comparable in ${target}.`);
-      out[ticker] = series;
+      exclude(ticker, native, "no_rates", `${ticker}: no ${native}→${target} exchange rates were available, so it was left out of this ${target} comparison. Choose "Native currencies" to compare it in ${native}.`);
       continue;
     }
     let dropped = 0;
+    let staleDropped = 0;
     let maxGap = 0;
     const observations = [];
     for (const p of series.observations) {
       const fx = aligner(p.date);
       if (!fx) { dropped += 1; continue; }
+      if (fx.gapDays > maxGapDays) { staleDropped += 1; continue; }
       maxGap = Math.max(maxGap, fx.gapDays);
       observations.push({ date: p.date, price: p.price * fx.rate });
     }
+    details[ticker] = { native, status: "converted", dropped, staleDropped, maxGapDays: maxGap };
+    if (observations.length < minObservations) {
+      exclude(ticker, native, "no_overlap", `${ticker}: fewer than ${minObservations} of its prices have a ${native}→${target} rate within ${maxGapDays} days, so it was left out of this ${target} comparison.`);
+      continue;
+    }
     if (dropped) warnings.push(`${ticker}: ${dropped} price${dropped === 1 ? "" : "s"} before the first available ${native}→${target} rate ${dropped === 1 ? "was" : "were"} dropped.`);
-    if (maxGap > maxGapDays) warnings.push(`${ticker}: some prices used a ${native}→${target} rate up to ${maxGap} days older than the price.`);
-    details[ticker] = { native, dropped, maxGapDays: maxGap };
+    if (staleDropped) warnings.push(`${ticker}: ${staleDropped} price${staleDropped === 1 ? "" : "s"} had no ${native}→${target} rate within ${maxGapDays} days and ${staleDropped === 1 ? "was" : "were"} dropped rather than converted with an old rate.`);
     out[ticker] = { ...series, nativeCurrency: native, currency: target, observations };
   }
-  return { series: out, warnings, details };
+  return { series: out, excluded, details, warnings };
 }
