@@ -37,6 +37,21 @@ const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "mc-test-"));
   check(/real \$/.test(await page.locator("#mcTiles .pj-tile:nth-child(3) span").innerText()) && realMedian !== nominalMedian, `real-dollar view (${nominalMedian} nominal vs ${realMedian} real)`);
   await page.check('input[name="mcMode"][value="nominal"]');
 
+  // Reproducibility: every run shows its seed; the same seed reproduces the run.
+  const shownSeed = (await page.locator("#mcMeta").innerText()).match(/seed (\d+)/)?.[1];
+  check(Boolean(shownSeed), `random run reports its seed (${shownSeed})`);
+  const firstTiles = await page.locator("#mcTiles").innerText();
+  await page.fill("#mc-seed", shownSeed);
+  await runAndWait();
+  check(await page.locator("#mcTiles").innerText() === firstTiles, "re-running with the shown seed reproduces the results exactly");
+  await page.fill("#mc-seed", String(Number(shownSeed) + 1));
+  await runAndWait();
+  check(await page.locator("#mcTiles").innerText() !== firstTiles, "a different seed gives a different run");
+  await page.fill("#mc-seed", "12.5");
+  await runAndWait();
+  check(/Seed must be a whole number/.test(await status()) && await page.getAttribute("#mc-seed", "aria-invalid") === "true", "invalid seed rejected");
+  await page.fill("#mc-seed", "");
+
   // Validation parity with the desktop app.
   await page.fill("#mc-pensionIncome", "60000");
   await runAndWait();
@@ -68,7 +83,7 @@ const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "mc-test-"));
   await csv.saveAs(csvPath);
   const lines = fs.readFileSync(csvPath, "utf8").trim().split(/\r?\n/);
   const years = Number(await page.inputValue("#mc-yearsToRetirement")) + Number(await page.inputValue("#mc-yearsInRetirement"));
-  check(lines.length === 7 + years + 1, `CSV has one row per year (${lines.length} lines for ${years} years)`);
+  check(lines.length === 9 + years + 1 && lines.some(l => l.startsWith("Random seed,")), `CSV has the seed, model notes and one row per year (${lines.length} lines for ${years} years)`);
 
   await page.setViewportSize({ width: 390, height: 844 });
   check(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth) <= 1, "no horizontal scroll at 390px");

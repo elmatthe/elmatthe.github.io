@@ -12,8 +12,14 @@ Portfolio Rebalancer, and Stock Comparison & Analytics Tool.
 | `bootstrap/render.py` | Renders `scripts/bootstrap.py`, `Setup_and_Run-<tool>.bat` (CRLF), `.command` (LF, executable) and `config.toml` into each tool folder. |
 | `build_project_zips.py` | Builds the four user ZIPs in `projects/` deterministically, with an include list per tool and a secret scan. |
 | `tests/test_engine_parity.py` | Browser engines (`assets/js/monte-carlo`, `assets/js/portfolio-rebalancer`) vs the desktop `core.py` files. Uses Node through `tests/js_engines.mjs`. |
+| `tests/test_financial_reference.py` | Hand-calculated rebalancer cases and closed-form Monte Carlo paths, checked in both browser and desktop engines. |
+| `tests/test_analytics_reference.py` | Browser Stock analytics vs an independent numpy/scipy reference (returns, annualization, Sharpe, drawdown, correlation, OLS). |
 | `tests/test_bootstrap.py` | Bootstrap contract tests (mocked) and opt-in end-to-end runs (`-m e2e`). |
-| `tests/browser/*.test.js` | Playwright tests against a locally served build. |
+| `tests/unit/*.test.mjs` | Node unit tests for `assets/js/market-data/` (including per-key isolation and key storage, CSV calendar dates), Stock analytics consistency and currency safeguards, and the Monte Carlo engine (no network). |
+| `tests/browser/*.test.js` | Playwright tests against a locally served build, with every market-data host mocked. |
+| `tests/live_fx_matrix.mjs` | Optional live check of the official FX sources (two requests). |
+| `MARKET_DATA.md` | Where prices and exchange rates come from, why, licensing, caching, testing and troubleshooting. |
+| `RELEASE_NOTES.md` | User-visible changes to the web tools. |
 
 CPI Web Scraper is not rendered from these templates. Its folder
 `projects/CPI-Webscraper/` is a copy of `elmatthe/CPI-Webscraper` `main` without the
@@ -37,11 +43,13 @@ rm -f projects/CPI-Webscraper/config.toml
 
 ## Tests
 
-Python tests need `pytest` and `numpy` (for the Monte Carlo parity reference):
+Python tests need `pytest`, `numpy`, `scipy` and `openpyxl`, pinned in
+`tests/requirements.txt` (`python3 -m pip install -r _tools/tests/requirements.txt`):
 
 ```bash
+node --test _tools/tests/unit/*.test.mjs   # market data, key isolation, CSV dates, analytics consistency, Monte Carlo (seconds, no network)
 cd _tools/tests
-python3 -m pytest -q -m "not e2e"   # parity + mocked bootstrap (seconds)
+python3 -m pytest -q -m "not e2e"   # parity, financial/analytics references, mocked bootstrap (seconds)
 python3 -m pytest -q -m e2e         # real venv builds and pip installs for each tool (minutes, needs network)
 ```
 
@@ -52,15 +60,23 @@ bundle exec jekyll build -d /tmp/site
 python3 -m http.server 4000 --bind 127.0.0.1 --directory /tmp/site &
 cd _tools/tests/browser
 node pages.test.js        # project pages, guides, /projects/, redirects, ZIP links, phone width
-node stock.test.js        # Stock web app with mocked relays and synthetic Yahoo payloads
-node rebalancer.test.js   # Rebalancer web app, live mode mocked, fallbacks, exports
-node montecarlo.test.js   # Monte Carlo web app, no network, exports
-node live.test.js         # OPTIONAL: real relays and Yahoo; informational only
+node stock.test.js        # Stock web app: visitor key, CSV import, demo, FX normalization, exports
+node rebalancer.test.js   # Rebalancer web app: official FX, provenance, visitor key, failures, exports
+node montecarlo.test.js   # Monte Carlo web app, seeded runs, no network, exports
+node live.test.js         # OPTIONAL: real Bank of Canada / ECB; Alpha Vantage only with ALPHAVANTAGE_KEY
 ```
+
+The same deterministic checks run in CI on every pull request to `main`
+(`.github/workflows/ci.yml`; read-only token, no secrets, providers mocked), together
+with each desktop tool's tests on Linux. The CPI scraper's six Windows-only bootstrap
+tests are excluded there by name; run them on Windows with
+`python -m pytest -q files/tests/test_bootstrap.py`.
 
 `SITE_URL` (default `http://127.0.0.1:4000`) points the browser tests at another
 server. `CHROMIUM_ARGS` passes extra Chromium flags, split on whitespace.
 
-The deterministic suites never contact Yahoo Finance. Relay responses are generated
-by `harness.js`. `live.test.js` depends on third-party availability: public CORS
-relays change terms, rate-limit or go down, and Yahoo rate-limits some networks.
+The deterministic suites never contact a market-data provider. `harness.js` answers the
+Bank of Canada, ECB and Alpha Vantage with synthetic data in their exact response
+shapes, and blocks (and the suites fail on) any other host. `live.test.js` and
+`live_fx_matrix.mjs` make a handful of real requests and are informational. Never
+commit an API key; pass it through the environment.

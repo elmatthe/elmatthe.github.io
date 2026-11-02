@@ -13,7 +13,7 @@ layout: default
     eyebrow, lede: hero text
     sections: [{id, label}] for the sticky on-page navigation
     page_css / page_js: optional extra scoped assets for this page (page_js are ES modules)
-    vendor_js: optional third-party classic scripts (e.g. Chart.js) loaded before page_js
+    vendor_js: optional third-party classic scripts loaded before page_js, each { src, integrity } (Subresource Integrity is required)
 {%- endcomment -%}
 {%- assign p = site.data.tool_projects[page.project] | default: site.data.software_tools[page.project] -%}
 <link rel="stylesheet" href="{{ '/assets/css/project-pages.css' | relative_url }}">
@@ -68,8 +68,13 @@ layout: default
   <p class="pj-back"><a href="#top">Back to top</a> · <a href="{{ '/projects/' | relative_url }}">All projects</a></p>
   {%- endif %}
 </div>
+{%- comment -%}
+  Third-party scripts run with this site's privileges (they could read browser
+  storage), so each one is pinned to an exact file with Subresource Integrity:
+  vendor_js entries are { src, integrity } and the browser refuses a changed file.
+{%- endcomment -%}
 {%- for js in page.vendor_js %}
-<script src="{{ js }}" crossorigin="anonymous"></script>
+<script src="{{ js.src }}" integrity="{{ js.integrity }}" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 {%- endfor %}
 <script src="{{ '/assets/js/shared/project-page.js' | relative_url }}" defer></script>
 {%- for js in page.page_js %}

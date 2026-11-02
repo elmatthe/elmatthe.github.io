@@ -1,13 +1,18 @@
 """Currency options and FX conversion helpers."""
 from __future__ import annotations
 
+# fx_to_usd values are built-in estimates used only when live FX is off or
+# unavailable: Bank of Canada daily average rates for DEFAULT_FX_AS_OF, converted to
+# US dollars per unit (same values as the web app's engine.js).
+DEFAULT_FX_AS_OF = "2026-10-30"
+
 CURRENCY_OPTIONS: dict[str, dict] = {
     "USD": {"code": "USD", "label": "USD", "fx_to_usd": 1.00, "symbol": "$"},
-    "CAD": {"code": "CAD", "label": "CAD", "fx_to_usd": 0.74, "symbol": "C$"},
-    "JPN": {"code": "JPY", "label": "JPN", "fx_to_usd": 0.0067, "symbol": "JPY "},
-    "EUR": {"code": "EUR", "label": "EUR", "fx_to_usd": 1.09, "symbol": "EUR "},
-    "GBP": {"code": "GBP", "label": "GBP", "fx_to_usd": 1.28, "symbol": "GBP "},
-    "CHY_CNH": {"code": "CNY", "label": "CHY/CNH", "fx_to_usd": 0.14, "symbol": "CN¥"},
+    "CAD": {"code": "CAD", "label": "CAD", "fx_to_usd": 0.716332, "symbol": "C$"},
+    "JPN": {"code": "JPY", "label": "JPN", "fx_to_usd": 0.006354, "symbol": "JPY "},
+    "EUR": {"code": "EUR", "label": "EUR", "fx_to_usd": 1.116189, "symbol": "EUR "},
+    "GBP": {"code": "GBP", "label": "GBP", "fx_to_usd": 1.33947, "symbol": "GBP "},
+    "CHY_CNH": {"code": "CNY", "label": "CHY/CNH", "fx_to_usd": 0.150287, "symbol": "CN¥"},
 }
 
 CURRENCY_CODE_TO_KEY: dict[str, str] = {

@@ -32,3 +32,7 @@ projects/*/files/run-temp/
 # CPI Web Scraper — the launcher creates the private config (FRED key) at the tool root
 projects/CPI-Webscraper/config.toml
 projects/CPI-Webscraper/files/config.json
+
+# Local Jekyll toolchain (bundle install --path vendor/bundle)
+.bundle/
+vendor/bundle/

@@ -112,6 +112,7 @@
 .sdd-form { display: flex; flex-wrap: wrap; gap: .9rem 1.1rem; align-items: end; margin: .5rem 0 .9rem; }
 .sdd-field { display: grid; gap: .35rem; flex: 1 1 11rem; min-width: min(100%, 11rem); }
 .sdd-field small { color: var(--sdd-muted); font-weight: 400; }
+.sdd-check { display: inline-flex; align-items: center; gap: .4rem; flex-basis: 100%; font-size: .95rem; }
 .sdd-actions { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; }
 .sdd-fieldset { border: 1px solid var(--sdd-border); border-radius: .4rem; padding: .6rem .8rem .8rem; margin: 0; flex: 1 1 100%; min-width: 0; }
 .sdd-fieldset legend { font-weight: 700; padding: 0 .35rem; color: var(--sdd-heading); }
@@ -165,7 +166,7 @@
 .sdd-list { margin: .2rem 0 0 1.1rem; padding: 0; font-size: .9rem; }
 .sdd-list li { margin-bottom: .25rem; }
 
-.sdd-proxy-table td { vertical-align: middle; }
+
 .sdd-footer-note { margin: 0; padding: .8rem 1.25rem; border-top: 1px solid var(--sdd-border); font-size: .85rem; color: var(--sdd-muted); }
 
 @media (max-width: 760px) {
@@ -182,3 +183,6 @@
   .sdd-ticker-row button { min-width: 2.3rem; padding-inline: .45rem; }
   .sdd-chart { height: 240px; }
 }
+/* The [hidden] attribute must win over display rules such as .sdd-field { display: grid }. */
+.sdd-app [hidden] { display: none !important; }
+.sdd-fieldset input[type="file"] { max-width: 100%; }

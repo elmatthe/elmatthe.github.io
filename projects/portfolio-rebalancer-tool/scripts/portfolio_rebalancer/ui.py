@@ -22,6 +22,7 @@ from portfolio_rebalancer.fx import (
     ACCOUNT_TYPES,
     CURRENCY_CODE_TO_KEY,
     CURRENCY_OPTIONS,
+    DEFAULT_FX_AS_OF,
     fallback_fx_to_usd,
     format_currency,
     format_fx,
@@ -731,7 +732,14 @@ class PortfolioRebalancerApp:
                         fx_map[ck] = rate
                         live_keys.add(ck)
                     else:
-                        warnings.append(f"Live FX unavailable for {ck}; using fallback {fallback_fx_to_usd(ck):.4f}.")
+                        warnings.append(f"Live FX unavailable for {ck}; using the built-in estimate {fallback_fx_to_usd(ck):.4f} USD per unit (Bank of Canada rate for {DEFAULT_FX_AS_OF}).")
+            else:
+                in_scope = {rkey, *(p["currencyKey"] for p in positions)}
+                if len(in_scope) > 1:
+                    warnings.append(
+                        f"Exchange rates are built-in estimates (Bank of Canada rates for {DEFAULT_FX_AS_OF}), "
+                        "not current market rates. Turn on live prices and FX or check the rates before trading."
+                    )
 
             r2u = fx_map.get(rkey, fallback_fx_to_usd(rkey))
             enriched = []

@@ -171,3 +171,6 @@
 /* Monte Carlo checkpoint table: highlight the retirement year. */
 .pj table.pj-table tr.mc-retirement-row > * { background: rgba(127, 177, 240, 0.12); font-weight: 650; }
 .pj table.pj-table td.num, .pj table.pj-table th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* The [hidden] attribute must win over component display rules (e.g. .pj-field { display: grid }). */
+.pj [hidden] { display: none !important; }

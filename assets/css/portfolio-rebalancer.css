@@ -32,3 +32,24 @@
 .rb-buy { color: var(--pj-ok); }
 .rb-sell { color: var(--pj-error); }
 .rb-hold { color: var(--pj-muted); }
+/* Price provenance under each price input, exchange-rate and live-price panels. */
+.rb-source { font-size: .74rem; margin-top: .2rem; max-width: 12rem; color: var(--pj-muted); }
+.rb-source[data-kind="live"] { color: var(--pj-ok); }
+.rb-source[data-kind="sample"], .rb-source[data-kind="missing"] { color: var(--pj-warn); }
+.rb-src-cell { font-size: .8rem; color: var(--pj-muted); max-width: 14rem; }
+.rb-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); gap: .9rem; margin: .9rem 0 .4rem; }
+.rb-panel { border: 1px solid var(--pj-border); border-radius: 10px; padding: .75rem .9rem; background: var(--pj-surface-2); min-width: 0; }
+.rb-panel h3 { margin: 0 0 .45rem; font-size: 1rem; }
+.rb-small { font-size: .82rem; margin: .35rem 0; }
+.rb-tight { margin: .3rem 0; }
+.pj table.rb-fx-table { width: 100%; border-collapse: collapse; margin: 0; border: 0; font-size: .88rem; background: transparent; }
+.pj table.rb-fx-table th, .pj table.rb-fx-table td { padding: .3rem .45rem; border: 0; border-bottom: 1px solid var(--pj-border); text-align: left; background: transparent; color: var(--pj-text); vertical-align: middle; }
+.pj table.rb-fx-table thead th { color: var(--pj-heading); font-size: .8rem; }
+.pj table.rb-fx-table input { width: 100%; min-width: 6rem; min-height: 2rem; padding: .25rem .4rem; font-variant-numeric: tabular-nums; }
+.rb-fx-source { font-size: .8rem; }
+.rb-fx-default { color: var(--pj-warn); font-weight: 600; }
+.rb-fx-official { color: var(--pj-ok); }
+.rb-key-form { display: flex; flex-wrap: wrap; gap: .5rem; align-items: end; }
+.rb-key-form .pj-field { flex: 1 1 12rem; margin: 0; }
+.rb-key-form .pj-field > span { font-weight: 650; font-size: .92rem; color: var(--pj-heading); }
+.rb-remember { display: inline-flex; align-items: center; gap: .35rem; font-size: .92rem; min-height: 2.5rem; }

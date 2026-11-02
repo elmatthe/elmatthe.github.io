@@ -21,7 +21,7 @@ This project is a Python desktop GUI for comparing multiple stocks, ETFs, indexe
   (ASSESS -> RECONCILE -> REPAIR/PROVISION -> PROVE -> LAUNCH -> REPORT, repo-root `.venv`).
 
 ## Current Version
-v0.4.0
+v0.4.1
 
 ## FX Normalization (v0.3.0)
 A user-selectable "Normalize to currency" control (Off / USD / CAD / EUR / GBP, default Off)

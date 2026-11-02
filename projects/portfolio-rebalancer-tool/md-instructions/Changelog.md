@@ -1,5 +1,15 @@
 # Portfolio Rebalancer — Changelog
 
+## v1.1.1 — 2026-11-02
+- Built-in fallback exchange rates (used only when live FX is off or unavailable) were stale
+  approximations (CAD 0.74, JPY 0.0067, CNY 0.14 USD per unit; up to 7% off). They are now the
+  Bank of Canada daily average rates for 2026-10-30, and a warning names that date whenever a
+  multi-currency plan uses them without live FX.
+- Web tool (same release): exchange rates come from the Bank of Canada (ECB fallback) and are
+  editable; live prices use the visitor's own free Alpha Vantage key; every price and rate shows
+  its source. The public Yahoo CORS relays were removed (unreliable; Yahoo's terms do not permit
+  that use). The calculation engine is unchanged and still matches `core.py`.
+
 ## v1.1.0 — 2026-09-28
 - Replaced `setup_and_run.bat/.command` with the standard one-click launchers
   `Setup_and_Run-portfolio-rebalancer.bat/.command` and `scripts/bootstrap.py`: a repo-root `.venv` is

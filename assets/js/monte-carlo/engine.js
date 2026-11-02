@@ -11,7 +11,8 @@
 // Percentiles use linear interpolation (numpy's default). "Real" values divide
 // nominal values by (1 + inflation)^year.
 // `normal` can be injected (a function returning standard-normal draws) so tests
-// can feed both engines identical random sequences.
+// can feed both engines identical random sequences; the web app passes a seeded
+// generator so any run can be reproduced from its seed.
 
 export const LIMITS = {
   maxMoney: 1e15,
@@ -84,6 +85,28 @@ export function validateInputs(raw) {
   return inputs;
 }
 
+// Seeded uniform generator (mulberry32): the same seed reproduces the same paths.
+export function mulberry32(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+export const MAX_SEED = 4294967295;
+
+// Seed text -> integer seed, or null for "random". Throws on invalid text.
+export function parseSeed(text) {
+  const trimmed = String(text ?? "").trim();
+  if (!trimmed) return null;
+  if (!/^\d{1,10}$/.test(trimmed) || Number(trimmed) > MAX_SEED) throw new ValidationError(`Seed must be a whole number from 0 to ${MAX_SEED.toLocaleString("en-US")}, or blank for a random run.`, "seed");
+  return Number(trimmed);
+}
+
 export function boxMuller(random = Math.random) {
   return () => {
     const u1 = Math.max(random(), 1e-12);
@@ -147,15 +170,22 @@ export function runSimulation(inputs, { normal = boxMuller() } = {}) {
     atRetirement[sim] = byYear[inputs.yearsToRetirement][sim];
   }
 
+  // Real (today's) dollars: nominal / (1 + inflation)^year. With inflation at -100%
+  // the deflator is zero and real values are undefined, so they are reported as null.
   const deflator = year => (1 + inflation) ** year;
+  const realAvailable = 1 + inflation > 0;
+  const deflate = (v, year) => {
+    if (!realAvailable) return null;
+    const real = v / deflator(year);
+    return Number.isFinite(real) ? real : null;
+  };
   const percentilesByYear = byYear.map((values, year) => {
     const nominal = bands(values);
-    const d = deflator(year);
-    return { year, nominal, real: Object.fromEntries(Object.entries(nominal).map(([k, v]) => [k, v / d])) };
+    return { year, nominal, real: Object.fromEntries(Object.entries(nominal).map(([k, v]) => [k, deflate(v, year)])) };
   });
   const finalNominal = bands(finals);
   const retirementNominal = bands(atRetirement);
-  const toReal = (stats, year) => Object.fromEntries(Object.entries(stats).map(([k, v]) => [k, v / deflator(year)]));
+  const toReal = (stats, year) => Object.fromEntries(Object.entries(stats).map(([k, v]) => [k, deflate(v, year)]));
   const finalReal = toReal(finalNominal, years);
   const retirementReal = toReal(retirementNominal, inputs.yearsToRetirement);
   const failed = ruinYears.length;
@@ -174,6 +204,7 @@ export function runSimulation(inputs, { normal = boxMuller() } = {}) {
     swr,
     medianRuinYear,
     netWithdrawal,
+    realAvailable,
   };
   for (const value of [summary.successProbability, retirementNominal.p50, finalNominal.p50, finalNominal.p10, finalNominal.p90, swr]) {
     finiteOrThrow(value, "Simulation output became non-finite. Reduce large input magnitudes and try again.");
