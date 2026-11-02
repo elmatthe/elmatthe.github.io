@@ -1,9 +1,10 @@
 // Ticker input sanitization shared by the site's browser tools.
 //
 // Symbols are trimmed, upper-cased and bounded before any request is built. The
-// pattern accepts Yahoo Finance equities/ETFs (AAPL, BRK-B), exchange suffixes
-// (XIU.TO, ISF.L, 7203.T), indexes (^GSPC), FX (CADUSD=X) and futures (CL=F), and
-// rejects free-form text, whitespace, path characters and query strings.
+// pattern accepts equities/ETFs (AAPL, BRK-B, BRK.B), exchange suffixes (XIU.TO,
+// ISF.L), indexes (^GSPC), FX (CADUSD=X) and futures (CL=F), and rejects free-form
+// text, whitespace, path characters and query strings. Whether a provider covers a
+// valid symbol is decided by the provider adapter, not here.
 
 export const MAX_TICKERS = 10;
 export const MIN_COMPARE_TICKERS = 2;
@@ -24,7 +25,7 @@ export function normalizeSymbol(value) {
   const symbol = value.trim().toUpperCase();
   if (!symbol) throw new SymbolError("Ticker is required.", symbol);
   if (symbol.length > MAX_SYMBOL_LENGTH || !SYMBOL_PATTERN.test(symbol)) {
-    throw new SymbolError(`"${symbol.slice(0, MAX_SYMBOL_LENGTH)}" is not a valid Yahoo Finance ticker.`, symbol);
+    throw new SymbolError(`"${symbol.slice(0, MAX_SYMBOL_LENGTH)}" is not a valid ticker symbol.`, symbol);
   }
   return symbol;
 }
