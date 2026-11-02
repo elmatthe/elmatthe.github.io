@@ -18,6 +18,8 @@ const REDIRECTS = {
   "/projects/Stock-Data-Dashboard-Tool/": "/projects/stock-data-dashboard-guide/",
 };
 const ALLOWED_ON_LOAD = /^https:\/\/cdn\.jsdelivr\.net\/npm\/chart\.js@/;
+// The Rebalancer loads official exchange rates once on load (one keyless request).
+const BOC_FX = /^https:\/\/www\.bankofcanada\.ca\/valet\/observations\/[A-Z,]+\/json\?recent=5$/;
 
 (async () => {
   const { check, done } = checker();
@@ -48,8 +50,9 @@ const ALLOWED_ON_LOAD = /^https:\/\/cdn\.jsdelivr\.net\/npm\/chart\.js@/;
         check(info.zipLinks.length > 0 && info.zipLinks.every(h => h === tool.zip), `${tag} links only to ${tool.zip}`);
         check(!info.stale, `${tag} has no stale names`);
         check(net.errors.length === 0, `${tag} no JavaScript errors${net.errors.length ? ": " + net.errors.join(" | ") : ""}`);
-        const unexpected = net.external.filter(u => !ALLOWED_ON_LOAD.test(u));
-        check(unexpected.length === 0, `${tag} no data requests on load${unexpected.length ? ": " + unexpected.join(", ") : ""}`);
+        const fxOnLoad = url === "/projects/portfolio-rebalancer/" ? net.external.filter(u => BOC_FX.test(u)) : [];
+        const unexpected = net.external.filter(u => !ALLOWED_ON_LOAD.test(u) && !fxOnLoad.includes(u));
+        check(unexpected.length === 0 && fxOnLoad.length <= 1, `${tag} no data requests on load${fxOnLoad.length ? " (one official FX request)" : ""}${unexpected.length ? ": " + unexpected.join(", ") : ""}`);
         await page.close();
       }
     }

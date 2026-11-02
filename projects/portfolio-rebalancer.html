@@ -4,9 +4,9 @@ project: rebalancer
 kind: tool
 title: Portfolio Rebalancer
 permalink: /projects/portfolio-rebalancer/
-summary: Rebalance a multi-currency portfolio in your browser (New Money or pure Rebalance mode) with optional live Yahoo Finance prices and FX, CSV/Excel export, and a downloadable desktop program.
+summary: Rebalance a multi-currency portfolio in your browser (New Money or pure Rebalance mode) with official Bank of Canada exchange rates, optional live prices with your own free Alpha Vantage key, CSV/Excel export, and a downloadable desktop program.
 lede: Turn target weights into a buy/sell plan. New Money mode invests a budget without selling; Rebalance mode sells overweight positions to fund underweight ones. Works across currencies and account types, in your browser or as a desktop program.
-last_updated: 2026-09-28
+last_updated: 2026-11-02
 page_css:
   - /assets/css/portfolio-rebalancer.css
 page_js:
@@ -37,10 +37,8 @@ sections:
 
 <section class="pj-section" id="web-app" aria-labelledby="web-app-h">
   <h2 id="web-app-h">Web app</h2>
-  <p>Runs entirely in this page. Leave <strong>live prices</strong> off to use the prices you type; turn it on to fetch current quotes and FX from Yahoo Finance.</p>
-  <!-- data-site-proxy: optional. Leave empty unless the site owner runs their own Yahoo relay; an https
-       template containing {url} is then tried before the public relays. The page works without it. -->
-  <div class="pj-app" id="rb-app" data-site-proxy="" aria-busy="false">
+  <p>Runs entirely in this page. Exchange rates load automatically from the Bank of Canada (official daily rates). Prices are the ones you type, or, if you add your own free Alpha Vantage key, the latest prices fetched for you. Every price and rate shows where it came from.</p>
+  <div class="pj-app" id="rb-app" aria-busy="false">
     <div class="rb-controls">
       <div class="pj-field">
         <label for="rbReporting">Reporting currency</label>
@@ -68,7 +66,7 @@ sections:
     </div>
     <div class="rb-table-wrap">
       <table class="rb-input" aria-describedby="rbTableNote">
-        <caption class="rb-caption" id="rbTableNote">Holdings. Prices are in each row's currency; FX converts to the reporting currency.</caption>
+        <caption class="rb-caption" id="rbTableNote">Holdings. Prices are in each row's currency; the exchange rates below convert them to the reporting currency.</caption>
         <thead>
           <tr>
             <th scope="col">#</th><th scope="col">Ticker</th><th scope="col">Shares / units</th><th scope="col">Price (local)</th><th scope="col">Row currency</th>
@@ -79,8 +77,33 @@ sections:
       </table>
     </div>
     <div class="rb-totals"><span id="rbTotal">Current total: $0.00</span><span id="rbWeightTotal">Target weight total: 0.00%</span></div>
+    <div class="rb-panels">
+      <section class="rb-panel" aria-labelledby="rbFxHeading">
+        <h3 id="rbFxHeading">Exchange rates</h3>
+        <div class="rb-table-wrap">
+          <table class="rb-fx-table">
+            <thead><tr><th scope="col">Currency</th><th scope="col"><span id="rbFxReportingCode">USD</span> per 1 unit</th><th scope="col">Source</th></tr></thead>
+            <tbody id="rbFxRows"></tbody>
+          </table>
+        </div>
+        <p class="muted rb-small" id="rbFxNote"></p>
+        <div class="pj-actions rb-tight"><button type="button" class="pj-btn" id="rbFxRefresh">Reload official rates</button></div>
+        <p class="muted rb-small">Official daily averages (Bank of Canada; ECB if it is unreachable), published once per business day, so they can differ from your broker's rate. Type over any rate to use your own.</p>
+      </section>
+      <section class="rb-panel" aria-labelledby="rbLiveHeading">
+        <h3 id="rbLiveHeading">Live prices (optional)</h3>
+        <p class="muted rb-small">Uses <strong>your own</strong> free <a href="https://www.alphavantage.co/support/#api-key">Alpha Vantage API key</a> (US and TSX/TSX-V stocks and ETFs, some US mutual funds; 25 requests per day). The key is saved only in this browser and sent only to Alpha Vantage. Free keys are for personal use.</p>
+        <form id="rbKeyForm" class="rb-key-form" novalidate>
+          <label class="pj-field"><span>API key</span><input id="rbKey" type="password" autocomplete="off" spellcheck="false" maxlength="64" placeholder="Paste your key"></label>
+          <button type="submit" class="pj-btn">Save key</button>
+          <button type="button" class="pj-btn" id="rbKeyRemove">Remove key</button>
+        </form>
+        <p class="muted rb-small" id="rbKeyState" role="status" aria-live="polite"></p>
+        <p class="muted rb-small" id="rbKeyStatus" role="status" aria-live="polite"></p>
+      </section>
+    </div>
     <div class="rb-options">
-      <label><input type="checkbox" id="rbLive"> <span>Fetch live prices and FX from Yahoo Finance. Rows with a manual price keep it if a quote can't be found.</span></label>
+      <label><input type="checkbox" id="rbLive"> <span id="rbLiveLabel">Fetch latest prices (add your free Alpha Vantage key first).</span></label>
       <label><input type="checkbox" id="rbShowAccount"> <span>Show the account-type column for cross-account funding checks.</span></label>
     </div>
     <div class="pj-actions">
@@ -122,8 +145,9 @@ sections:
       <thead><tr><th scope="col">Capability</th><th scope="col">Web app</th><th scope="col">Desktop app</th></tr></thead>
       <tbody>
         <tr><th scope="row">Install needed</th><td>None</td><td>ZIP + one launcher (sets itself up)</td></tr>
-        <tr><th scope="row">Live prices &amp; FX</th><td>Yahoo Finance, relayed by a CORS proxy</td><td>Yahoo Finance via <code>yfinance</code></td></tr>
-        <tr><th scope="row">Ticker lookup while typing</th><td class="yes">Yes</td><td class="yes">Yes</td></tr>
+        <tr><th scope="row">Exchange rates</th><td>Official Bank of Canada daily rates (ECB fallback), editable</td><td>Yahoo Finance via <code>yfinance</code> when live data is on; built-in estimates otherwise</td></tr>
+        <tr><th scope="row">Live prices</th><td>Optional, with your own free Alpha Vantage key</td><td>Yahoo Finance via <code>yfinance</code></td></tr>
+        <tr><th scope="row">Ticker help</th><td>Suffix and currency hints while typing; symbols checked when prices are fetched</td><td>Live lookup while typing</td></tr>
         <tr><th scope="row">Exports</th><td>CSV and Excel (.xlsx)</td><td>CSV and Excel (.xlsx)</td></tr>
         <tr><th scope="row">Works offline</th><td>Yes, with manual prices</td><td>Yes, with manual prices</td></tr>
       </tbody>
@@ -134,9 +158,10 @@ sections:
 <section class="pj-section" id="data" aria-labelledby="data-h">
   <h2 id="data-h">Data sources &amp; privacy</h2>
   <ul>
-    <li><strong>Your holdings never leave your device.</strong> Calculations run locally. With live prices on, only ticker symbols and FX pair symbols (for example <code>CADUSD=X</code>) are requested.</li>
-    <li><strong>Yahoo Finance is the only price and FX source.</strong> Because Yahoo blocks direct requests from other websites, the web app relays requests through public CORS proxies and checks every response is Yahoo data for the requested symbol. Quotes are cached for five minutes in this tab.</li>
-    <li><strong>Fallback FX rates</strong> (used when live data is off or unavailable) are fixed approximations and are labelled as such in the results.</li>
+    <li><strong>Your holdings never leave your device.</strong> Calculations run locally and nothing about your portfolio is stored or sent. The page requests only currency codes from the central banks and, if you add a key, ticker symbols from Alpha Vantage.</li>
+    <li><strong>Exchange rates:</strong> Bank of Canada daily average rates (<a href="https://www.bankofcanada.ca/terms/">terms</a>), with the European Central Bank's reference rates as a fallback. Pairs not involving CAD are derived through CAD and labelled as such. Rates are cached in this browser for an hour. Until they load, built-in estimates dated in the table are used and flagged in the plan.</li>
+    <li><strong>Prices:</strong> what you type, or the latest price from Alpha Vantage using your own key (saved in this browser's local storage; remove it any time). The price's trading date is shown, and older than four days is flagged. Quotes are cached for 15 minutes to save your 25 daily requests. Market indexes, mutual-fund codes such as Canadian <code>TDB902</code>, and exchanges outside the US, Toronto, London, Frankfurt, Bombay and Shanghai/Shenzhen are not available; enter those prices yourself.</li>
+    <li><strong>No public relays.</strong> Earlier versions fetched Yahoo Finance through free public CORS relays. They were unreliable and Yahoo's terms do not permit that use, so they have been removed.</li>
   </ul>
 </section>
 
@@ -144,11 +169,15 @@ sections:
   <h2 id="help-h">Troubleshooting</h2>
   <details class="pj-details">
     <summary>Live prices are unavailable</summary>
-    <div class="pj-details-body"><p>Yahoo Finance is reached through free public relays whose availability varies. When live data can't be retrieved, each row keeps the price you entered, fixed fallback FX rates are used and labelled, and the plan and exports still work. Retry after a minute, or untick live prices. Optional relay settings saved in the <a href="{{ '/projects/stock-data-dashboard-tool/' | relative_url }}#web-app">Stock tool's Settings tab</a> also apply here in the same browser; they aren't needed for normal use.</p></div>
+    <div class="pj-details-body"><p>Live prices need your own free Alpha Vantage key, which allows 25 requests per day (about two per new ticker, then one per ticker; results are cached). When a price can't be fetched, the row keeps the price you typed; a row with no price stops the run and is listed so you can fill it in. Your inputs are never cleared.</p></div>
   </details>
   <details class="pj-details">
-    <summary>“Not found on Yahoo Finance” for a Canadian or international ticker</summary>
-    <div class="pj-details-body"><p>Use Yahoo suffixes: <code>.TO</code> (TSX), <code>.V</code> (TSX-V), <code>.L</code> (London), <code>.T</code> (Tokyo), <code>.DE</code>, <code>.PA</code>, <code>.HK</code>, and so on, and set the row currency to match. Prefixes like <code>TSX:</code> are converted automatically.</p></div>
+    <summary>Exchange rates show “Built-in estimate”</summary>
+    <div class="pj-details-body"><p>The Bank of Canada and the ECB could not be reached, so dated estimates are shown and the plan warns about them. Press <strong>Reload official rates</strong>, or type your broker's rates into the table.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>A Canadian or international ticker isn't found</summary>
+    <div class="pj-details-body"><p>Use exchange suffixes: <code>.TO</code> (TSX), <code>.V</code> (TSX-V), <code>.L</code> (London), <code>.DE</code> (Xetra), and set the row currency to match. Prefixes like <code>TSX:</code> are converted automatically. A listing whose currency the provider doesn't confirm keeps your typed price.</p></div>
   </details>
   <details class="pj-details">
     <summary>Target weights don't add up to 100%</summary>

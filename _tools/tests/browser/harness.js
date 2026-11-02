@@ -1,9 +1,13 @@
 // Shared Playwright harness for the tool-page browser tests.
 //
-// Yahoo Finance and the public CORS proxies are replaced by deterministic mocks:
-// every proxied request is decoded, checked to target finance.yahoo.com, and
-// answered with a synthetic Yahoo-shaped chart payload. No real market data is
-// stored in the repository.
+// Every market-data host is replaced by a deterministic mock that returns synthetic
+// data in the exact response shapes observed live on 2026-11-02:
+//   www.bankofcanada.ca    Valet JSON (FX<CODE>CAD series)
+//   data-api.ecb.europa.eu SDMX CSV (EXR.D.<CUR>.EUR.SP00.A)
+//   www.alphavantage.co    SYMBOL_SEARCH, GLOBAL_QUOTE, TIME_SERIES_DAILY,
+//                          TIME_SERIES_WEEKLY_ADJUSTED, plus its HTTP-200 error bodies
+// Any other external request except the Chart.js CDN is aborted and recorded, so a
+// test can prove which hosts a page contacted. No real market data is stored here.
 //
 // Environment:
 //   SITE_URL       base URL of a served `jekyll build` output (default http://127.0.0.1:4000)
@@ -13,108 +17,144 @@
 const { chromium } = require("playwright");
 
 const SITE_URL = (process.env.SITE_URL || "http://127.0.0.1:4000").replace(/\/$/, "");
-const ACAO = { "access-control-allow-origin": "*", "content-type": "application/json" };
-const DAY = 86400;
+const TEST_KEY = "TESTKEY12345";
+const DAY = 86400000;
+const CORS = { "access-control-allow-origin": "*" };
+const JSON_HEADERS = { ...CORS, "content-type": "application/json" };
 
 function hash(text) {
   let h = 2166136261;
   for (const ch of text) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
   return h >>> 0;
 }
+const iso = ms => new Date(ms).toISOString().slice(0, 10);
 
-function currencyFor(symbol) {
-  if (symbol.endsWith("=X")) return symbol.slice(3, 6);
-  if (/\.(TO|V)$/.test(symbol)) return "CAD";
-  if (symbol.endsWith(".L")) return "GBp";
-  if (symbol.endsWith(".T")) return "JPY";
-  if (/\.(DE|AS|PA|MI|BR)$/.test(symbol)) return "EUR";
-  if (/\.(SS|SZ|HK)$/.test(symbol)) return "CNY";
-  return "USD";
+// CAD per unit, gently varying by day.
+const CAD_PER = { USD: 1.39, EUR: 1.56, JPY: 0.0089, GBP: 1.87, CNY: 0.21, CHF: 1.6, AUD: 0.98 };
+function cadPer(code, ms) {
+  const base = CAD_PER[code];
+  if (!base) return null;
+  const t = Math.floor(ms / DAY);
+  return Number((base * (1 + 0.01 * Math.sin(t / 9 + hash(code) % 7))).toPrecision(5));
 }
-
-const FX_LEVEL = { CADUSD: 0.73, USDCAD: 1.37, GBPUSD: 1.28, USDGBP: 0.78, EURUSD: 1.09, USDEUR: 0.92, JPYUSD: 0.0068, CNYUSD: 0.14, GBPCAD: 1.75, CADGBP: 0.57, EURCAD: 1.49, CADEUR: 0.67 };
-
-// Synthetic Yahoo v8 chart payload. Unknown symbols (starting ZZZ) return Yahoo's 404 body.
-function chartPayload(symbol, targetUrl, now = Date.now()) {
-  if (/^ZZZ/.test(symbol)) {
-    return { status: 404, body: { chart: { result: null, error: { code: "Not Found", description: "No data found, symbol may be delisted" } } } };
+function businessDays(startMs, endMs) {
+  const out = [];
+  for (let t = Math.floor(startMs / DAY) * DAY; t <= endMs; t += DAY) {
+    const wd = new Date(t).getUTCDay();
+    if (wd !== 0 && wd !== 6) out.push(t);
   }
-  const url = new URL(targetUrl);
-  const end = Number(url.searchParams.get("period2")) || Math.floor(now / 1000);
-  const range = url.searchParams.get("range");
-  const start = Number(url.searchParams.get("period1")) || (end - (range === "5d" ? 8 : 370) * DAY);
-  const seed = hash(symbol);
-  const isFx = symbol.endsWith("=X");
-  let price = isFx ? (FX_LEVEL[symbol.slice(0, 6)] || 1) : 20 + (seed % 400);
-  const timestamps = [];
-  const closes = [];
-  let state = seed || 1;
-  for (let t = Math.floor(start / DAY) * DAY; t < end; t += DAY) {
-    const weekday = new Date(t * 1000).getUTCDay();
-    if (weekday === 0 || weekday === 6) continue;
-    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
-    const shock = ((state / 4294967296) - 0.5) * (isFx ? 0.01 : 0.03);
-    price *= Math.exp(shock + (isFx ? 0 : 0.0003));
-    timestamps.push(t + 14 * 3600 + 1800);
-    closes.push(Number(price.toFixed(isFx ? 5 : 2)));
-  }
-  const currency = currencyFor(symbol);
-  return {
-    status: 200,
-    body: {
-      chart: {
-        result: [{
-          meta: {
-            currency, symbol, exchangeName: "MOCK", fullExchangeName: "Mock Exchange", instrumentType: isFx ? "CURRENCY" : "EQUITY",
-            regularMarketPrice: closes[closes.length - 1], regularMarketTime: end - 3600, gmtoffset: -14400,
-            longName: `Mock ${symbol}`, fiftyTwoWeekHigh: Math.max(...closes), fiftyTwoWeekLow: Math.min(...closes),
-            exchangeTimezoneName: "America/New_York",
-          },
-          timestamp: timestamps,
-          indicators: { quote: [{ close: closes }], adjclose: [{ adjclose: closes }] },
-        }],
-        error: null,
-      },
-    },
-  };
+  return out;
+}
+// Business days strictly before today (a central bank publishes after the close).
+function publishedDays(startMs, endMs) {
+  const today = Math.floor(Date.now() / DAY) * DAY;
+  return businessDays(startMs, Math.min(endMs, today - DAY));
 }
 
-function yahooTarget(requestUrl) {
-  const u = new URL(requestUrl);
-  const target = u.searchParams.get("url") || u.searchParams.get("quest") || decodeURIComponent(u.search.slice(1));
-  return target && /^https:\/\/query[12]\.finance\.yahoo\.com\/v8\/finance\/chart\//.test(target) ? target : null;
+function bocBody(url) {
+  const series = decodeURIComponent(url.pathname.split("/observations/")[1].split("/")[0]).split(",");
+  const recent = Number(url.searchParams.get("recent")) || 0;
+  const end = url.searchParams.get("end_date") ? Date.parse(`${url.searchParams.get("end_date")}T00:00:00Z`) : Date.now();
+  const start = url.searchParams.get("start_date") ? Date.parse(`${url.searchParams.get("start_date")}T00:00:00Z`) : end - 15 * DAY;
+  let days = publishedDays(start, end);
+  if (recent) days = days.slice(-recent);
+  return JSON.stringify({
+    terms: { url: "https://www.bankofcanada.ca/terms/" },
+    seriesDetail: Object.fromEntries(series.map(s => [s, { label: `${s.slice(2, 5)}/CAD`, description: "Daily average exchange rate (mock)" }])),
+    observations: days.map(t => ({ d: iso(t), ...Object.fromEntries(series.filter(s => cadPer(s.slice(2, 5), t)).map(s => [s, { v: String(cadPer(s.slice(2, 5), t)) }])) })),
+  });
 }
 
-// Routes all known public proxies. `mode.working` names the proxy ids that answer
-// ("allorigins-json" by default); others fail like the real services do today.
-async function mockProxies(context, mode = {}) {
-  const calls = [];
-  const targets = [];
-  const working = () => new Set(mode.working || ["allorigins-json"]);
-  const answer = (route, id, wrap) => {
-    const target = yahooTarget(route.request().url());
-    calls.push(id);
-    if (!target) { targets.push(`NON-YAHOO:${route.request().url()}`); return route.fulfill({ status: 400, headers: ACAO, body: "bad target" }); }
-    targets.push(target);
-    if (mode.down || !working().has(id)) {
-      if (id === "corsproxy") return route.fulfill({ status: 403, headers: ACAO, body: JSON.stringify({ error: "keyless_legacy_url" }) });
-      if (id === "allorigins-raw") return route.fulfill({ status: 522, headers: { "access-control-allow-origin": "*" }, body: "error code: 522" });
-      return route.abort("connectionrefused");
+function ecbBody(url) {
+  const currencies = url.pathname.split("/D.")[1].split(".EUR")[0].split("+");
+  const last = Number(url.searchParams.get("lastNObservations")) || 0;
+  const end = url.searchParams.get("endPeriod") ? Date.parse(`${url.searchParams.get("endPeriod")}T00:00:00Z`) : Date.now();
+  const start = url.searchParams.get("startPeriod") ? Date.parse(`${url.searchParams.get("startPeriod")}T00:00:00Z`) : end - 15 * DAY;
+  let days = publishedDays(start, end);
+  if (last) days = days.slice(-last);
+  const header = "KEY,FREQ,CURRENCY,CURRENCY_DENOM,EXR_TYPE,EXR_SUFFIX,TIME_PERIOD,OBS_VALUE,OBS_STATUS,TITLE_COMPL";
+  const rows = [];
+  for (const cur of currencies) {
+    for (const t of days) {
+      const perEur = cur === "CAD" ? cadPer("EUR", t) : cadPer("EUR", t) / cadPer(cur, t);
+      if (Number.isFinite(perEur)) rows.push(`EXR.D.${cur}.EUR.SP00.A,D,${cur},EUR,SP00,A,${iso(t)},${perEur.toFixed(4)},A,"ECB reference exchange rate, ${cur}/Euro, 2.15 pm (C.E.T.)"`);
     }
-    const symbol = decodeURIComponent(new URL(target).pathname.split("/").pop());
-    const { status, body } = chartPayload(symbol, target);
-    const text = JSON.stringify(body);
-    return route.fulfill(wrap
-      ? { status: 200, headers: ACAO, body: JSON.stringify({ contents: text, status: { http_code: status } }) }
-      : { status, headers: ACAO, body: text });
-  };
-  await context.route(/corsproxy\.io/, r => answer(r, "corsproxy", false));
-  await context.route(/api\.allorigins\.win\/raw/, r => answer(r, "allorigins-raw", false));
-  await context.route(/api\.allorigins\.win\/get/, r => answer(r, "allorigins-json", true));
-  await context.route(/api\.codetabs\.com/, r => answer(r, "codetabs", false));
-  await context.route(/api\.cors\.lol/, r => answer(r, "corslol", false));
+  }
+  return [header, ...rows].join("\r\n") + "\r\n";
+}
+
+const avCurrency = symbol => (/\.(TRT|TRV)$/.test(symbol) ? "CAD" : /\.LON$/.test(symbol) ? "GBX" : /\.DEX$/.test(symbol) ? "EUR" : "USD");
+const avRegion = symbol => (/\.TRT$/.test(symbol) ? "Toronto" : /\.TRV$/.test(symbol) ? "Toronto Venture" : /\.LON$/.test(symbol) ? "United Kingdom" : "United States");
+function avPrice(symbol, ms) {
+  const seed = hash(symbol);
+  const base = /\.LON$/.test(symbol) ? 300 + (seed % 900) : 20 + (seed % 400);
+  const t = Math.floor(ms / DAY);
+  return Number((base * Math.exp(0.0003 * (t - 20000) + 0.04 * Math.sin(t / 11 + (seed % 13)))).toFixed(4));
+}
+function avBody(url, mode) {
+  const fn = url.searchParams.get("function");
+  const symbol = (url.searchParams.get("symbol") || url.searchParams.get("keywords") || "").toUpperCase();
+  if (url.searchParams.get("apikey") !== TEST_KEY) return JSON.stringify({ "Error Message": "the parameter apikey is invalid or missing. Please claim your free API key on (https://www.alphavantage.co/support/#api-key). It should take less than 20 seconds." });
+  mode.avCalls = (mode.avCalls || 0) + 1;
+  if (mode.avLimit !== undefined && mode.avCalls > mode.avLimit) return JSON.stringify({ Information: "We have detected your API key as TESTKEY12345 and our standard API rate limit is 25 requests per day. Please subscribe to any of the premium plans to instantly remove all daily rate limits." });
+  const unknown = /^ZZZ/.test(symbol);
+  if (fn === "SYMBOL_SEARCH") {
+    if (unknown) return JSON.stringify({ bestMatches: [] });
+    const stem = symbol.includes(".") ? symbol.slice(0, symbol.lastIndexOf(".")) : symbol;
+    const listed = symbol.includes(".") ? [] : [symbol, `${symbol}.TRT`];
+    const matches = (symbol.includes(".") ? (mode.searchMissesSuffix ? [] : [symbol]) : listed).map(s => ({
+      "1. symbol": s, "2. name": `Mock ${s}`, "3. type": "Equity", "4. region": avRegion(s), "5. marketOpen": "09:30", "6. marketClose": "16:00",
+      "7. timezone": "UTC-05", "8. currency": avCurrency(s), "9. matchScore": s === symbol ? "1.0000" : "0.8000",
+    }));
+    return JSON.stringify({ bestMatches: stem === symbol || matches.length ? matches : [] });
+  }
+  if (unknown) return fn === "GLOBAL_QUOTE" ? JSON.stringify({ "Global Quote": {} }) : JSON.stringify({ "Error Message": `Invalid API call. Please retry or visit the documentation (https://www.alphavantage.co/documentation/) for ${fn}.` });
+  const days = businessDays(Date.now() - 6 * 365 * DAY, Date.now() - DAY);
+  if (fn === "GLOBAL_QUOTE") {
+    const t = days[days.length - 1];
+    const p = avPrice(symbol, t);
+    return JSON.stringify({ "Global Quote": { "01. symbol": symbol, "02. open": String(p), "03. high": String(p * 1.01), "04. low": String(p * 0.99), "05. price": String(p), "06. volume": "1234567", "07. latest trading day": iso(t), "08. previous close": String(avPrice(symbol, t - DAY)), "09. change": "0.1", "10. change percent": "0.1000%" } });
+  }
+  if (fn === "TIME_SERIES_DAILY") {
+    const recent = days.slice(-100);
+    return JSON.stringify({ "Meta Data": { "1. Information": "Daily Prices (open, high, low, close) and Volumes", "2. Symbol": symbol, "3. Last Refreshed": iso(recent[recent.length - 1]), "4. Output Size": "Compact", "5. Time Zone": "US/Eastern" },
+      "Time Series (Daily)": Object.fromEntries(recent.reverse().map(t => [iso(t), { "1. open": String(avPrice(symbol, t)), "2. high": String(avPrice(symbol, t)), "3. low": String(avPrice(symbol, t)), "4. close": String(avPrice(symbol, t)), "5. volume": "1000" }])) });
+  }
+  if (fn === "TIME_SERIES_WEEKLY_ADJUSTED") {
+    const fridays = days.filter(t => new Date(t).getUTCDay() === 5);
+    return JSON.stringify({ "Meta Data": { "1. Information": "Weekly Adjusted Prices and Volumes", "2. Symbol": symbol, "3. Last Refreshed": iso(fridays[fridays.length - 1]), "4. Time Zone": "US/Eastern" },
+      "Weekly Adjusted Time Series": Object.fromEntries(fridays.reverse().map(t => [iso(t), { "1. open": "1", "2. high": "1", "3. low": "1", "4. close": String(avPrice(symbol, t)), "5. adjusted close": String(Number((avPrice(symbol, t) * 0.98).toFixed(4))), "6. volume": "5000", "7. dividend amount": "0.0000" }])) });
+  }
+  return JSON.stringify({ "Error Message": "Invalid API call." });
+}
+
+// Installs the mocks. `mode` flags (mutable during a test): bocDown, ecbDown, avDown,
+// avLimit (requests before the daily limit), searchMissesSuffix.
+async function mockMarketData(context, mode = {}) {
+  const calls = { boc: 0, ecb: 0, av: [], blocked: [] };
+  await context.route(/^https:\/\/www\.bankofcanada\.ca\/valet\//, route => {
+    calls.boc += 1;
+    if (mode.bocDown) return route.fulfill({ status: 503, headers: { "content-type": "text/html" }, body: "<html>Service unavailable</html>" });
+    return route.fulfill({ status: 200, headers: JSON_HEADERS, body: bocBody(new URL(route.request().url())) });
+  });
+  await context.route(/^https:\/\/data-api\.ecb\.europa\.eu\//, route => {
+    calls.ecb += 1;
+    if (mode.ecbDown) return route.abort("connectionrefused");
+    return route.fulfill({ status: 200, headers: { ...CORS, "content-type": "text/csv" }, body: ecbBody(new URL(route.request().url())) });
+  });
+  await context.route(/^https:\/\/www\.alphavantage\.co\//, route => {
+    const url = new URL(route.request().url());
+    calls.av.push(`${url.searchParams.get("function")}:${url.searchParams.get("symbol") || url.searchParams.get("keywords")}`);
+    if (mode.avDown) return route.abort("connectionrefused");
+    return route.fulfill({ status: 200, headers: JSON_HEADERS, body: avBody(url, mode) });
+  });
+  await context.route(url => {
+    const u = new URL(url);
+    return u.protocol.startsWith("http") && !/^(127\.0\.0\.1|localhost)$/.test(u.hostname)
+      && !/^(www\.bankofcanada\.ca|data-api\.ecb\.europa\.eu|www\.alphavantage\.co|cdn\.jsdelivr\.net)$/.test(u.hostname);
+  }, route => { calls.blocked.push(route.request().url()); return route.abort("blockedbyclient"); });
   await context.route(/favicon\.ico/, r => r.fulfill({ status: 204 }));
-  return { calls, targets };
+  return calls;
 }
 
 async function launch() {
@@ -136,6 +176,9 @@ function watchNetwork(page) {
   return { external, errors };
 }
 
+const ALLOWED_HOSTS = /^(www\.bankofcanada\.ca|data-api\.ecb\.europa\.eu|www\.alphavantage\.co|cdn\.jsdelivr\.net)$/;
+const disallowedRequests = urls => urls.filter(u => !ALLOWED_HOSTS.test(new URL(u).hostname));
+
 function checker() {
   let failures = 0;
   const check = (cond, label) => { console.log(`${cond ? "PASS" : "FAIL"} ${label}`); if (!cond) failures += 1; };
@@ -143,4 +186,4 @@ function checker() {
   return { check, done };
 }
 
-module.exports = { SITE_URL, launch, mockProxies, watchNetwork, checker, chartPayload, yahooTarget };
+module.exports = { SITE_URL, TEST_KEY, launch, mockMarketData, watchNetwork, checker, disallowedRequests };

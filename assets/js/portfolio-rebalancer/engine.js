@@ -13,14 +13,18 @@ export const MAX_ROWS = 50;
 
 export const ACCOUNT_TYPES = ["", "TFSA", "RRSP", "RESP", "RRIF", "FHSA", "LIRA", "Margin", "Non-Registered", "Individual", "Crypto", "Other"];
 
-// fxToUsd values are offline fallbacks used only when live FX is off or unavailable.
+// fxToUsd (US dollars per one unit) are BUILT-IN ESTIMATES used only until current
+// rates are loaded or entered. They are the Bank of Canada daily average rates for
+// DEFAULT_FX_AS_OF converted to USD per unit, and the UI labels them with that date.
+export const DEFAULT_FX_AS_OF = "2026-10-30";
+export const DEFAULT_FX_SOURCE = `Bank of Canada daily average rates for ${DEFAULT_FX_AS_OF} (built-in estimate)`;
 export const CURRENCY_OPTIONS = {
   USD: { code: "USD", locale: "en-US", label: "USD", fxToUsd: 1.00 },
-  CAD: { code: "CAD", locale: "en-CA", label: "CAD", fxToUsd: 0.74 },
-  JPN: { code: "JPY", locale: "ja-JP", label: "JPN", fxToUsd: 0.0067 },
-  EUR: { code: "EUR", locale: "de-DE", label: "EUR", fxToUsd: 1.09 },
-  GBP: { code: "GBP", locale: "en-GB", label: "GBP", fxToUsd: 1.28 },
-  CHY_CNH: { code: "CNY", locale: "en-US", label: "CHY/CNH", fxToUsd: 0.14 },
+  CAD: { code: "CAD", locale: "en-CA", label: "CAD", fxToUsd: 0.716332 },
+  JPN: { code: "JPY", locale: "ja-JP", label: "JPN", fxToUsd: 0.006354 },
+  EUR: { code: "EUR", locale: "de-DE", label: "EUR", fxToUsd: 1.116189 },
+  GBP: { code: "GBP", locale: "en-GB", label: "GBP", fxToUsd: 1.33947 },
+  CHY_CNH: { code: "CNY", locale: "en-US", label: "CHY/CNH", fxToUsd: 0.150287 },
 };
 export const CURRENCY_CODE_TO_KEY = { USD: "USD", CAD: "CAD", JPY: "JPN", EUR: "EUR", GBP: "GBP", CNY: "CHY_CNH", CNH: "CHY_CNH" };
 
@@ -43,7 +47,8 @@ const pushUnique = (items, value) => { if (!items.includes(value)) items.push(va
 export const currencyMeta = key => CURRENCY_OPTIONS[key] || CURRENCY_OPTIONS.USD;
 export const fallbackFxToUsd = key => Number(currencyMeta(key).fxToUsd);
 
-// Yahoo symbols to try for a ticker typed in a row of the given currency.
+// Exchange-suffixed symbols to try for a ticker typed in a row of the given currency
+// (Yahoo-style suffixes such as .TO; the data layer maps them to its provider).
 export function buildTickerCandidates(ticker, currencyKey) {
   const clean = String(ticker || "").trim().toUpperCase();
   if (!clean) return [];
@@ -88,7 +93,7 @@ export function buildTickerInputHint(tickerSymbol, currencyKey) {
       const suggestion = base + suffix;
       const mappedKey = SUFFIX_TO_CURRENCY_KEY[suffix] || expectedKey;
       if (mappedKey !== expectedKey) {
-        return `'${prefix}' prefix not supported by Yahoo Finance. Try '${suggestion}' (${CURRENCY_OPTIONS[mappedKey].code}) or switch row currency.`;
+        return `'${prefix}' prefixes are not used here. Try '${suggestion}' (${CURRENCY_OPTIONS[mappedKey].code}) or switch row currency.`;
       }
       return `'${prefix}' prefix not supported. Try '${suggestion}'.`;
     }
@@ -101,8 +106,8 @@ export function buildTickerInputHint(tickerSymbol, currencyKey) {
   }
   const candidate = buildTickerCandidates(cleaned, expectedKey).find(c => c !== cleaned);
   if (candidate) {
-    if (expectedKey === "CHY_CNH") return "For CNY live quotes, use .SS/.SZ/.HK only for securities listed on Shanghai/Shenzhen/HK exchanges. Verify the exact symbol at finance.yahoo.com.";
-    return `For ${expectedCode} live quotes, try '${candidate}'. Verify the exact symbol at finance.yahoo.com.`;
+    if (expectedKey === "CHY_CNH") return "For CNY listings, use .SS or .SZ only for securities listed in Shanghai or Shenzhen. Check the exact symbol with your broker.";
+    return `For a ${expectedCode} listing, try '${candidate}'. Check the exact symbol with your broker.`;
   }
   return "";
 }
@@ -131,7 +136,7 @@ export function buildCrossMarketCandidates(tickerSymbol, attempted = []) {
   return out;
 }
 
-// Yahoo quote currency -> { quoteCurrency, unitScale }. Pence (GBp/GBX) are 1/100 GBP.
+// Provider quote currency -> { quoteCurrency, unitScale }. Pence (GBp/GBX) are 1/100 GBP.
 export function normalizeQuoteCurrency(rawCurrency) {
   if (typeof rawCurrency !== "string" || !rawCurrency.trim()) return { quoteCurrency: null, unitScale: 1 };
   const cleaned = rawCurrency.trim();
@@ -164,6 +169,19 @@ export function validatePositions(rows, { requirePrice }) {
   });
   if (!positions.some(p => p.targetWeight > 0)) throw new Error("At least one target weight must be greater than 0.");
   return positions;
+}
+
+// Non-fatal input checks: the same ticker listed twice in the same account usually
+// means a duplicated row (each row is still valued and traded separately).
+export function duplicateWarnings(positions) {
+  const seen = new Map();
+  const warnings = [];
+  positions.forEach(p => {
+    const key = `${p.ticker}|${p.accountType || ""}`;
+    if (seen.has(key)) warnings.push(`${p.ticker}${p.accountType ? ` (${p.accountType})` : ""} is listed in rows ${seen.get(key) + 1} and ${p.rowIndex + 1}; each row is treated as a separate holding.`);
+    else seen.set(key, p.rowIndex);
+  });
+  return warnings;
 }
 
 export const fxToReporting = (currencyKey, reportingKey, fxToUsdMap) =>
