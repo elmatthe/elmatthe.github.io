@@ -1,13 +1,17 @@
 // Stock Comparison & Analytics dashboard controller.
 //
 // Four sections: Comparison, Snapshot, Export, Settings. All analysis happens in
-// this browser. Yahoo Finance is the only market-data source; see ../yahoo/ for
-// how it is reached from a static page and how responses are validated.
+// this browser. Price data comes from one of three clearly labelled sources:
+//   * Live: the visitor's own free Alpha Vantage key (optional; the key stays here);
+//   * CSV: price files the visitor opens (read locally, never uploaded);
+//   * Offline demo: synthetic prices generated in the browser.
+// Currency normalization uses official central-bank rates (Bank of Canada, ECB
+// fallback). See ../market-data/ for providers, validation and caching.
 
-import { ProxyPipeline, PROXIES, FetchError, validateTemplate } from "../yahoo/proxy.js";
-import { fetchHistory, parseChart, quoteUrls, clearCache, cacheSize } from "../yahoo/yahoo.js";
-import { normalizeSymbol, normalizeSymbolList, MAX_TICKERS, MIN_COMPARE_TICKERS, SymbolError } from "../yahoo/symbols.js";
-import { resolveAligners, normalizeSeries } from "../yahoo/fx.js";
+import { createMarketData, DataError, selectBasis, describeAge, FRESHNESS_LABEL } from "../market-data/index.js";
+import { normalizeSymbol, normalizeSymbolList, MAX_TICKERS, MIN_COMPARE_TICKERS, SymbolError } from "../market-data/symbols.js";
+import { buildFxAligner, normalizeSeries } from "../market-data/fx-align.js";
+import { parsePriceCsv } from "../market-data/price-import.js";
 import * as A from "./analytics.js";
 import { DEMO_SECURITIES, demoSeries, demoFxRates } from "./demo.js";
 import { buildWorkbookSheets } from "./export.js";
@@ -18,11 +22,13 @@ if (app) init();
 
 function init() {
   const $ = id => document.getElementById(id);
-  const pipeline = new ProxyPipeline({ siteTemplate: app.dataset.siteProxy || "" });
+  const md = createMarketData();
   const state = {
     comparison: null,       // latest completed comparison (export snapshot)
     compareController: null,
     liveTickers: ["AAPL", "MSFT", "SPY"],
+    imported: {},           // TICKER -> history from the visitor's CSV files
+    importedFiles: [],
     snapshot: null,         // { series, provenance }
     snapshotController: null,
     charts: {},
@@ -101,8 +107,9 @@ function init() {
     }
   }
   const hideNotice = node => { node.hidden = true; node.replaceChildren(); };
-  const describeError = error => (error instanceof FetchError || error instanceof SymbolError)
+  const describeError = error => (error instanceof DataError || error instanceof SymbolError || error?.kind)
     ? error.message : "Unexpected error. Please try again.";
+  const BASIS_LABEL = { adjusted_close: "Adjusted close (dividends included)", close: "Close (price only)", synthetic: "Synthetic" };
 
   /* ================= theme ================= */
   const THEME_KEY = "sdd.theme";
@@ -147,59 +154,30 @@ function init() {
   });
   const initialTab = tabs.find(t => `#${t.id.replace("sddTab-", "")}` === window.location.hash);
   if (initialTab) selectTab(initialTab, { updateHash: false });
-  const openSettings = () => { selectTab($("sddTab-settings")); app.scrollIntoView({ behavior: "smooth", block: "start" }); };
-
-  /* ================= live data status widget ================= */
-  function renderPipelineStatus(snapshot = pipeline.snapshot()) {
+  /* ================= data status widget ================= */
+  function renderDataStatus() {
     const pill = $("sddPipelineState");
     const detail = $("sddPipelineDetail");
-    const enabled = snapshot.filter(p => p.enabled);
-    const ok = snapshot.find(p => p.preferred) || snapshot.find(p => p.state === "ok");
-    let label = "Not tested";
-    let tone = "idle";
-    if (!enabled.length) { label = "Disabled"; tone = "error"; detail.textContent = "Every proxy is disabled in Settings."; }
-    else if (ok) {
-      const failing = enabled.filter(p => p.state !== "ok" && p.state !== "untested").length;
-      label = failing ? "Online (degraded)" : "Online";
-      tone = failing ? "warn" : "ok";
-      detail.textContent = `Last success via ${ok.label}${isNum(ok.lastLatencyMs) ? ` · ${Math.round(ok.lastLatencyMs)} ms` : ""}`;
-    } else if (enabled.every(p => p.state !== "untested")) {
-      label = "Unavailable"; tone = "error";
-      detail.textContent = "No proxy is responding right now. Offline demo mode still works.";
-    } else if (enabled.some(p => p.state !== "untested")) {
-      label = "Degraded"; tone = "warn";
-      detail.textContent = "Some proxies failed; others have not been tried yet.";
+    if (md.liveAvailable()) {
+      const usage = md.usage();
+      pill.textContent = "Your key";
+      pill.className = `sdd-pill ${usage.count >= usage.limit ? "warn" : "ok"}`;
+      detail.textContent = `Alpha Vantage · about ${usage.count} of ${usage.limit} free requests used today in this browser.`;
     } else {
-      detail.textContent = "No live request yet.";
+      pill.textContent = "Off";
+      pill.className = "sdd-pill idle";
+      detail.textContent = "Add your free Alpha Vantage key in Settings, or use your CSV files or the offline demo.";
     }
-    pill.textContent = label;
-    pill.className = `sdd-pill ${tone}`;
-    const cached = cacheSize();
-    $("sddCacheState").textContent = `Cache: ${cached} response${cached === 1 ? "" : "s"}`;
-    $("sddCacheCount").textContent = `${cached} cached response${cached === 1 ? "" : "s"}`;
-    renderProxyRows(snapshot);
+    const cached = md.cacheSize();
+    $("sddCacheState").textContent = `Cache: ${cached} saved response${cached === 1 ? "" : "s"}`;
+    $("sddCacheCount").textContent = `${cached} saved response${cached === 1 ? "" : "s"}`;
+    $("sddKeyState").textContent = md.liveAvailable()
+      ? `A key is saved in this browser. About ${md.usage().count} of ${md.usage().limit} free requests used today here.`
+      : "No key saved. Live data is off.";
+    $("sddKeyRemove").disabled = !md.liveAvailable();
   }
-  pipeline.onChange(renderPipelineStatus);
-
-  async function probe(only) {
-    const urls = quoteUrls("AAPL");
-    return pipeline.fetchValidated(urls, text => parseChart(text, "AAPL"), { only });
-  }
-  $("sddTestConnection").addEventListener("click", async event => {
-    const button = event.currentTarget;
-    const out = $("sddTestState");
-    button.disabled = true;
-    out.textContent = "Testing…";
-    try {
-      const { proxy } = await probe();
-      out.textContent = `Connected via ${proxy.label}.`;
-    } catch (error) {
-      out.textContent = error.kind === "unavailable" ? "No proxy responded. See Settings." : describeError(error);
-    } finally {
-      button.disabled = false;
-      renderPipelineStatus();
-    }
-  });
+  const openSettings = () => { selectTab($("sddTab-settings")); app.scrollIntoView({ behavior: "smooth", block: "start" }); };
+  $("sddOpenSettings").addEventListener("click", openSettings);
 
   /* ================= Compare: ticker rows ================= */
   const tickerList = $("sddTickerList");
@@ -233,13 +211,14 @@ function init() {
   function syncTickerButtons() {
     const rows = [...tickerList.children];
     const demo = sourceValue() === "demo";
+    const csv = sourceValue() === "csv";
     rows.forEach((row, i) => {
       row.querySelector('[data-action="up"]').disabled = i === 0;
       row.querySelector('[data-action="down"]').disabled = i === rows.length - 1;
       row.querySelector('[data-action="remove"]').disabled = rows.length <= MIN_COMPARE_TICKERS;
-      row.querySelector("input").readOnly = demo;
+      row.querySelector("input").readOnly = demo || csv;
     });
-    $("sddAddTicker").disabled = demo || rows.length >= MAX_TICKERS;
+    $("sddAddTicker").disabled = demo || csv || rows.length >= MAX_TICKERS;
   }
   function clearRowErrors() {
     tickerList.querySelectorAll(".sdd-row-error").forEach(n => n.remove());
@@ -267,17 +246,56 @@ function init() {
     syncTickerButtons();
     row.querySelector("input").focus();
   });
-  compareForm.querySelectorAll('input[name="source"]').forEach(radio => radio.addEventListener("change", () => {
+  function syncSource() {
     clearRowErrors();
-    if (sourceValue() === "demo") {
-      state.liveTickers = [...tickerList.querySelectorAll("input")].map(i => i.value.trim()).filter(Boolean);
+    const source = sourceValue();
+    $("sddCsvField").hidden = source !== "csv";
+    if (source === "demo") {
       setTickers(DEMO_SECURITIES.map(s => s.ticker));
       setStatus($("sddCompareStatus"), "Offline demo: synthetic prices generated in your browser. No network requests.", null);
+    } else if (source === "csv") {
+      const tickers = Object.keys(state.imported);
+      setTickers(tickers.length >= MIN_COMPARE_TICKERS ? tickers.slice(0, MAX_TICKERS) : ["", ""]);
+      setStatus($("sddCompareStatus"), tickers.length ? `${tickers.length} ticker${tickers.length === 1 ? "" : "s"} loaded from your file${state.importedFiles.length === 1 ? "" : "s"}. Remove any you don't want, then run.` : "Open one or more CSV price files.", null);
     } else {
       setTickers(state.liveTickers.length >= MIN_COMPARE_TICKERS ? state.liveTickers : ["AAPL", "MSFT", "SPY"]);
-      setStatus($("sddCompareStatus"), "Ready. Enter 2–10 tickers and run the comparison.", null);
+      setStatus($("sddCompareStatus"), md.liveAvailable() ? "Ready. Enter 2–10 tickers and run the comparison." : "Live data needs your own free Alpha Vantage key (Settings). Or choose CSV files or the offline demo.", md.liveAvailable() ? null : "warn");
     }
+    syncTickerButtons();
+  }
+  let previousSource = sourceValue();
+  compareForm.querySelectorAll('input[name="source"]').forEach(radio => radio.addEventListener("change", () => {
+    if (previousSource === "live") state.liveTickers = [...tickerList.querySelectorAll("input")].map(i => i.value.trim()).filter(Boolean);
+    previousSource = sourceValue();
+    syncSource();
   }));
+  $("sddCsvFiles").addEventListener("change", async event => {
+    const files = [...event.target.files].slice(0, 20);
+    const status = $("sddCompareStatus");
+    const imported = {};
+    const warnings = [];
+    try {
+      for (const file of files) {
+        if (file.size > 8 * 1024 * 1024) throw new Error(`${file.name} is larger than 8 MB.`);
+        const { histories, warnings: w } = parsePriceCsv(await file.text(), file.name);
+        for (const [ticker, history] of Object.entries(histories)) {
+          if (imported[ticker]) throw new Error(`${ticker} appears in more than one file.`);
+          imported[ticker] = history;
+        }
+        warnings.push(...w);
+      }
+      state.imported = imported;
+      state.importedFiles = files.map(f => f.name);
+      syncSource();
+      const count = Object.keys(imported).length;
+      setStatus(status, `Loaded ${count} ticker${count === 1 ? "" : "s"} from ${files.length} file${files.length === 1 ? "" : "s"}${count > MAX_TICKERS ? ` (the first ${MAX_TICKERS} are listed)` : ""}.${warnings.length ? ` ${warnings.join(" ")}` : ""}`, warnings.length ? "warn" : "ok");
+    } catch (error) {
+      state.imported = {};
+      state.importedFiles = [];
+      syncSource();
+      setStatus(status, `Could not read the file: ${error.message}`, "error");
+    }
+  });
   setTickers(state.liveTickers);
 
   /* ================= Compare: run ================= */
@@ -290,19 +308,6 @@ function init() {
     item.textContent = `${ticker}: ${text}`;
   }
 
-  async function mapLimit(items, limit, worker) {
-    const results = new Array(items.length);
-    let next = 0;
-    const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-      while (next < items.length) {
-        const index = next++;
-        results[index] = await worker(items[index], index);
-      }
-    });
-    await Promise.all(runners);
-    return results;
-  }
-
   compareForm.addEventListener("submit", event => { event.preventDefault(); runComparison(); });
   $("sddCancelCompare").addEventListener("click", () => state.compareController?.abort());
 
@@ -310,7 +315,8 @@ function init() {
     if (state.compareController) return;
     const status = $("sddCompareStatus");
     const notice = $("sddCompareNotice");
-    const demo = sourceValue() === "demo";
+    const source = sourceValue();
+    const demo = source === "demo";
     clearRowErrors();
     hideNotice(notice);
     const inputs = [...tickerList.querySelectorAll("input")];
@@ -326,6 +332,11 @@ function init() {
       (inputs[errors.find(e => e.index >= 0)?.index] || inputs[0])?.focus();
       return;
     }
+    if (source === "live" && !md.liveAvailable()) {
+      setStatus(status, "Live data needs your own free Alpha Vantage key.", "error");
+      showNotice(notice, { tone: "info", title: "Live data is not set up in this browser.", items: ["Add your free Alpha Vantage key in Settings (it stays in this browser), open your own CSV price files, or use the offline demo."], actions: [{ label: "Open Settings", onClick: openSettings, secondary: false }, { label: "Use offline demo", onClick: useOfflineDemo }] });
+      return;
+    }
     const riskInput = $("sddRiskFree");
     const riskPct = Number(riskInput.value || 0);
     if (!Number.isFinite(riskPct) || riskPct < 0 || riskPct > 25) {
@@ -337,6 +348,7 @@ function init() {
     riskInput.removeAttribute("aria-invalid");
     const riskFree = riskPct / 100;
     const horizon = $("sddHorizon").value;
+    const basis = $("sddBasis").value;
     const target = $("sddNormalize").value === "off" ? null : $("sddNormalize").value;
     const now = new Date();
     const range = A.resolveHorizon(horizon, now);
@@ -346,76 +358,61 @@ function init() {
     $("sddCancelCompare").disabled = false;
     chips.replaceChildren();
     progress.value = 0;
-    setStatus(status, demo ? "Generating synthetic demo prices…" : "Requesting Yahoo Finance history…", null);
+    setStatus(status, demo ? "Generating synthetic demo prices…" : source === "csv" ? "Reading your imported prices…" : "Requesting prices with your Alpha Vantage key…", null);
 
     const seriesByTicker = {};
     const provenance = [];
     let failures = [];
     let done = 0;
-    const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
+    const aborted = () => controller.signal.aborted;
     try {
-      // Live requests go one at a time with a short gap: public proxies throttle bursts.
-      await mapLimit(symbols, demo ? symbols.length : 1, async (symbol, index) => {
-        if (!demo && index > 0) await pause(250);
-        if (controller.signal.aborted) return;
+      // Live requests run one at a time (the provider allows about one per second).
+      for (const symbol of symbols) {
+        if (aborted()) break;
         chip(symbol, "busy", demo ? "generating" : "queued");
         try {
+          let history;
+          let prov;
           if (demo) {
             const series = demoSeries(symbol, now);
             if (!series) throw new SymbolError(`${symbol} is not part of the offline demo.`, symbol);
-            seriesByTicker[symbol] = series;
-            provenance.push({ ticker: symbol, source: "Synthetic demo", via: "generated in browser", retrievedAt: now.toISOString(), cached: false });
+            seriesByTicker[symbol] = { ...series, frequency: "daily" };
+            provenance.push({ ticker: symbol, source: "Synthetic demo", via: "generated in your browser", retrievedAt: now.toISOString(), cached: false, basis: "Synthetic" });
             chip(symbol, "ok", "synthetic");
-          } else {
-            const { series, provenance: source } = await fetchHistory(pipeline, symbol, range, {
-              signal: controller.signal,
-              onAttempt: proxy => chip(symbol, "busy", `trying ${proxy.label}`),
-            });
-            seriesByTicker[symbol] = series;
-            provenance.push({ ticker: symbol, ...source });
-            chip(symbol, "ok", source.cached ? "cached" : `via ${source.via}`);
+            continue;
           }
+          if (source === "csv") {
+            history = state.imported[symbol];
+            if (!history) throw new DataError(`${symbol} is not in your imported files.`, { kind: "not_found", definitive: true });
+            prov = { source: "Your CSV file", via: history.fileName, retrievedAt: null, cached: false };
+          } else {
+            chip(symbol, "busy", "fetching");
+            ({ history, provenance: prov } = await md.history(symbol, range, { signal: controller.signal }));
+            prov = { source: prov.provider, via: prov.via, retrievedAt: prov.retrievedAt, cached: prov.cached, stale: prov.stale, ageMs: prov.ageMs };
+          }
+          const chosen = selectBasis(history, basis);
+          seriesByTicker[symbol] = {
+            ticker: symbol, currency: history.currency, observations: chosen.observations, priceBasis: chosen.priceBasis,
+            frequency: history.frequency || "daily", basisWarning: chosen.warning,
+            identity: { name: history.name, instrumentType: history.instrumentType, exchange: history.exchange, unitScale: history.unitScale, rawCurrency: history.rawCurrency },
+            adjustmentNote: chosen.priceBasis === "adjusted_close" ? history.adjustment?.adjClose : history.adjustment?.close,
+            currencyVerified: history.currencyVerified !== false,
+          };
+          provenance.push({ ticker: symbol, ...prov, basis: BASIS_LABEL[chosen.priceBasis], frequency: history.frequency });
+          chip(symbol, prov.stale ? "error" : "ok", prov.stale ? "saved copy (refresh failed)" : prov.cached ? "cached" : source === "csv" ? "from file" : "fetched");
         } catch (error) {
-          if (error.kind === "aborted" || controller.signal.aborted) return;
+          if (error.kind === "aborted" || aborted()) break;
           failures.push({ symbol, message: describeError(error), error });
-          chip(symbol, "error", error.kind === "not_found" ? "no data" : "failed");
+          chip(symbol, "error", error.kind === "not_found" ? "no data" : error.kind === "rate_limited" ? "limit reached" : "failed");
         } finally {
           done += 1;
           progress.value = Math.round(done / symbols.length * (target ? 80 : 95));
-          if (!controller.signal.aborted) setStatus(status, `Loaded ${done} of ${symbols.length} tickers…`, null);
-        }
-      });
-      if (controller.signal.aborted) throw new FetchError("Comparison cancelled.", { kind: "aborted" });
-
-      // One retry pass for transient failures, through proxies that worked moments ago.
-      const retryable = failures.filter(f => f.error && !f.error.definitive && !(f.error instanceof SymbolError));
-      if (!demo && retryable.length && pipeline.snapshot().some(p => p.state === "ok" || p.successes > 0)) {
-        setStatus(status, `Retrying ${retryable.map(f => f.symbol).join(", ")} after a short pause…`, null);
-        await pause(3000);
-        for (const failure of retryable) {
-          if (controller.signal.aborted) break;
-          chip(failure.symbol, "busy", "retrying");
-          try {
-            const { series, provenance: source } = await fetchHistory(pipeline, failure.symbol, range, {
-              signal: controller.signal, retry: true,
-              onAttempt: proxy => chip(failure.symbol, "busy", `retrying via ${proxy.label}`),
-            });
-            seriesByTicker[failure.symbol] = series;
-            provenance.push({ ticker: failure.symbol, ...source });
-            failures = failures.filter(f => f !== failure);
-            chip(failure.symbol, "ok", `via ${source.via} (retry)`);
-          } catch (error) {
-            if (error.kind === "aborted" || controller.signal.aborted) break;
-            failure.message = describeError(error);
-            failure.error = error;
-            chip(failure.symbol, "error", error.kind === "not_found" ? "no data" : "failed");
-          }
-          await pause(400);
+          if (!aborted()) setStatus(status, `Loaded ${done} of ${symbols.length} tickers…`, null);
         }
       }
-      if (controller.signal.aborted) throw new FetchError("Comparison cancelled.", { kind: "aborted" });
+      if (aborted()) throw new DataError("Comparison cancelled.", { kind: "aborted" });
 
-      // Horizon trimming and completed-session rule, per ticker.
+      // Horizon trimming and completed-period rule, per ticker.
       let histories = {};
       const warnings = [];
       for (const symbol of symbols) {
@@ -423,42 +420,59 @@ function init() {
         if (!series) continue;
         const prepared = A.prepareHistory(series, horizon, range, now);
         warnings.push(...prepared.warnings);
-        if (series.minorUnitConverted) warnings.push(`${symbol}: prices quoted in minor units (e.g. pence) were converted to ${series.currency}.`);
-        if (series.priceBasis === "close") warnings.push(`${symbol}: adjusted closes were unavailable; unadjusted closes are used.`);
+        if (series.basisWarning) warnings.push(series.basisWarning);
+        if (series.identity?.unitScale && series.identity.unitScale !== 1) warnings.push(`${symbol}: prices quoted in ${series.identity.rawCurrency} (minor units) were converted to ${series.currency}.`);
+        if (!series.currencyVerified) warnings.push(`${symbol}: the provider did not confirm the listing currency; it is treated as unknown.`);
         if (prepared.observations.length >= 2) histories[symbol] = prepared;
-        else failures.push({ symbol, message: `${symbol}: fewer than two completed sessions in the ${horizon} window.` });
+        else failures.push({ symbol, message: `${symbol}: fewer than two completed ${series.frequency === "weekly" ? "weeks" : series.frequency === "monthly" ? "months" : "sessions"} in the ${horizon} window.` });
       }
+      const frequencies = [...new Set(Object.values(histories).map(h => h.frequency))];
+      if (frequencies.length > 1) throw new DataError(`Your files mix ${frequencies.join(" and ")} prices; use one frequency per comparison.`, { kind: "invalid" });
       let normalizedTo = null;
       const fxSources = {};
       if (target && Object.keys(histories).length) {
-        setStatus(status, `Normalizing to ${target}…`, null);
-        const { aligners, sources, warnings: fxWarnings } = await resolveAligners(histories, target, range, {
-          pipeline, signal: controller.signal, offlineRates: demo ? (from, to) => demoFxRates(from, to, now) : null,
-          onStatus: text => setStatus(status, text, null),
-        });
+        setStatus(status, `Normalizing to ${target} with official exchange rates…`, null);
+        const natives = [...new Set(Object.values(histories).map(h => String(h.currency || "").toUpperCase()).filter(c => c && c !== target))];
+        const aligners = {};
+        if (demo) {
+          for (const native of natives) {
+            const points = demoFxRates(native, target, now);
+            if (points) { aligners[native] = buildFxAligner(points.map(p => ({ date: p.date, rate: p.price }))); fxSources[native] = "Synthetic demo FX"; }
+          }
+        } else if (natives.length) {
+          const start = new Date(range.start.getTime() - 14 * 86400000).toISOString().slice(0, 10);
+          try {
+            const fx = await md.fx.history([...natives, target], start, A.isoDate(range.end), { signal: controller.signal });
+            for (const native of natives) {
+              const points = md.fx.crossHistory(native, target, fx.series);
+              if (points.length) {
+                aligners[native] = buildFxAligner(points);
+                fxSources[native] = `${fx.provider} daily rates${native !== "CAD" && target !== "CAD" ? " (derived via CAD)" : ""}${fx.stale ? ", saved copy" : ""}`;
+              }
+            }
+          } catch (error) {
+            if (aborted()) throw error;
+            warnings.push(`Official exchange rates are unavailable (${error.message}); series stay in their own currencies.`);
+          }
+        }
         const normalized = normalizeSeries(histories, target, aligners);
         histories = normalized.series;
-        warnings.push(...fxWarnings, ...normalized.warnings);
-        Object.assign(fxSources, sources);
+        warnings.push(...normalized.warnings);
         normalizedTo = target;
       }
-      if (controller.signal.aborted) throw new FetchError("Comparison cancelled.", { kind: "aborted" });
+      if (aborted()) throw new DataError("Comparison cancelled.", { kind: "aborted" });
 
-      const usable = symbols.filter(s => histories[s]);
+      const usable = symbols.filter(s => histories[s] && histories[s].observations.length >= 2);
       if (usable.length < MIN_COMPARE_TICKERS) {
-        const allNetwork = failures.length && failures.every(f => f.error && !f.error.definitive);
+        const allNetwork = failures.length && failures.every(f => f.error && !f.error.definitive && f.error.kind !== "not_configured");
         discardComparison();
         setStatus(status, usable.length ? "Only one ticker returned usable data; a comparison needs at least two." : "No usable price history was returned.", "error");
         showNotice(notice, {
-          title: allNetwork ? "Live data could not be reached." : "The comparison could not be completed.",
-          items: [
-            ...failures.map(f => f.message),
-            ...(allNetwork ? ["Yahoo Finance could not be reached through the public relays this site uses; they are busy or offline right now. Try again in a minute, or use the offline demo."] : []),
-          ],
+          title: allNetwork ? "Prices could not be retrieved." : "The comparison could not be completed.",
+          items: failures.map(f => f.message),
           actions: [
             { label: "Retry", onClick: () => runComparison(), secondary: false },
             { label: "Use offline demo", onClick: useOfflineDemo },
-            ...(allNetwork ? [{ label: "Connection details", onClick: openSettings }] : []),
           ],
         });
         progress.value = 0;
@@ -467,9 +481,9 @@ function init() {
       const result = A.runComparison(Object.fromEntries(usable.map(s => [s, histories[s]])), { riskFreeAnnual: riskFree });
       const allWarnings = [...new Set([...result.warnings, ...warnings])];
       state.comparison = {
-        tickers: usable, horizon, riskFree, normalizedTo, fxSources,
+        tickers: usable, horizon, riskFree, normalizedTo, fxSources, basis, frequency: result.frequency, periodsPerYear: result.periodsPerYear,
         requestedStart: A.isoDate(range.start), requestedEnd: A.isoDate(range.end),
-        completedAt: new Date().toISOString(), source: demo ? "Synthetic demo" : "Yahoo Finance",
+        completedAt: new Date().toISOString(), source: demo ? "Synthetic demo" : source === "csv" ? "Your CSV file" : "Alpha Vantage (your key)",
         series: usable.map(s => histories[s]), metrics: result.metrics, matrix: result.matrix, counts: result.counts,
         returns: result.returns, warnings: allWarnings, failures: failures.map(f => f.message),
         provenance: provenance.filter(p => usable.includes(p.ticker)), regression: null,
@@ -477,14 +491,14 @@ function init() {
       progress.value = 100;
       renderComparison();
       const partial = failures.length ? ` ${failures.length} ticker${failures.length === 1 ? "" : "s"} skipped.` : "";
-      setStatus(status, `Comparison complete: ${usable.length} securities, ${horizon}.${partial}`, failures.length ? "warn" : "ok");
+      setStatus(status, `Comparison complete: ${usable.length} securities, ${horizon}, ${result.frequency} prices.${partial}`, failures.length ? "warn" : "ok");
       if (failures.length) {
         showNotice(notice, { tone: "warn", title: "Some tickers were skipped.", items: failures.map(f => f.message), actions: [{ label: "Retry", onClick: () => runComparison() }] });
       }
       updateExportState();
     } catch (error) {
-      if (error.kind === "aborted" || controller.signal.aborted) {
-        setStatus(status, "Comparison cancelled. Completed requests stay cached for 15 minutes.", "warn");
+      if (error.kind === "aborted" || aborted()) {
+        setStatus(status, "Comparison cancelled. Completed requests stay cached.", "warn");
       } else {
         discardComparison();
         setStatus(status, describeError(error), "error");
@@ -495,7 +509,7 @@ function init() {
       state.compareController = null;
       $("sddRunCompare").disabled = false;
       $("sddCancelCompare").disabled = true;
-      renderPipelineStatus();
+      renderDataStatus();
     }
   }
 
@@ -516,7 +530,8 @@ function init() {
   function renderComparison() {
     const c = state.comparison;
     $("sddCompareResult").hidden = false;
-    $("sddCompareMeta").textContent = `${c.horizon} · requested ${c.requestedStart} to ${c.requestedEnd} · ${c.source}` +
+    $("sddCompareMeta").textContent = `${c.horizon} · requested ${c.requestedStart} to ${c.requestedEnd} · ${c.source} · ${c.frequency} prices (${c.periodsPerYear} periods per year)` +
+      ` · ${c.basis === "adjusted" ? "adjusted closes requested" : "plain closes (price return)"}` +
       `${c.normalizedTo ? ` · normalized to ${c.normalizedTo}` : " · native currencies"} · completed ${localTime(c.completedAt)}`;
     const starts = c.metrics.map(m => m.actualStart).filter(Boolean).sort();
     const ends = c.metrics.map(m => m.actualEnd).filter(Boolean).sort();
@@ -541,7 +556,7 @@ function init() {
       const tr = el("tr");
       const th = el("th", m.ticker);
       th.scope = "row";
-      tr.append(th, el("td", m.currency ?? "Unknown"));
+      tr.append(th, el("td", m.currency ?? "Unknown"), el("td", BASIS_LABEL[m.priceBasis] || "—"));
       [pct(m.totalReturn), pct(m.annualizedReturn), pct(m.annualizedVolatility), num(m.sharpe), pct(m.maxDrawdown), String(m.returnObservations)]
         .forEach(v => tr.append(el("td", v, "num")));
       tr.append(el("td", `${m.actualStart ?? "—"} → ${m.actualEnd ?? "—"}`));
@@ -562,7 +577,9 @@ function init() {
     renderCompareCharts(c);
     const sources = $("sddCompareSources");
     sources.replaceChildren();
-    c.provenance.forEach(p => sources.append(el("li", `${p.ticker} · ${p.source}${p.via ? ` via ${p.via}` : ""} · retrieved ${localTime(p.retrievedAt)}${p.cached ? " (from 15-minute cache)" : ""}`)));
+    c.provenance.forEach(p => sources.append(el("li", `${p.ticker} · ${p.source}${p.via ? ` (${p.via})` : ""} · ${p.basis || ""}${p.frequency ? `, ${p.frequency}` : ""}` +
+      `${p.retrievedAt ? ` · retrieved ${localTime(p.retrievedAt)}` : ""}${p.stale ? ` · saved copy from ${describeAge(p.ageMs)} ago (refresh failed)` : p.cached ? ` · from this browser's cache (${describeAge(p.ageMs)})` : ""}`)));
+    c.series.forEach(s => { if (s.adjustmentNote) sources.append(el("li", `${s.ticker}: ${s.adjustmentNote}`, "muted")); });
   }
 
   function correlationBackground(value) {
@@ -611,7 +628,7 @@ function init() {
     const c = state.comparison;
     if (!c) return;
     const benchmark = $("sddBenchmark").value;
-    const rows = c.tickers.filter(t => t !== benchmark).map(t => ({ ticker: t, ...A.regression(c.returns[t], c.returns[benchmark], c.riskFree) }));
+    const rows = c.tickers.filter(t => t !== benchmark).map(t => ({ ticker: t, ...A.regression(c.returns[t], c.returns[benchmark], c.riskFree, c.periodsPerYear) }));
     c.regression = { benchmark, rows };
     const stars = p => (isNum(p) ? (p < 0.01 ? " ***" : p < 0.05 ? " **" : p < 0.1 ? " *" : "") : "");
     const host = $("sddRegression");
@@ -620,7 +637,7 @@ function init() {
       rows.map(r => [r.ticker, pct(r.alphaAnnualized), `${num(r.beta, 3)}${stars(r.p)}`, num(r.r2, 3), num(r.p, 4), String(r.n)]),
       { numeric: [1, 2, 3, 4, 5] },
     ));
-    host.append(el("p", "Excess daily log returns over identical intervals. Beta significance: * p<0.10, ** p<0.05, *** p<0.01.", "muted"));
+    host.append(el("p", `Excess ${c.frequency} log returns over identical intervals; alpha annualized × ${c.periodsPerYear}. Beta significance: * p<0.10, ** p<0.05, *** p<0.01.`, "muted"));
   }
   $("sddBenchmark").addEventListener("change", renderRegression);
 
@@ -730,59 +747,75 @@ function init() {
       let source;
       const demo = demoSeries(symbol, now);
       if (demo) {
-        series = demo;
-        source = { source: "Synthetic demo", via: "generated in browser", retrievedAt: now.toISOString(), cached: false };
+        series = { ...demo, frequency: "daily" };
+        source = { source: "Synthetic demo", via: "generated in your browser", retrievedAt: now.toISOString(), cached: false };
+      } else if (state.imported[symbol]) {
+        const h = state.imported[symbol];
+        const chosen = selectBasis(h, "adjusted");
+        series = { ticker: symbol, currency: h.currency, observations: chosen.observations, priceBasis: chosen.priceBasis, frequency: h.frequency, identity: { displayName: null, assetType: null, exchange: null }, market: {} };
+        source = { source: "Your CSV file", via: h.fileName, retrievedAt: null, cached: false };
       } else {
-        ({ series, provenance: source } = await fetchHistory(pipeline, symbol, range, {
-          signal: controller.signal, onAttempt: proxy => setStatus(status, `Loading ${symbol} via ${proxy.label}…`, null),
-        }));
+        if (!md.liveAvailable()) throw new DataError("Live data needs your own free Alpha Vantage key (Settings). Snapshot also works for tickers in your imported CSV files and for the demo tickers.", { kind: "not_configured" });
+        const q = await md.quote(symbol, { signal: controller.signal });
+        setStatus(status, `Loading ${symbol} history…`, null);
+        const { history, provenance } = await md.history(symbol, range, { signal: controller.signal });
+        const chosen = selectBasis(history, "adjusted");
+        series = {
+          ticker: symbol, currency: history.currency, observations: chosen.observations, priceBasis: chosen.priceBasis, frequency: history.frequency,
+          identity: { displayName: history.name, assetType: history.instrumentType, exchange: history.exchange },
+          market: { price: q.quote.price, sessionDate: q.quote.sessionDate, previousClose: q.quote.previousClose, dayHigh: q.quote.dayHigh, dayLow: q.quote.dayLow, volume: q.quote.volume, freshness: q.freshness, quoteCached: q.provenance.cached },
+        };
+        source = { source: provenance.provider, via: provenance.via, retrievedAt: provenance.retrievedAt, cached: provenance.cached && q.provenance.cached, stale: provenance.stale || q.provenance.stale };
       }
       state.snapshot = { series, provenance: source };
       renderSnapshot();
-      setStatus(status, `${symbol} loaded${source.cached ? " from cache" : ""}.`, "ok");
+      setStatus(status, `${symbol} loaded${source.cached ? " from this browser's cache" : ""}.`, source.stale ? "warn" : "ok");
       return state.snapshot;
     } catch (error) {
       if (error.kind === "aborted") return null;
       state.snapshot = null;
       $("sddSnapshotResult").hidden = true;
       setStatus(status, describeError(error), "error");
+      const configure = error.kind === "not_configured" || error.kind === "auth";
       showNotice(notice, {
-        title: error.definitive ? "Ticker not found." : "Live data could not be reached.",
-        items: [describeError(error), ...(error.definitive ? ["Check the symbol; non-US listings need a Yahoo suffix such as .TO or .L."] : ["Yahoo Finance could not be reached through the public relays this site uses; they are busy or offline right now. Try again in a minute, or use the offline demo."])],
-        actions: error.definitive ? [] : [{ label: "Retry", onClick: () => loadSnapshot(symbol), secondary: false }, { label: "Connection details", onClick: openSettings }],
+        title: error.definitive ? "No data for this ticker." : configure ? "Live data is not set up." : "Prices could not be retrieved.",
+        items: [describeError(error)],
+        actions: configure ? [{ label: "Open Settings", onClick: openSettings, secondary: false }] : error.definitive ? [] : [{ label: "Retry", onClick: () => loadSnapshot(symbol), secondary: false }],
       });
       return null;
     } finally {
       if (state.snapshotController === controller) state.snapshotController = null;
       $("sddSnapshotRun").disabled = false;
-      renderPipelineStatus();
+      renderDataStatus();
     }
   }
 
   function renderSnapshot() {
     const { series, provenance } = state.snapshot;
-    const id = series.identity;
-    const m = series.market;
+    const id = series.identity || {};
+    const m = series.market || {};
     $("sddSnapshotResult").hidden = false;
     $("sddSnapshotTitle").textContent = `${series.ticker}${id.displayName ? ` — ${id.displayName}` : ""}`;
     fillDl($("sddSnapshotIdentity"), [
-      ["Name", id.displayName], ["Asset type", id.assetType], ["Exchange", id.exchange], ["Currency", series.currency],
-      ["Price basis", series.priceBasis === "adjusted_close" ? "Adjusted close" : series.priceBasis === "synthetic" ? "Synthetic" : "Close (unadjusted)"],
+      ["Name", id.displayName], ["Asset type", id.assetType], ["Exchange / region", id.exchange], ["Currency", series.currency],
+      ["Price basis", BASIS_LABEL[series.priceBasis] || "Unavailable"], ["History", `${series.frequency || "daily"} prices`],
     ]);
     const now = new Date();
     const prepared = A.prepareHistory(series, "1Y", A.resolveHorizon("1Y", now), now);
     const [metrics] = prepared.observations.length >= 2 ? A.runComparison({ [series.ticker]: prepared }).metrics : [null];
+    const last = series.observations[series.observations.length - 1];
     fillDl($("sddSnapshotMarket"), [
-      ["Last price", money(m.price, series.currency)],
-      ["Market time", m.marketTime ? localTime(m.marketTime) : "Unavailable"],
+      ["Latest price", isNum(m.price) ? money(m.price, series.currency) : last ? `${money(last.price, series.currency)} (last ${series.frequency === "weekly" ? "weekly" : ""} close)` : "Unavailable"],
+      ["Price date", m.sessionDate || (last ? A.isoDate(last.date) : "Unavailable")],
+      ["Freshness", m.freshness ? `${FRESHNESS_LABEL[m.freshness.status]}${m.quoteCached ? " · cached" : ""}` : "—"],
       ["Day range", isNum(m.dayLow) && isNum(m.dayHigh) ? `${money(m.dayLow)} – ${money(m.dayHigh)}` : "Unavailable"],
-      ["52-week range", isNum(m.week52Low) && isNum(m.week52High) ? `${money(m.week52Low)} – ${money(m.week52High)}` : "Unavailable"],
+      ["Previous close", isNum(m.previousClose) ? money(m.previousClose, series.currency) : "Unavailable"],
       ["Volume", isNum(m.volume) ? big(m.volume) : "Unavailable"],
       ["1Y total return", metrics ? pct(metrics.totalReturn) : "—"],
       ["1Y volatility", metrics ? pct(metrics.annualizedVolatility) : "—"],
       ["1Y max drawdown", metrics ? pct(metrics.maxDrawdown) : "—"],
     ]);
-    $("sddSnapshotSource").textContent = `${provenance.source}${provenance.via ? ` via ${provenance.via}` : ""} · retrieved ${localTime(provenance.retrievedAt)}${provenance.cached ? " (cached)" : ""}. Market price fields come from Yahoo's chart metadata and may be delayed.`;
+    $("sddSnapshotSource").textContent = `${provenance.source}${provenance.via ? ` (${provenance.via})` : ""}${provenance.retrievedAt ? ` · retrieved ${localTime(provenance.retrievedAt)}` : ""}${provenance.cached ? " (cached)" : ""}${provenance.stale ? " · saved copy; the latest refresh failed" : ""}.`;
     const points = series.observations;
     makeChart("snapshot", "sddChartSnapshot", lineConfig(points.map(p => A.isoDate(p.date)), [{
       label: series.ticker, data: points.map(p => p.price), borderColor: PALETTE[0], backgroundColor: PALETTE[0], pointRadius: 0, borderWidth: 2, tension: 0.1,
@@ -814,12 +847,12 @@ function init() {
     if (!c) return;
     let rows;
     if (kind === "metrics") {
-      rows = [["Ticker", "Currency", "Total return", "Annualized return", "Annualized volatility", "Sharpe ratio", "Max drawdown", "Return observations", "Actual start", "Actual end"],
-        ...c.metrics.map(m => [m.ticker, m.currency, m.totalReturn, m.annualizedReturn, m.annualizedVolatility, m.sharpe, m.maxDrawdown, m.returnObservations, m.actualStart, m.actualEnd])];
+      rows = [["Ticker", "Currency", "Price basis", "Frequency", "Total return", "Annualized return", "Annualized volatility", "Sharpe ratio", "Max drawdown", "Return observations", "Actual start", "Actual end", "Source"],
+        ...c.metrics.map(m => [m.ticker, m.currency, BASIS_LABEL[m.priceBasis] || "", m.frequency, m.totalReturn, m.annualizedReturn, m.annualizedVolatility, m.sharpe, m.maxDrawdown, m.returnObservations, m.actualStart, m.actualEnd, c.source])];
     } else if (kind === "correlation") {
       rows = [["Ticker", ...c.tickers], ...c.tickers.map(l => [l, ...c.tickers.map(r => c.matrix[l][r])]), [], ["Shared returns", ...c.tickers], ...c.tickers.map(l => [l, ...c.tickers.map(r => c.counts[l][r])])];
     } else {
-      rows = [["Date", "Ticker", "Adjusted close", "Currency"], ...c.series.flatMap(s => s.observations.map(o => [A.isoDate(o.date), s.ticker, o.price, s.currency]))];
+      rows = [["Date", "Ticker", "Price", "Price basis", "Currency", "Source"], ...c.series.flatMap(s => s.observations.map(o => [A.isoDate(o.date), s.ticker, o.price, BASIS_LABEL[s.priceBasis] || "", s.currency, c.source]))];
     }
     const name = `stock-comparison-${kind}-${timestampSlug()}.csv`;
     downloadBlob(new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" }), name);
@@ -836,7 +869,7 @@ function init() {
       disclaimer: "Informational analysis only; not investment advice.",
       comparison: {
         ...c, returns: undefined,
-        series: c.series.map(s => ({ ticker: s.ticker, currency: s.currency, observations: s.observations.map(o => [A.isoDate(o.date), o.price]) })),
+        series: c.series.map(s => ({ ticker: s.ticker, currency: s.currency, nativeCurrency: s.nativeCurrency || s.currency, priceBasis: s.priceBasis, frequency: s.frequency, observations: s.observations.map(o => [A.isoDate(o.date), o.price]) })),
       },
     };
     const name = `stock-comparison-${timestampSlug()}.json`;
@@ -845,89 +878,36 @@ function init() {
   });
 
   /* ================= Settings ================= */
-  function renderProxyRows(snapshot = pipeline.snapshot()) {
-    const body = $("sddProxyRows");
-    body.replaceChildren();
-    snapshot.forEach(p => {
-      const tr = el("tr");
-      const use = el("td");
-      const box = el("input");
-      box.type = "checkbox";
-      box.checked = !pipeline.settings.disabled.includes(p.id);
-      box.disabled = !p.configured;
-      box.setAttribute("aria-label", `Use ${p.label}`);
-      box.addEventListener("change", () => {
-        const disabled = new Set(pipeline.settings.disabled);
-        if (box.checked) disabled.delete(p.id); else disabled.add(p.id);
-        pipeline.updateSettings({ disabled: [...disabled] });
-      });
-      use.append(box);
-      const name = el("td");
-      name.append(el("strong", p.label));
-      if (p.note) name.append(el("div", p.note, "muted"));
-      const labels = { untested: "Not tried", ok: "Working", failing: "Failing", "rate-limited": "Rate-limited", "needs-key": "Needs API key" };
-      const statusText = !p.configured ? "Not configured" : `${labels[p.state] || p.state}${p.coolingDownFor ? ` · retry in ${Math.ceil(p.coolingDownFor / 1000)}s` : ""}${p.preferred ? " · preferred" : ""}`;
-      const statusCell = el("td", statusText);
-      const last = el("td", p.lastError ? p.lastError : isNum(p.lastLatencyMs) ? `${Math.round(p.lastLatencyMs)} ms` : "—");
-      tr.append(use, name, statusCell, last);
-      body.append(tr);
-    });
-  }
-  $("sddProxyTest").addEventListener("click", async event => {
-    const button = event.currentTarget;
-    const out = $("sddProxyStatus");
-    button.disabled = true;
-    const candidates = PROXIES.filter(p => pipeline.isEnabled(p));
-    let working = 0;
-    for (const proxy of candidates) {
-      setStatus(out, `Testing ${proxy.label}…`, null);
-      try { await probe(proxy.id); working += 1; } catch (_) { /* recorded in proxy health */ }
-    }
-    setStatus(out, `${working} of ${candidates.length} proxies returned valid Yahoo Finance data.`, working ? "ok" : "error");
-    button.disabled = false;
-  });
-  $("sddProxyReset").addEventListener("click", () => { pipeline.resetHealth(); setStatus($("sddProxyStatus"), "Proxy health reset; every proxy will be tried again.", null); });
-
-  const keyInput = $("sddCorsproxyKey");
-  const templateInput = $("sddCustomProxy");
-  keyInput.value = pipeline.settings.corsproxyKey;
-  templateInput.value = pipeline.settings.customTemplate;
-  $("sddProxySettings").addEventListener("submit", event => {
+  $("sddKeyForm").addEventListener("submit", event => {
     event.preventDefault();
-    const out = $("sddProxySettingsStatus");
-    const template = templateInput.value.trim();
-    if (!validateTemplate(template)) {
-      templateInput.setAttribute("aria-invalid", "true");
-      setStatus(out, "The custom proxy must be an https URL containing {url} exactly once.", "error");
-      templateInput.focus();
-      return;
+    const input = $("sddKey");
+    const out = $("sddKeyStatus");
+    try {
+      md.setApiKey(input.value);
+      input.value = "";
+      input.removeAttribute("aria-invalid");
+      setStatus(out, md.liveAvailable() ? "Saved in this browser only." : "Key removed.", "ok");
+    } catch (error) {
+      input.setAttribute("aria-invalid", "true");
+      setStatus(out, error.message, "error");
     }
-    templateInput.removeAttribute("aria-invalid");
-    const key = keyInput.value.trim();
-    if (key && !/^[\w.-]{8,200}$/.test(key)) {
-      keyInput.setAttribute("aria-invalid", "true");
-      setStatus(out, "That does not look like a corsproxy.io API key.", "error");
-      return;
-    }
-    keyInput.removeAttribute("aria-invalid");
-    pipeline.updateSettings({ customTemplate: template, corsproxyKey: key });
-    setStatus(out, "Saved in this browser only.", "ok");
+    renderDataStatus();
+    if (sourceValue() === "live") syncSource();
   });
-  $("sddProxyClear").addEventListener("click", () => {
-    keyInput.value = "";
-    templateInput.value = "";
-    pipeline.updateSettings({ customTemplate: "", corsproxyKey: "" });
-    setStatus($("sddProxySettingsStatus"), "Proxy settings cleared.", null);
+  $("sddKeyRemove").addEventListener("click", () => {
+    md.setApiKey("");
+    setStatus($("sddKeyStatus"), "Key removed from this browser.", null);
+    renderDataStatus();
+    if (sourceValue() === "live") syncSource();
   });
-  const workerLink = $("sddWorkerLink");
-  workerLink.href = app.dataset.workerExample || "#";
   $("sddClearCache").addEventListener("click", () => {
-    const removed = clearCache();
-    renderPipelineStatus();
-    $("sddCacheCount").textContent = `Cleared ${removed} cached response${removed === 1 ? "" : "s"}.`;
+    const removed = md.clearCache();
+    renderDataStatus();
+    $("sddCacheCount").textContent = `Cleared ${removed} saved response${removed === 1 ? "" : "s"}.`;
   });
 
-  renderPipelineStatus();
+  renderDataStatus();
+  syncSource();
   updateExportState();
   if (!CHART_AVAILABLE) setStatus($("sddCompareStatus"), "Charts could not load (Chart.js CDN blocked or offline); tables and metrics still work.", "warn");
   app.dataset.ready = "true";

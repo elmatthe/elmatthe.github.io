@@ -165,7 +165,7 @@
 .sdd-list { margin: .2rem 0 0 1.1rem; padding: 0; font-size: .9rem; }
 .sdd-list li { margin-bottom: .25rem; }
 
-.sdd-proxy-table td { vertical-align: middle; }
+
 .sdd-footer-note { margin: 0; padding: .8rem 1.25rem; border-top: 1px solid var(--sdd-border); font-size: .85rem; color: var(--sdd-muted); }
 
 @media (max-width: 760px) {
@@ -182,3 +182,6 @@
   .sdd-ticker-row button { min-width: 2.3rem; padding-inline: .45rem; }
   .sdd-chart { height: 240px; }
 }
+/* The [hidden] attribute must win over display rules such as .sdd-field { display: grid }. */
+.sdd-app [hidden] { display: none !important; }
+.sdd-fieldset input[type="file"] { max-width: 100%; }

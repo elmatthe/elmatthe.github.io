@@ -1,5 +1,5 @@
 // Runs the browser engines under Node for the Python parity tests.
-// stdin: {"tool": "monte-carlo" | "rebalancer" | "rebalancer-legacy", "cases": [...]}
+// stdin: {"tool": "monte-carlo" | "rebalancer" | "rebalancer-legacy" | "stock-analytics", "cases": [...]}
 // stdout: JSON array of results (or {"error": message} per case).
 import fs from "node:fs";
 import path from "node:path";
@@ -49,6 +49,23 @@ if (request.tool === "monte-carlo") {
         currentValue: p.shares * p.price * fx(p.currencyKey), currencyLabel: p.currencyKey,
       }));
       out.push(calc(enriched, c.mode, c.budget));
+    } catch (error) {
+      out.push({ error: error.message });
+    }
+  }
+} else if (request.tool === "stock-analytics") {
+  // cases: [{ series: { TICKER: { frequency, prices: [[YYYY-MM-DD, price], ...] } }, riskFree, benchmark }]
+  const A = await import(pathToFileURL(path.join(site, "assets/js/stock-dashboard/analytics.js")));
+  for (const c of request.cases) {
+    try {
+      const histories = Object.fromEntries(Object.entries(c.series).map(([t, s]) => [t, {
+        ticker: t, frequency: s.frequency || "daily", currency: "USD", priceBasis: "adjusted_close",
+        observations: s.prices.map(([d, p]) => ({ date: new Date(`${d}T00:00:00Z`), price: p })),
+      }]));
+      const result = A.runComparison(histories, { riskFreeAnnual: c.riskFree || 0 });
+      const regression = Object.keys(histories).filter(t => t !== c.benchmark)
+        .map(t => ({ ticker: t, ...A.regression(result.returns[t], result.returns[c.benchmark], c.riskFree || 0, result.periodsPerYear) }));
+      out.push({ metrics: result.metrics, matrix: result.matrix, counts: result.counts, regression, periodsPerYear: result.periodsPerYear, warnings: result.warnings });
     } catch (error) {
       out.push({ error: error.message });
     }

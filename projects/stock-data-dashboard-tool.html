@@ -4,9 +4,9 @@ project: stock
 kind: tool
 title: Stock Comparison & Analytics Tool
 permalink: /projects/stock-data-dashboard-tool/
-summary: Compare 2–10 stocks, ETFs, or indexes in your browser using live Yahoo Finance data, with returns, risk, correlation, regression, currency normalization, and XLSX/CSV export; plus a downloadable desktop app.
+summary: Compare 2–10 stocks, ETFs, or funds in your browser using your own CSV price files or live prices from your free Alpha Vantage key, with returns, risk, correlation, regression, official-rate currency normalization, and XLSX/CSV export; plus a downloadable desktop app.
 lede: Compare stocks, ETFs, and indexes on return, risk, correlation, and regression. Use the web app below instead of installing anything, or download the desktop program for Excel/CSV/JPG exports and rolling-window charts.
-last_updated: 2026-09-28
+last_updated: 2026-11-02
 page_css:
   - /assets/css/stock-dashboard.css
 vendor_js:
@@ -27,34 +27,30 @@ sections:
   <ul class="pj-cards">
     <li class="pj-card"><h3>Performance &amp; risk</h3><p>Total and annualized return, annualized volatility, Sharpe ratio, and maximum drawdown for 2–10 securities over nine horizons (1D to 5Y).</p></li>
     <li class="pj-card"><h3>Correlation &amp; regression</h3><p>A correlation heatmap computed over identical trading intervals, with shared-observation counts, diversification flags, and alpha/beta/R² regression against any benchmark.</p></li>
-    <li class="pj-card"><h3>Currency normalization</h3><p>Convert every series to USD, CAD, EUR, or GBP before any metric is calculated, using Yahoo Finance FX pairs such as <code>CADUSD=X</code>.</p></li>
+    <li class="pj-card"><h3>Currency normalization</h3><p>Convert every series to USD, CAD, EUR, or GBP before any metric is calculated, using official Bank of Canada daily exchange rates (ECB as fallback).</p></li>
     <li class="pj-card"><h3>Exports</h3><p>A five-sheet XLSX workbook plus CSV and JSON downloads, generated in your browser. The desktop app adds Excel/CSV/JPG exports and rolling charts.</p></li>
   </ul>
   <figure class="pj-figure">
     <img src="{{ '/assets/images/stock-data-dashboard-workflow.svg' | relative_url }}" alt="Three-step workflow: choose securities, fetch and analyze market data, review metrics and export results" width="960" height="300" loading="lazy">
-    <figcaption>Choose securities, fetch and analyze Yahoo Finance prices, then review metrics and export.</figcaption>
+    <figcaption>Choose securities, load prices (your CSV files, your Alpha Vantage key, or the demo), then review metrics and export.</figcaption>
   </figure>
 </section>
 
 <section class="pj-section" id="web-app" aria-labelledby="web-app-h">
   <h2 id="web-app-h">Web app</h2>
-  <p>Everything runs in this page: nothing to install and no account. Choose <strong>Offline demo</strong> to explore with synthetic prices when you have no network connection.</p>
-<!-- data-site-proxy: optional. Leave empty unless the site owner runs their own Yahoo relay
-     (e.g. assets/js/yahoo/proxy-worker.example.js); an https template containing {url} is then
-     tried before the public relays. The page works without it. -->
-<div id="sdd-app" class="sdd-app" data-theme="dark" data-site-proxy="" data-worker-example="{{ '/assets/js/yahoo/proxy-worker.example.js' | relative_url }}">
+  <p>Everything runs in this page and nothing is uploaded. Choose where prices come from: <strong>your CSV files</strong> (no account needed), <strong>live prices with your own free Alpha Vantage key</strong>, or the <strong>offline demo</strong> with synthetic prices.</p>
+<div id="sdd-app" class="sdd-app" data-theme="dark">
   <div class="sdd-shell">
     <header class="sdd-masthead">
       <div class="sdd-brand">
         <h2>Stock Comparison &amp; Analytics</h2>
-        <p>Runs in your browser · Yahoo Finance market data · nothing to install</p>
+        <p>Runs in your browser · your CSV files, your Alpha Vantage key, or a demo · official exchange rates</p>
       </div>
       <aside class="sdd-status-widget" aria-label="Live data status">
-        <strong>Live data <span id="sddPipelineState" class="sdd-pill idle">Not tested</span></strong>
-        <span id="sddPipelineDetail">No live request yet.</span>
-        <small id="sddCacheState">Cache: 0 responses</small>
-        <button id="sddTestConnection" type="button" class="secondary">Test connection</button>
-        <small id="sddTestState" role="status" aria-live="polite"></small>
+        <strong>Live prices <span id="sddPipelineState" class="sdd-pill idle">Off</span></strong>
+        <span id="sddPipelineDetail">Add your free Alpha Vantage key in Settings.</span>
+        <small id="sddCacheState">Cache: 0 saved responses</small>
+        <button id="sddOpenSettings" type="button" class="secondary">Live data settings</button>
       </aside>
     </header>
   </div>
@@ -72,21 +68,34 @@ sections:
         <form id="sddCompareForm" class="sdd-form" novalidate>
           <fieldset class="sdd-fieldset">
             <legend>Data source</legend>
-            <label class="sdd-choice"><input type="radio" name="source" value="live" checked> Live · Yahoo Finance</label>
+            <label class="sdd-choice"><input type="radio" name="source" value="live" checked> Live · your Alpha Vantage key</label>
+            <label class="sdd-choice"><input type="radio" name="source" value="csv"> Your CSV files</label>
             <label class="sdd-choice"><input type="radio" name="source" value="demo"> Offline demo · synthetic prices</label>
+            <div id="sddCsvField" class="sdd-field" hidden>
+              <label for="sddCsvFiles">Price files (.csv, read in your browser)</label>
+              <input id="sddCsvFiles" type="file" accept=".csv,text/csv" multiple>
+              <small class="muted">Columns <code>Date, Ticker, Close, Adj Close, Currency</code> (one file), or one file per ticker named like <code>XIU.TO.csv</code> with <code>Date, Close, Adj Close, Currency</code>. Dates YYYY-MM-DD; daily, weekly or monthly. Same format as the desktop app's offline mode.</small>
+            </div>
           </fieldset>
           <fieldset class="sdd-fieldset">
             <legend>Tickers (2–10)</legend>
             <div id="sddTickerList" class="sdd-ticker-list"></div>
             <div class="sdd-actions">
               <button id="sddAddTicker" type="button" class="secondary">Add ticker</button>
-              <small class="muted">Stocks, ETFs, or indexes. Non-US listings use Yahoo suffixes (XIU.TO, ISF.L); indexes use ^ (^GSPC).</small>
+              <small class="muted">Stocks, ETFs, or funds. TSX listings use .TO (XIU.TO), TSX-V .V. Live data has no market indexes (^GSPC); use an index ETF such as SPY or XIU.TO, or import index prices from a CSV file.</small>
             </div>
           </fieldset>
           <div class="sdd-field">
             <label for="sddHorizon">Horizon</label>
             <select id="sddHorizon" name="horizon">
               <option value="1D">1D</option><option value="1M">1M</option><option value="3M">3M</option><option value="6M">6M</option><option value="9M">9M</option><option value="YTD">YTD</option><option value="1Y" selected>1Y</option><option value="3Y">3Y</option><option value="5Y">5Y</option>
+            </select>
+          </div>
+          <div class="sdd-field">
+            <label for="sddBasis">Price basis</label>
+            <select id="sddBasis" name="basis">
+              <option value="adjusted" selected>Adjusted close (total return: splits and dividends)</option>
+              <option value="close">Close (price return only)</option>
             </select>
           </div>
           <div class="sdd-field">
@@ -116,11 +125,11 @@ sections:
           <h4>Performance &amp; risk</h4>
           <div class="sdd-table-scroll">
             <table id="sddMetricsTable">
-              <thead><tr><th scope="col">Ticker</th><th scope="col">Currency</th><th scope="col" class="num">Total return</th><th scope="col" class="num">Annualized return</th><th scope="col" class="num">Annualized volatility</th><th scope="col" class="num">Sharpe</th><th scope="col" class="num">Max drawdown</th><th scope="col" class="num">Return obs.</th><th scope="col">Actual price range</th></tr></thead>
+              <thead><tr><th scope="col">Ticker</th><th scope="col">Currency</th><th scope="col">Price basis</th><th scope="col" class="num">Total return</th><th scope="col" class="num">Annualized return</th><th scope="col" class="num">Annualized volatility</th><th scope="col" class="num">Sharpe</th><th scope="col" class="num">Max drawdown</th><th scope="col" class="num">Return obs.</th><th scope="col">Actual price range</th></tr></thead>
               <tbody></tbody>
             </table>
           </div>
-          <p class="muted">Annualized figures extrapolate the available daily log returns to 252 trading periods, so they overstate what short horizons (1D–3M) can tell you.</p>
+          <p class="muted">Annualized figures extrapolate the average log return to a year (252 periods for daily prices, 52 for weekly, 12 for monthly), so they overstate what short horizons can tell you. Live data uses daily closes (as traded, not adjusted) for windows up to about four months and weekly adjusted closes for longer ones.</p>
           <div id="sddCompareWarnings"></div>
         </div>
         <div class="sdd-grid">
@@ -130,7 +139,7 @@ sections:
           <div class="sdd-card"><h4>Cumulative return</h4><div class="sdd-chart"><canvas id="sddChartCumulative" aria-label="Cumulative return chart" role="img"></canvas></div></div>
           <div class="sdd-card wide">
             <h4>Correlation heatmap</h4>
-            <p class="muted">Daily adjusted-close log returns over identical intervals. Each cell shows the correlation and, underneath, the number of shared returns; "n/a" means fewer than three shared returns or zero variance.</p>
+            <p class="muted">Log returns over identical intervals (same dates for daily prices, same ISO weeks for weekly). Each cell shows the correlation and, underneath, the number of shared returns; "n/a" means fewer than three shared returns or zero variance.</p>
             <div class="sdd-legend"><span>−1</span><span class="sdd-legend-bar"></span><span>+1</span></div>
             <div id="sddCorrelation" class="sdd-table-scroll sdd-corr"></div>
             <div id="sddDiversification" class="muted"></div>
@@ -149,7 +158,7 @@ sections:
     <!-- ================= Snapshot ================= -->
     <section id="sddPanel-snapshot" role="tabpanel" aria-labelledby="sddTab-snapshot" hidden>
       <div class="sdd-panel">
-        <h3>Live market snapshot</h3>
+        <h3>Single-ticker snapshot</h3>
         <form id="sddSnapshotForm" class="sdd-form" novalidate>
           <div class="sdd-field">
             <label for="sddSnapshotTicker">Ticker</label>
@@ -157,12 +166,12 @@ sections:
           </div>
           <div class="sdd-actions"><button id="sddSnapshotRun" type="submit">Load snapshot</button></div>
         </form>
-        <p id="sddSnapshotStatus" class="sdd-status" role="status" aria-live="polite">Loads one year of Yahoo Finance history for a single ticker.</p>
+        <p id="sddSnapshotStatus" class="sdd-status" role="status" aria-live="polite">Shows the latest price and one year of history for a ticker (live with your key, from your imported CSV files, or a demo ticker such as DEMO-GROWTH).</p>
         <div id="sddSnapshotNotice" class="sdd-notice" role="alert" hidden></div>
         <div id="sddSnapshotResult" class="sdd-grid" hidden>
           <div class="sdd-card"><h4 id="sddSnapshotTitle">Snapshot</h4><dl id="sddSnapshotIdentity"></dl></div>
           <div class="sdd-card"><h4>Market data</h4><dl id="sddSnapshotMarket"></dl></div>
-          <div class="sdd-card wide"><h4>One-year adjusted price</h4><div class="sdd-chart"><canvas id="sddChartSnapshot" aria-label="One-year price chart" role="img"></canvas></div><p id="sddSnapshotSource" class="muted"></p></div>
+          <div class="sdd-card wide"><h4>One-year price history</h4><div class="sdd-chart"><canvas id="sddChartSnapshot" aria-label="One-year price chart" role="img"></canvas></div><p id="sddSnapshotSource" class="muted"></p></div>
         </div>
       </div>
     </section>
@@ -191,49 +200,38 @@ sections:
         </div>
       </div>
       <div class="sdd-panel">
-        <h3>Live data proxies</h3>
-        <p class="muted">Yahoo Finance does not allow direct browser requests from other websites (CORS), so each request is relayed through a proxy. Proxies only carry Yahoo’s response; every response is checked to be Yahoo Finance data for the requested symbol before it is used. They are tried in order; a proxy that fails is skipped for a cooldown period, and the last one that worked is tried first. Only the ticker and date range are sent. Settings here are shared with the Portfolio Rebalancer on this site.</p>
-        <div class="sdd-table-scroll">
-          <table class="sdd-proxy-table">
-            <thead><tr><th scope="col">Use</th><th scope="col">Proxy</th><th scope="col">Status</th><th scope="col">Last result</th></tr></thead>
-            <tbody id="sddProxyRows"></tbody>
-          </table>
-        </div>
-        <div class="sdd-actions" style="margin-top:.6rem;">
-          <button id="sddProxyTest" type="button">Test all proxies</button>
-          <button id="sddProxyReset" type="button" class="secondary">Reset proxy health</button>
-        </div>
-        <p id="sddProxyStatus" class="sdd-status" role="status" aria-live="polite"></p>
-      </div>
-      <div class="sdd-panel">
-        <h3>Your own proxy (optional)</h3>
-        <p class="muted">Not needed for normal use. Advanced users with their own relay can add it here to improve reliability. Both settings are saved only in this browser's local storage.</p>
-        <form id="sddProxySettings" class="sdd-form" novalidate>
+        <h3>Live prices with your own key (optional)</h3>
+        <p class="muted">Live prices use <strong>your own</strong> free <a href="https://www.alphavantage.co/support/#api-key">Alpha Vantage API key</a>. It covers US and TSX/TSX-V stocks and ETFs and some US mutual funds, but not market indexes; the free plan allows 25 requests per day, and its terms allow personal, non-commercial use. The key is saved only in this browser's local storage and sent only to Alpha Vantage. Fetched prices stay in this browser. This page never sends your key or data anywhere else.</p>
+        <form id="sddKeyForm" class="sdd-form" novalidate>
           <div class="sdd-field">
-            <label for="sddCorsproxyKey">corsproxy.io API key</label>
-            <input id="sddCorsproxyKey" type="password" autocomplete="off" spellcheck="false" maxlength="200" placeholder="Paste a key from console.corsproxy.io">
-            <small>corsproxy.io requires a key for requests from websites. Its free plan is limited.</small>
-          </div>
-          <div class="sdd-field">
-            <label for="sddCustomProxy">Custom proxy URL template</label>
-            <input id="sddCustomProxy" type="url" autocomplete="off" spellcheck="false" placeholder="https://your-worker.example.workers.dev/?url={url}">
-            <small>Must be https and contain <code>{url}</code>. <a id="sddWorkerLink" href="#">Example Cloudflare Worker</a>.</small>
+            <label for="sddKey">Alpha Vantage API key</label>
+            <input id="sddKey" type="password" autocomplete="off" spellcheck="false" maxlength="64" placeholder="Paste your key">
           </div>
           <div class="sdd-actions">
-            <button type="submit">Save proxy settings</button>
-            <button id="sddProxyClear" type="button" class="secondary">Clear</button>
+            <button type="submit">Save key</button>
+            <button id="sddKeyRemove" type="button" class="secondary">Remove key</button>
           </div>
         </form>
-        <p id="sddProxySettingsStatus" class="sdd-status" role="status" aria-live="polite"></p>
+        <p id="sddKeyState" class="muted" role="status" aria-live="polite"></p>
+        <p id="sddKeyStatus" class="sdd-status" role="status" aria-live="polite"></p>
+      </div>
+      <div class="sdd-panel">
+        <h3>Where the data comes from</h3>
+        <ul class="sdd-list">
+          <li><strong>Live:</strong> Alpha Vantage with your key. Requests run one at a time, about a second apart. Each new ticker costs two requests: one to look up its listing currency and one for prices.</li>
+          <li><strong>CSV:</strong> files you open are read in this browser and never uploaded.</li>
+          <li><strong>Exchange rates</strong> for normalization: Bank of Canada daily averages; if those cannot be reached, the European Central Bank's reference rates. Both are official and need no key.</li>
+          <li><strong>Demo:</strong> synthetic prices generated from a fixed seed; not market data.</li>
+        </ul>
       </div>
       <div class="sdd-panel">
         <h3>Cache</h3>
-        <p class="muted">Successful Yahoo Finance responses are cached for 15 minutes in this tab's session storage, which reduces rate limiting when you re-run a comparison.</p>
+        <p class="muted">Responses fetched with your key are saved in this browser (quotes for 15 minutes, price history for 12 hours, listing details for 30 days) to save your daily requests. A saved copy is used and labelled when a refresh fails.</p>
         <div class="sdd-actions"><button id="sddClearCache" type="button" class="secondary">Clear cached responses</button><span id="sddCacheCount" class="muted"></span></div>
       </div>
     </section>
   </div>
-  <p class="sdd-footer-note"><strong>Disclaimer:</strong> for education and analysis only; not investment, financial, legal, or tax advice. Yahoo Finance is the only market-data source; prices are relayed best-effort through third-party CORS proxies and may be delayed, adjusted, or unavailable.</p>
+  <p class="sdd-footer-note"><strong>Disclaimer:</strong> for education and analysis only; not investment, financial, legal, or tax advice. Prices come from your own files or your own Alpha Vantage key and may be delayed, adjusted, incomplete or unavailable; check a primary source before acting.</p>
 </div>
 </section>
 
@@ -259,17 +257,17 @@ sections:
   <p>The two versions share a purpose, not code. Their numbers can differ slightly because they use different return conventions.</p>
   <div class="pj-table-wrap">
     <table class="pj-table">
-      <caption class="muted" style="caption-side:bottom;text-align:left;padding:.5rem .75rem;">Both versions use Yahoo Finance as their only market-data source.</caption>
+      <caption class="muted" style="caption-side:bottom;text-align:left;padding:.5rem .75rem;">The desktop app uses Yahoo Finance through <code>yfinance</code> on your own computer, for personal use under Yahoo's terms.</caption>
       <thead><tr><th scope="col">Capability</th><th scope="col">Web app</th><th scope="col">Desktop app</th></tr></thead>
       <tbody>
         <tr><th scope="row">Install needed</th><td>None</td><td>ZIP + one launcher (sets itself up)</td></tr>
-        <tr><th scope="row">Price data</th><td>Yahoo Finance daily adjusted closes, relayed by a CORS proxy</td><td>Yahoo Finance via <code>yfinance</code>, or your own CSV files offline</td></tr>
-        <tr><th scope="row">Returns</th><td>Daily log returns on exact shared intervals</td><td>Simple or log returns; daily, weekly or monthly frequency</td></tr>
-        <tr><th scope="row">Annualization</th><td>exp(mean × 252) − 1; stdev × √252</td><td>Geometric compounding of total return; stdev × √periods</td></tr>
-        <tr><th scope="row">Currency normalization</th><td>Yahoo <code>=X</code> FX pairs</td><td>Yahoo <code>=X</code> FX pairs, or <code>fx_rates.csv</code> offline</td></tr>
+        <tr><th scope="row">Price data</th><td>Your CSV files, or Alpha Vantage with your own key (daily or weekly adjusted)</td><td>Yahoo Finance via <code>yfinance</code>, or your own CSV files offline</td></tr>
+        <tr><th scope="row">Returns</th><td>Log returns on exact shared intervals; daily, weekly or monthly</td><td>Simple or log returns; daily, weekly or monthly frequency</td></tr>
+        <tr><th scope="row">Annualization</th><td>exp(mean × P) − 1; stdev × √P (P = 252, 52 or 12)</td><td>Geometric compounding of total return; stdev × √periods</td></tr>
+        <tr><th scope="row">Currency normalization</th><td>Bank of Canada daily rates (ECB fallback)</td><td>Yahoo <code>=X</code> FX pairs, or <code>fx_rates.csv</code> offline</td></tr>
         <tr><th scope="row">Charts</th><td>Indexed price, drawdown, cumulative return, risk/return</td><td>Adds rolling volatility and rolling correlation</td></tr>
         <tr><th scope="row">Exports</th><td>XLSX, CSV, JSON</td><td>Excel, CSV, and JPG chart images</td></tr>
-        <tr><th scope="row">Offline use</th><td>Synthetic demo only</td><td>Real data from your own CSV files</td></tr>
+        <tr><th scope="row">Offline use</th><td>Your CSV files, or the synthetic demo</td><td>Real data from your own CSV files</td></tr>
       </tbody>
     </table>
   </div>
@@ -278,9 +276,11 @@ sections:
 <section class="pj-section" id="data" aria-labelledby="data-h">
   <h2 id="data-h">Data sources &amp; privacy</h2>
   <ul>
-    <li><strong>Yahoo Finance is the only market-data source.</strong> The web app reads Yahoo's public daily chart endpoint (prices, and FX pairs like <code>CADUSD=X</code> for normalization). The desktop app uses the <code>yfinance</code> library.</li>
-    <li><strong>Proxies are transport only.</strong> Yahoo does not allow direct requests from other websites, so the web app relays each request through a public CORS proxy. Every response is checked to be Yahoo chart data for the requested symbol before it is used. Only the ticker and date range are sent.</li>
-    <li><strong>Nothing is uploaded or stored on a server.</strong> Results stay in your browser. A 15-minute response cache lives in this tab's session storage; proxy preferences and the theme are kept in this browser's local storage.</li>
+    <li><strong>Your CSV files</strong> are read in your browser and never uploaded. They work with no account and no network.</li>
+    <li><strong>Live prices use your own free Alpha Vantage key.</strong> No free market-data service allows a public website to show its prices to anonymous visitors. With your own key, the data is licensed to you for personal use and stays in your browser. Coverage: US and TSX/TSX-V stocks and ETFs and some US mutual funds. Not covered: market indexes such as <code>^GSPC</code> or <code>^GSPTSE</code> (a premium feature), Canadian mutual-fund codes such as <code>TDB902</code>, and most other exchanges. Windows up to about four months use daily closes as traded (not adjusted for splits or dividends; unusually large moves are flagged); longer windows use weekly closes adjusted for splits and dividends.</li>
+    <li><strong>Exchange rates</strong> come from the Bank of Canada's daily averages (<a href="https://www.bankofcanada.ca/terms/">terms</a>), with the European Central Bank's reference rates as a fallback. Pairs not involving CAD are derived through CAD. Prices are converted on each date with the latest rate published on or before that date.</li>
+    <li><strong>No public relays.</strong> Earlier versions fetched Yahoo Finance through free public CORS relays. They proved unreliable, could not be verified, and Yahoo's terms do not allow that use, so they have been removed.</li>
+    <li><strong>Saved in your browser:</strong> your key (local storage, until you remove it), fetched responses (see Settings for how long), and the theme. Nothing is stored on a server.</li>
     <li><strong>The offline demo makes no requests.</strong> Its prices are generated from a fixed seed and are clearly labelled synthetic.</li>
   </ul>
   <p class="pj-disclaimer">Informational and educational analysis only; not investment, financial, legal, or tax advice. Data may be delayed, adjusted, incomplete, or unavailable. Check a primary source before acting.</p>
@@ -289,14 +289,14 @@ sections:
 <section class="pj-section" id="help" aria-labelledby="help-h">
   <h2 id="help-h">Troubleshooting</h2>
   <details class="pj-details">
-    <summary>“Live data could not be reached”</summary>
+    <summary>Live data is off or has reached its limit</summary>
     <div class="pj-details-body">
-      <p>Yahoo Finance blocks direct requests from other websites, so the tool reaches it through several free public relays, and their availability varies. Wait a minute and press <strong>Retry</strong>; relays that fail are skipped automatically and the last one that worked is tried first. The <strong>Offline demo</strong> works at any time with no connection. Advanced users can optionally add their own relay in the web app's <strong>Settings</strong> tab.</p>
+      <p>Live prices need your own free Alpha Vantage key (Settings tab). The free plan allows 25 requests per day: each new ticker costs about two, and results are saved in this browser for reuse. When the limit is reached, saved copies are still used and labelled, and you can switch to <strong>Your CSV files</strong> or the <strong>Offline demo</strong> at any time.</p>
     </div>
   </details>
   <details class="pj-details">
     <summary>A ticker says “no data”</summary>
-    <div class="pj-details-body"><p>Use Yahoo Finance symbols: add an exchange suffix for non-US listings (<code>XIU.TO</code>, <code>ISF.L</code>, <code>7203.T</code>) and <code>^</code> for indexes (<code>^GSPC</code>). The rest of the comparison continues without the failed ticker.</p></div>
+    <div class="pj-details-body"><p>Use exchange suffixes for Canadian listings (<code>XIU.TO</code>, <code>.V</code> for TSX-V). Market indexes are not available with a free key; use an index ETF or import index prices from a CSV file. The rest of the comparison continues without the failed ticker.</p></div>
   </details>
   <details class="pj-details">
     <summary>Charts are missing</summary>

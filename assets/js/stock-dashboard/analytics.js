@@ -1,19 +1,29 @@
 // Dependency-free comparison analytics for the Stock Comparison & Analytics page.
 //
 // The site's client-side analytics engine:
-//   * daily log returns, keyed by the exact (previous date, current date) interval;
+//   * log returns between consecutive observations of one series. Each return is
+//     keyed by its interval: the exact (previous date, current date) pair for daily
+//     data, the (previous ISO week, current ISO week) pair for weekly data and the
+//     (previous month, current month) pair for monthly data;
 //   * pairwise correlations only over identical intervals, with observation counts,
 //     and "unavailable" below three shared returns or at zero variance;
-//   * annualized return = exp(mean log return x 252) - 1,
-//     annualized volatility = sample stdev x sqrt(252);
-//   * Sharpe ratio on the same log-return basis;
-//   * max drawdown from the running peak of adjusted closes;
+//   * P periods per year: 252 (daily), 52 (weekly) or 12 (monthly);
+//     annualized return = exp(mean log return x P) - 1,
+//     annualized volatility = sample stdev x sqrt(P);
+//   * Sharpe ratio on the same log-return basis: (mean x P - ln(1 + rf)) / volatility;
+//   * max drawdown from the running peak of the chosen price basis;
 //   * OLS regression of excess log returns against a chosen benchmark.
-// A daily bar dated today is excluded because it may be an unfinished session.
+// An observation for a period that may still be in progress (today's daily bar,
+// this week's weekly bar on a weekday, this month's monthly bar) is excluded.
+// Every series in one comparison must have the same frequency.
 
 export const HORIZONS = ["1D", "1M", "3M", "6M", "9M", "YTD", "1Y", "3Y", "5Y"];
 export const TRADING_DAYS = 252;
+export const PERIODS_PER_YEAR = { daily: 252, weekly: 52, monthly: 12 };
 export const MIN_CORRELATION_OBSERVATIONS = 3;
+// |log return| above ln(1.8) in one period is flagged as a possible unadjusted
+// split or data error (a 2:1 split shows as ln(0.5) = -0.69).
+export const LARGE_MOVE_LOG = Math.log(1.8);
 
 const DAY_MS = 86400000;
 
@@ -43,23 +53,51 @@ export function resolveHorizon(horizon, now = new Date()) {
   return { start, end };
 }
 
-// A daily bar dated today is not proven to be a completed session, so it is
-// excluded to keep intraday values out of returns (same rule as the desktop tool).
-export function completedObservations(observations, now = new Date()) {
+// ISO-8601 week label (e.g. 2026-W44) of a UTC date.
+export function isoWeek(date) {
+  const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const day = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((d - yearStart) / DAY_MS + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+export const periodLabel = (date, frequency = "daily") =>
+  frequency === "weekly" ? isoWeek(date) : frequency === "monthly" ? isoDate(date).slice(0, 7) : isoDate(date);
+
+// An observation for a period that may still be trading is excluded so unfinished
+// values stay out of returns: today's daily bar (same rule as the desktop tool),
+// this ISO week's bar from Monday to Friday, and this month's monthly bar.
+export function completedObservations(observations, now = new Date(), frequency = "daily") {
+  if (frequency === "weekly") {
+    const weekday = now.getUTCDay();
+    if (weekday === 0 || weekday === 6) return observations.slice();
+    const current = isoWeek(now);
+    return observations.filter(item => isoWeek(item.date) !== current);
+  }
+  if (frequency === "monthly") {
+    const month = isoDate(now).slice(0, 7);
+    return observations.filter(item => isoDate(item.date).slice(0, 7) < month);
+  }
   const today = isoDate(now);
   return observations.filter(item => isoDate(item.date) < today);
 }
 
-// Shapes one fetched/offline series for a horizon: completed sessions only, trimmed
-// to the requested start, and the last two observations for 1D.
+// Shapes one fetched/offline series for a horizon: completed periods only, trimmed
+// to the requested start, and the last two observations for 1D (daily data only).
 export function prepareHistory(series, horizon, range, now = new Date()) {
-  let observations = completedObservations(series.observations, now)
+  const frequency = series.frequency || "daily";
+  if (horizon === "1D" && frequency !== "daily") {
+    return { ...series, observations: [], warnings: [`${series.ticker}: the 1D horizon needs daily prices; this series is ${frequency}.`] };
+  }
+  let observations = completedObservations(series.observations, now, frequency)
     .filter(item => item.date >= range.start || horizon === "1D");
   if (horizon === "1D") observations = observations.slice(-2);
   const warnings = [];
+  const slack = frequency === "monthly" ? 35 : frequency === "weekly" ? 10 : 7;
   if (observations.length && horizon !== "1D" &&
-      observations[0].date.getTime() > range.start.getTime() + 7 * DAY_MS) {
-    warnings.push(`${series.ticker}: requested history is only partially available.`);
+      observations[0].date.getTime() > range.start.getTime() + slack * DAY_MS) {
+    warnings.push(`${series.ticker}: requested history is only partially available (first price ${isoDate(observations[0].date)}).`);
   }
   return { ...series, observations, warnings };
 }
@@ -67,14 +105,16 @@ export function prepareHistory(series, horizon, range, now = new Date()) {
 export function alignLogReturns(histories) {
   const result = {};
   for (const [ticker, history] of Object.entries(histories)) {
+    const frequency = history.frequency || "daily";
     const rows = [];
     let previous = null;
     let previousDate = null;
     for (const item of history.observations) {
       const price = finite(item.price);
+      if (!(price > 0)) continue; // never a zero or invalid price
       const currentDate = isoDate(item.date);
-      if (previous && price && previous > 0 && price > 0) {
-        rows.push({ interval: `${previousDate}|${currentDate}`, previousDate, currentDate, value: Math.log(price / previous) });
+      if (previous) {
+        rows.push({ interval: `${periodLabel(new Date(`${previousDate}T00:00:00Z`), frequency)}|${periodLabel(item.date, frequency)}`, previousDate, currentDate, value: Math.log(price / previous) });
       }
       previous = price;
       previousDate = currentDate;
@@ -82,6 +122,11 @@ export function alignLogReturns(histories) {
     result[ticker] = rows;
   }
   return result;
+}
+
+// Periods whose log return magnitude exceeds LARGE_MOVE_LOG.
+export function largeMoves(returnRows, threshold = LARGE_MOVE_LOG) {
+  return returnRows.filter(r => Math.abs(r.value) > threshold).map(r => ({ date: r.currentDate, change: Math.exp(r.value) - 1 }));
 }
 
 export function pairReturns(left, right) {
@@ -128,15 +173,15 @@ export function correlationMatrix(returns) {
   return { matrix, counts };
 }
 
-export function comparisonMetrics(histories, returns, riskFreeAnnual = 0) {
+export function comparisonMetrics(histories, returns, riskFreeAnnual = 0, periodsPerYear = TRADING_DAYS) {
   return Object.entries(histories).map(([ticker, history]) => {
-    const prices = history.observations.map(item => item.price);
+    const prices = history.observations.map(item => item.price).filter(p => finite(p) > 0);
     const values = returns[ticker].map(row => row.value);
     const total = prices.length > 1 && prices[0] > 0 ? prices[prices.length - 1] / prices[0] - 1 : null;
     const m = values.length ? mean(values) : null;
     const variance = values.length > 1 ? values.reduce((sum, v) => sum + (v - m) ** 2, 0) / (values.length - 1) : null;
-    const annual = m !== null ? Math.exp(m * TRADING_DAYS) - 1 : null;
-    const volatility = variance !== null ? Math.sqrt(variance * TRADING_DAYS) : null;
+    const annual = m !== null ? Math.exp(m * periodsPerYear) - 1 : null;
+    const volatility = variance !== null ? Math.sqrt(variance * periodsPerYear) : null;
     let maxDrawdown = prices.length ? 0 : null;
     let peak = prices.length ? prices[0] : null;
     for (const price of prices) {
@@ -144,10 +189,12 @@ export function comparisonMetrics(histories, returns, riskFreeAnnual = 0) {
       maxDrawdown = Math.min(maxDrawdown, price / peak - 1);
     }
     // Continuous-compounding Sharpe on the same log-return basis.
-    const sharpe = m !== null && volatility ? (m * TRADING_DAYS - Math.log(1 + riskFreeAnnual)) / volatility : null;
+    const sharpe = m !== null && volatility ? (m * periodsPerYear - Math.log(1 + riskFreeAnnual)) / volatility : null;
     return {
       ticker,
       currency: history.currency || null,
+      priceBasis: history.priceBasis || null,
+      frequency: history.frequency || "daily",
       priceObservations: prices.length,
       returnObservations: values.length,
       actualStart: history.observations.length ? isoDate(history.observations[0].date) : null,
@@ -211,8 +258,8 @@ export function tTwoTailedP(t, df) {
 }
 
 // OLS of excess log returns (y on benchmark x) over exact shared intervals.
-export function regression(yReturns, xReturns, riskFreeAnnual = 0) {
-  const rfPer = Math.log(1 + riskFreeAnnual) / TRADING_DAYS;
+export function regression(yReturns, xReturns, riskFreeAnnual = 0, periodsPerYear = TRADING_DAYS) {
+  const rfPer = Math.log(1 + riskFreeAnnual) / periodsPerYear;
   const { x: ys0, y: xs0 } = pairReturns(yReturns, xReturns);
   const ys = ys0.map(v => v - rfPer);
   const xs = xs0.map(v => v - rfPer);
@@ -237,7 +284,7 @@ export function regression(yReturns, xReturns, riskFreeAnnual = 0) {
   const se = Math.sqrt(ssRes / (n - 2) / sxx);
   const t = se ? beta / se : null;
   return {
-    alpha: finite(alpha), alphaAnnualized: finite(alpha * TRADING_DAYS), beta: finite(beta),
+    alpha: finite(alpha), alphaAnnualized: finite(alpha * periodsPerYear), beta: finite(beta),
     r2: finite(r2), t: finite(t), p: t === null ? null : finite(tTwoTailedP(t, n - 2)), n,
   };
 }
@@ -268,13 +315,26 @@ export function drawdownSeries(observations) {
 
 // Full comparison run over already-prepared histories. Mirrors ComparisonService._execute.
 export function runComparison(histories, { riskFreeAnnual = 0 } = {}) {
-  const currencies = [...new Set(Object.values(histories).map(h => h.currency).filter(Boolean))].sort();
+  const list = Object.values(histories);
+  const frequencies = [...new Set(list.map(h => h.frequency || "daily"))];
+  if (frequencies.length > 1) throw new Error(`Every series must have the same frequency; got ${frequencies.join(" and ")}.`);
+  const frequency = frequencies[0] || "daily";
+  const periodsPerYear = PERIODS_PER_YEAR[frequency];
+  const currencies = [...new Set(list.map(h => h.currency).filter(Boolean))].sort();
+  const bases = [...new Set(list.map(h => h.priceBasis).filter(Boolean))];
   const warnings = [];
   if (currencies.length > 1) {
-    warnings.push("Mixed listing currencies are shown in native currency; values are not FX-normalized.");
+    warnings.push(`Mixed currencies (${currencies.join(", ")}): returns and correlations include each currency's own exchange-rate moves; choose "Normalize to currency" to compare in one currency.`);
+  }
+  if (bases.length > 1) {
+    warnings.push("Some series use adjusted closes (dividends included) and others plain closes (price only), so their returns are not directly comparable.");
   }
   const returns = alignLogReturns(histories);
+  for (const [ticker, rows] of Object.entries(returns)) {
+    const moves = largeMoves(rows);
+    if (moves.length) warnings.push(`${ticker}: ${moves.length} unusually large one-period move${moves.length === 1 ? "" : "s"} (${moves.slice(0, 3).map(m => `${m.date} ${(m.change * 100).toFixed(0)}%`).join(", ")}): possibly an unadjusted split or a data error. Check before relying on the results.`);
+  }
   const { matrix, counts } = correlationMatrix(returns);
-  const metrics = comparisonMetrics(histories, returns, riskFreeAnnual);
-  return { returns, matrix, counts, metrics, currencies, warnings };
+  const metrics = comparisonMetrics(histories, returns, riskFreeAnnual, periodsPerYear);
+  return { returns, matrix, counts, metrics, currencies, warnings, frequency, periodsPerYear };
 }
