@@ -81,6 +81,7 @@ const num = text => Number(String(text).replace(/[^0-9.\-]/g, ""));
 
   // Rebalance mode: sells fund buys; cross-account warning.
   await page.selectOption("#rbMode", "rebalance");
+  check(!(await page.isVisible("#rbBudgetField")), "budget field hidden in Rebalance mode (it does not apply)");
   await page.click("#rbRun");
   await waitIdle();
   const rTiles = await page.locator("#rbResults .pj-tile").allInnerTexts();
