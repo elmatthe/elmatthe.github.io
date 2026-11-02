@@ -50,7 +50,7 @@ from plots import (
 )
 
 
-APP_VERSION = "v0.4.0"
+APP_VERSION = "v0.4.1"
 
 MULTI_CURRENCY_WARNING = (
     "Multiple listing currencies were detected. Returns and correlations are currently computed in each security's "

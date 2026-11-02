@@ -3,7 +3,7 @@
 
 [project]
 name = "Portfolio Rebalancer"
-version = "1.1.0"
+version = "1.1.1"
 profile = "python-desktop"
 platforms = ["windows", "macos"]
 

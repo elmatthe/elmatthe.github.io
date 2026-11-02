@@ -30,7 +30,7 @@ cpi:
 rebalancer:
   name: Portfolio Rebalancer
   category: Portfolio Management Tool
-  version: 1.1.0
+  version: 1.1.1
   web_app: Runs in your browser
   platforms: Windows · macOS
   python: "3.11–3.14"
@@ -44,7 +44,7 @@ rebalancer:
 stock:
   name: Stock Comparison & Analytics Tool
   category: Market Analytics Tool
-  version: 0.4.0
+  version: 0.4.1
   web_app: Runs in your browser
   platforms: Windows · macOS
   python: "3.11–3.14"
@@ -52,6 +52,6 @@ stock:
   guide: /projects/stock-data-dashboard-guide/
   zip: /projects/stock-data-dashboard-tool.zip
   zip_name: stock-data-dashboard-tool.zip
-  zip_size: 41 KB
+  zip_size: 42 KB
   launcher_windows: Setup_and_Run-stock-data-dashboard-tool.bat
   launcher_macos: Setup_and_Run-stock-data-dashboard-tool.command

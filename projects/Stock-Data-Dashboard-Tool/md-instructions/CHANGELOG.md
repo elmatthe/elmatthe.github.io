@@ -1,5 +1,14 @@
 # Stock Comparison & Analytics Tool - Changelog
 
+## v0.4.1 - 2026-11-02
+- Fixed London (pence) listings: yfinance reports them as `GBp`, which was upper-cased to `GBP`
+  without dividing by 100, so price levels, charts, exports and FX-normalized levels were 100x
+  too large (returns and correlations were unaffected). Yahoo and offline-CSV prices quoted in
+  `GBp`/`GBX` (also `ZAc`, `ILA`) are now converted to the major currency with a warning.
+- Web tool (same release): price data comes from your own CSV files or your own free Alpha
+  Vantage key (no public relays); normalization uses Bank of Canada rates (ECB fallback); weekly
+  and monthly data are supported; the price basis (adjusted vs close) is shown everywhere.
+
 ## v0.4.0 - 2026-09-28
 - Replaced `setup_and_run.bat/.command` with the standard one-click launchers
   `Setup_and_Run-stock-data-dashboard-tool.bat/.command` and `scripts/bootstrap.py`: a

@@ -46,7 +46,7 @@ drifted packages are reinstalled. Python itself is installed only with consent a
 per user (winget user scope on Windows; Homebrew or python.org on macOS).
 
 ## Current Version
-v1.1.0
+v1.1.1
 
 ## What Has Been Built
 - Modular desktop package (core, fx, pricing, ticker_helper, export, ui) + `main.py`.

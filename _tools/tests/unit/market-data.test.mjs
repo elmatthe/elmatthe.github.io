@@ -439,3 +439,31 @@ test("symbol validation accepts exchange suffixes, classes, indexes; rejects jun
   assert.deepEqual(symbols, ["AAPL", "MSFT"]);
   assert.match(errors[0].message, /more than once/);
 });
+
+/* ---------------- required instrument matrix ---------------- */
+test("instrument matrix: every requested symbol is classified explicitly", () => {
+  const supported = { "RY.TO": "RY.TRT", "TD.TO": "TD.TRT", "VEQT.TO": "VEQT.TRT", "XEQT.TO": "XEQT.TRT", "VFV.TO": "VFV.TRT", "XIU.TO": "XIU.TRT",
+    AAPL: "AAPL", MSFT: "MSFT", NVDA: "NVDA", SPY: "SPY", VTI: "VTI", VFIAX: "VFIAX", "BBD-B.TO": "BBD-B.TRT", "BRK-B": "BRK-B", "BRK.B": "BRK.B" };
+  for (const [input, av] of Object.entries(supported)) {
+    assert.equal(normalizeSymbol(input), input.toUpperCase());
+    assert.equal(toAvSymbol(input), av, input);
+  }
+  // Indexes and FX pairs are valid symbols but are not requested from Alpha Vantage.
+  for (const unsupported of ["^GSPC", "^GSPTSE", "USDCAD=X", "CADUSD=X", "EURUSD=X", "USDJPY=X"]) {
+    assert.ok(normalizeSymbol(unsupported));
+    assert.throws(() => toAvSymbol(unsupported), e => e.definitive && e.kind === "not_found", unsupported);
+  }
+  // Punctuation that could reach a URL is rejected before any request.
+  for (const bad of ["RY.TO/../x", "AAPL&apikey=x", "RY TO", "TD..TO", ".TO"]) assert.throws(() => normalizeSymbol(bad), bad);
+});
+
+test("FX matrix from one set of Bank of Canada fixings: USD/CAD, CAD/USD, EUR/USD, USD/JPY", () => {
+  const latest = { CAD: { cadPer: 1, date: null }, USD: { cadPer: 1.3960, date: "2026-10-30" }, EUR: { cadPer: 1.5582, date: "2026-10-30" }, JPY: { cadPer: 0.008870, date: "2026-10-30" } };
+  const pair = (a, b) => crossFromCad(a, b, latest).rate;
+  assert.equal(pair("USD", "CAD"), 1.3960);
+  assert.ok(Math.abs(pair("CAD", "USD") * pair("USD", "CAD") - 1) < 1e-15, "CAD/USD is the exact inverse of USD/CAD");
+  assert.ok(Math.abs(pair("EUR", "USD") - 1.116189) < 1e-6);
+  assert.ok(Math.abs(pair("USD", "JPY") - 157.384) < 1e-3);
+  // Triangular consistency: EUR->JPY = EUR->USD x USD->JPY.
+  assert.ok(Math.abs(pair("EUR", "JPY") - pair("EUR", "USD") * pair("USD", "JPY")) < 1e-9);
+});

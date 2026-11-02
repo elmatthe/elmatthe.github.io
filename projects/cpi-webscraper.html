@@ -8,7 +8,7 @@ redirect_from:
   - /projects/cpi-dashboard-automation/
 summary: Windows desktop tool that downloads Canadian and US inflation, rates, PCE and S&P 500 data from Statistics Canada and FRED straight into an existing Excel model, with optional CSV export.
 lede: Refresh an inflation and rates workbook in one click. The CPI Web Scraper collects 18 Statistics Canada and FRED series for any month or date range back to 1913, validates everything, and writes it into your existing Excel model without touching its formulas.
-last_updated: 2026-09-28
+last_updated: 2026-11-02
 sections:
   - { id: overview, label: Overview }
   - { id: download, label: Download }
@@ -30,7 +30,7 @@ sections:
     <figcaption>Download → update the Excel model → use the results in planning discussions.</figcaption>
   </figure>
   <div class="pj-note">
-    <p><strong>Desktop only.</strong> The tool needs desktop Microsoft Excel for Windows, so there is no web version. Everything you need is in the download.</p>
+    <p><strong>Desktop only.</strong> The tool needs desktop Microsoft Excel for Windows, so there is no web version. Everything you need is in the download. A browser version could read the five Statistics Canada series directly (their data service allows it, with no key), but the thirteen FRED series need a personal API key and FRED does not allow requests from other websites, so a complete web version would need a server.</p>
   </div>
 </section>
 
@@ -61,7 +61,7 @@ sections:
       <tbody>
         <tr><th scope="row">A</th><td>Date (monthly key)</td><td>—</td><td>1913-01</td></tr>
         <tr><th scope="row">B–C</th><td>Headline CPI, unadjusted / seasonally adjusted (Canada)</td><td>Statistics Canada 41690973 / 41690914</td><td>1914-01 / 1992-01</td></tr>
-        <tr><th scope="row">D–E</th><td>Core CPI, unadjusted / seasonally adjusted (Canada)</td><td>Statistics Canada 41691233 / 41690924</td><td>1961-01 / 1992-01</td></tr>
+        <tr><th scope="row">D–E</th><td>Core CPI (all-items excluding food and energy), unadjusted / seasonally adjusted (Canada)</td><td>Statistics Canada 41691233 / 41690924</td><td>1961-01 / 1992-01</td></tr>
         <tr><th scope="row">F</th><td>Alberta CPI, unadjusted</td><td>Statistics Canada 41692327</td><td>1978-09</td></tr>
         <tr><th scope="row">G–H</th><td>Headline CPI, unadjusted / seasonally adjusted (US)</td><td>FRED CPIAUCNS / CPIAUCSL</td><td>1913-01 / 1947-01</td></tr>
         <tr><th scope="row">I–J</th><td>Core CPI, unadjusted / seasonally adjusted (US)</td><td>FRED CPILFENS / CPILFESL</td><td>1957-01</td></tr>
@@ -74,6 +74,7 @@ sections:
       </tbody>
     </table>
   </div>
+  <p class="muted">“Core” here is Statistics Canada's all-items CPI excluding food and energy (tables 18-10-0004 and 18-10-0006), not the Bank of Canada's preferred core measures (CPI-trim, CPI-median). Seasonally adjusted series are revised by Statistics Canada, typically each January; every download fetches the current published values, so a re-run picks up revisions.</p>
   <h3>Optional S&amp;P 500 history</h3>
   <p>FRED publishes only about ten years of S&amp;P 500 history, and that series carries third-party usage restrictions. Setting <code>add_missing_data = true</code> under <code>[sp500_history]</code> in <code>config.toml</code> fills older months from Yahoo Finance <code>^GSPC</code> daily closes. FRED always wins any overlap, the two sources must agree within 0.005 index points, and any mismatch stops the download before Excel is touched. The default is <code>false</code>, which makes no Yahoo requests.</p>
   <p class="pj-disclaimer">This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis. Statistics Canada is the source of the Canadian data; this application does not imply Statistics Canada endorsement. Confirm your organization's rights to S&amp;P 500 data before professional use.</p>

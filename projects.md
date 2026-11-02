@@ -17,10 +17,10 @@ redirect_from:
   </li>
   <li>
     <a href="{{ '/projects/portfolio-rebalancer/' | relative_url }}">Portfolio Rebalancer</a>
-    <div class="muted">Buy / sell / hold plans in your browser with optional live Yahoo Finance prices and FX, CSV and Excel export, plus a one-click desktop app for Windows and macOS.</div>
+    <div class="muted">Buy / sell / hold plans in your browser with official Bank of Canada exchange rates, optional live prices with your own free Alpha Vantage key, CSV and Excel export, plus a one-click desktop app for Windows and macOS.</div>
   </li>
   <li>
     <a href="{{ '/projects/stock-data-dashboard-tool/' | relative_url }}">Stock Comparison &amp; Analytics Tool</a>
-    <div class="muted">In-browser comparison of stocks, ETFs and indexes using Yahoo Finance data (returns, risk, correlation, regression, currency normalization, XLSX/CSV export), plus a one-click desktop app for Windows and macOS.</div>
+    <div class="muted">In-browser comparison of stocks, ETFs and funds from your own CSV files or your own Alpha Vantage key (returns, risk, correlation, regression, official-rate currency normalization, XLSX/CSV export), plus a one-click desktop app for Windows and macOS.</div>
   </li>
 </ul>
