@@ -101,6 +101,31 @@ def normalize_currency(value: object) -> str:
     return str(value).strip().upper()
 
 
+# Listing currencies quoted in 1/100 of the ISO currency (Yahoo reports London
+# listings as "GBp"/"GBX", Johannesburg as "ZAc", Tel Aviv as "ILA").
+MINOR_UNIT_CURRENCIES = {"GBp": ("GBP", 0.01), "GBX": ("GBP", 0.01), "ZAc": ("ZAR", 0.01), "ZAC": ("ZAR", 0.01), "ILA": ("ILS", 0.01)}
+
+
+def convert_minor_units(frame: pd.DataFrame, currency: str | None, ticker: str) -> tuple[pd.DataFrame, str | None, list[str]]:
+    """Convert minor-unit prices (e.g. pence) to the major currency.
+
+    Returns (frame, currency, warnings). Without this, a London price of 412 GBp
+    would be labelled 412 GBP: 100 times too large in levels, exports and FX
+    normalization (returns are unaffected because the scale cancels).
+    """
+    raw = str(currency).strip() if currency else ""
+    if raw not in MINOR_UNIT_CURRENCIES:
+        return frame, currency, []
+    major, factor = MINOR_UNIT_CURRENCIES[raw]
+    converted = frame.copy()
+    for column in ("Close", "Adj Close"):
+        if column in converted.columns:
+            converted[column] = pd.to_numeric(converted[column], errors="coerce") * factor
+    if "Currency" in converted.columns:
+        converted["Currency"] = major
+    return converted, major, [f"{ticker}: prices quoted in {raw} (1/100 {major}) were converted to {major}."]
+
+
 def _most_common_currency(values: pd.Series) -> tuple[str | None, list[str]]:
     currencies = [normalize_currency(value) for value in values.dropna() if normalize_currency(value)]
     if not currencies:
@@ -331,6 +356,10 @@ class OfflineCsvSource(BaseDataSource):
                 raise DataSourceError(f"{ticker_key} is missing usable values for requested price type: {price_type}.")
         currency = None
         if "Currency" in frame.columns:
+            raw_values = [str(v).strip() for v in frame["Currency"].dropna() if str(v).strip()]
+            if raw_values and all(v in ("GBp", "GBX") for v in raw_values):
+                frame, _, unit_warnings = convert_minor_units(frame, raw_values[0], ticker_key)
+                warnings.extend(unit_warnings)
             currency, currency_warnings = _most_common_currency(frame["Currency"])
             warnings.extend([f"{ticker_key}: {warning}" for warning in currency_warnings])
         return PriceDataResult(ticker_key, ticker_key, currency, frame, warnings)
@@ -407,13 +436,14 @@ class YahooFinanceSource(BaseDataSource):
                 if ticker_key.endswith(suffix):
                     currency = suffix_currency
                     break
+        frame, currency, unit_warnings = convert_minor_units(frame, currency, ticker_key)
         currency = normalize_currency(currency) if currency else None
         display_name = info.get("shortName") or info.get("longName") or ticker_key
         if currency:
             frame["Currency"] = currency
         if _canonical_price_column(price_type) not in frame.columns or frame[_canonical_price_column(price_type)].dropna().empty:
             raise DataSourceError(f"No usable data was returned for {ticker_key}.")
-        return PriceDataResult(ticker_key, display_name, currency, frame, [])
+        return PriceDataResult(ticker_key, display_name, currency, frame, unit_warnings)
 
     def fetch_fx_rate(
         self,
