@@ -91,7 +91,11 @@ function ecbBody(url) {
 
 const avCurrency = symbol => (/\.(TRT|TRV)$/.test(symbol) ? "CAD" : /\.LON$/.test(symbol) ? "GBX" : /\.DEX$/.test(symbol) ? "EUR" : "USD");
 const avRegion = symbol => (/\.TRT$/.test(symbol) ? "Toronto" : /\.TRV$/.test(symbol) ? "Toronto Venture" : /\.LON$/.test(symbol) ? "United Kingdom" : "United States");
-function avPrice(symbol, ms) {
+// "SPLITX" has a 3-for-2 split 20 sessions ago: as-traded closes drop by a third,
+// adjusted closes are continuous.
+const SPLIT_AT = Date.now() - 28 * DAY;
+function avPrice(symbol, ms, adjusted = false) {
+  if (symbol === "SPLITX" && !adjusted && ms < SPLIT_AT) return Number((avPrice(symbol, ms, true) * 1.5).toFixed(4));
   const seed = hash(symbol);
   const base = /\.LON$/.test(symbol) ? 300 + (seed % 900) : 20 + (seed % 400);
   const t = Math.floor(ms / DAY);
@@ -130,7 +134,7 @@ function avBody(url, mode) {
   if (fn === "TIME_SERIES_WEEKLY_ADJUSTED") {
     const fridays = days.filter(t => new Date(t).getUTCDay() === 5);
     return JSON.stringify({ "Meta Data": { "1. Information": "Weekly Adjusted Prices and Volumes", "2. Symbol": symbol, "3. Last Refreshed": iso(fridays[fridays.length - 1]), "4. Time Zone": "US/Eastern" },
-      "Weekly Adjusted Time Series": Object.fromEntries(fridays.reverse().map(t => [iso(t), { "1. open": "1", "2. high": "1", "3. low": "1", "4. close": String(avPrice(symbol, t)), "5. adjusted close": String(Number((avPrice(symbol, t) * 0.98).toFixed(4))), "6. volume": "5000", "7. dividend amount": "0.0000" }])) });
+      "Weekly Adjusted Time Series": Object.fromEntries(fridays.reverse().map(t => [iso(t), { "1. open": "1", "2. high": "1", "3. low": "1", "4. close": String(avPrice(symbol, t)), "5. adjusted close": String(Number((avPrice(symbol, t, true) * 0.98).toFixed(4))), "6. volume": "5000", "7. dividend amount": "0.0000" }])) });
   }
   return JSON.stringify({ "Error Message": "Invalid API call." });
 }

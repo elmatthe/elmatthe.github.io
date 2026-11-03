@@ -213,9 +213,43 @@ function sampleCsv() {
   check(await page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith("md.av.") && !k.endsWith(".usage")).length === 0), "responses fetched with the removed key are deleted");
   check(await page.evaluate(() => [...document.querySelectorAll("script[src^='http']")].every(s => /^sha384-/.test(s.integrity) && s.crossOrigin === "anonymous")), "every third-party script is pinned with Subresource Integrity");
 
-  // Mobile layout.
-  await page.setViewportSize({ width: 390, height: 844 });
-  check(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth) <= 1, "no horizontal scroll at 390px");
+  // Split-affected unadjusted closes are left out; 1D is not annualized; layout matrix.
+  await page.click("#sddTab-settings");
+  await page.fill("#sddKey", TEST_KEY);
+  await page.click("#sddKeyForm button[type=submit]");
+  await page.click("#sddTab-compare");
+  await page.check('input[name="source"][value="live"]');
+  Object.assign(mode, { avLimit: undefined, avCalls: 0 });
+  const rows = page.locator("#sddTickerList .sdd-ticker-row input");
+  for (let i = 0; i < await rows.count(); i += 1) await rows.nth(i).fill(["SPLITX", "AAPL", "MSFT"][i] || "");
+  await page.selectOption("#sddHorizon", "3M");
+  check(/This run needs \d/.test(await page.locator("#sddEstimate").innerText()) && /free plan allows 25 per day/.test(await page.locator("#sddEstimate").innerText()), `request estimate shown before a live run (${await page.locator("#sddEstimate").innerText()})`);
+  await page.click("#sddRunCompare");
+  await waitCompare();
+  const splitText = await page.locator("#sddCompareWarnings").innerText();
+  check(/SPLITX was left out: its unadjusted closes move by a split-like ratio \(-33\.\d% on \d{4}-\d{2}-\d{2}, like a 3-for-2 split\)/.test(splitText), `a 3-for-2 split on as-traded closes excludes the ticker with the reason (${splitText.slice(0, 200)})`);
+  check(!(await page.locator("#sddMetricsTable tbody").innerText()).includes("SPLITX"), "the excluded ticker has no metrics row");
+  check(/≈/.test(await page.locator("#sddMetricsTable tbody").innerText()) && /less than six months/.test(splitText), "3M annualized figures are marked ≈ with a caveat");
+  await page.selectOption("#sddHorizon", "1D");
+  await page.click("#sddRunCompare");
+  await waitCompare();
+  const oneDay = await page.locator("#sddMetricsTable tbody tr").first().innerText();
+  check(!/%[\s\S]*%[\s\S]*%[\s\S]*%[\s\S]*%/.test(oneDay.split("\n").slice(3, 5).join(" ")) || /—/.test(oneDay), `1D: no annualized return or Sharpe (${oneDay.replace(/\s+/g, " ").slice(0, 120)})`);
+  for (const width of [360, 390, 768, 853, 911, 1093, 1280, 1366, 1440, 1920]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.waitForTimeout(100);
+    const m = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, client: document.documentElement.clientWidth,
+      inner: [...document.querySelectorAll("#sdd-app *")].filter(n => n.scrollWidth > n.clientWidth + 1 && /auto|scroll/.test(getComputedStyle(n).overflowX) && n.offsetParent).map(n => n.id || n.className).slice(0, 3) }));
+    check(m.scroll <= m.client && !m.inner.length, `${width}px: no horizontal scrolling (${m.scroll}/${m.client}${m.inner.length ? `; inner: ${m.inner.join(", ")}` : ""})`);
+  }
+
+  // Demo series carry a known currency: no false "did not confirm" warnings.
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.check('input[name="source"][value="demo"]');
+  await page.selectOption("#sddHorizon", "1Y");
+  await page.click("#sddRunCompare");
+  await waitCompare();
+  check(!/did not confirm the listing currency/.test(await page.locator("#sddCompareWarnings").innerText()), "demo run has no false currency warnings");
 
   const disallowed = disallowedRequests(net.external);
   check(disallowed.length === 0 && calls.blocked.length === 0, `only the central banks, Alpha Vantage and the Chart.js CDN were contacted${disallowed.length ? ": " + disallowed.slice(0, 3).join(" ") : ""}`);

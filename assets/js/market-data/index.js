@@ -387,6 +387,26 @@ export function createMarketData({
     }), signal);
   }
 
+  // Alpha Vantage requests a history run would send, before it runs: 0 for a series
+  // saved in this browser, else 1 (series) + 1 (listing search) when the listing is
+  // not saved, + 1 more if the stem must also be searched. Returns { min, max, cached }.
+  function historyCost(symbols, range) {
+    const s = sessions.alphavantage || session("alphavantage");
+    const kind = historyKind(range);
+    let min = 0;
+    let max = 0;
+    let cached = 0;
+    for (const symbol of symbols) {
+      let avSymbol;
+      try { avSymbol = toAvSymbol(symbol); } catch (_) { continue; }
+      if (s?.history.get(`${kind}:${avSymbol}`, { freshMs: 12 * HOUR })) { cached += 1; continue; }
+      const listed = s?.listings.get(avSymbol, { freshMs: 180 * DAY })?.value?.found;
+      min += listed ? 1 : 2;
+      max += listed ? 1 : 3;
+    }
+    return { min, max, cached };
+  }
+
   // ---------------------------------------------------------------- md.quote.v1 per provider
   // Price currency and unit for a provider's answer, checked against the instrument.
   // Returns { currency, unitScale, verified, evidence, note } or throws currency_mismatch.
@@ -698,6 +718,7 @@ export function createMarketData({
     quotes,
     history,
     historyKind,
+    historyCost,
     get settings() { return { hasKey: Boolean(keys.alphavantage), persistence: keys.alphavantage?.persistence || "" }; },
     liveAvailable: () => Boolean(session("alphavantage")?.client),
     usage: () => {
