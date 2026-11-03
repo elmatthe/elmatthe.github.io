@@ -453,9 +453,10 @@ export function createMarketData({
     if (miss) throw new DataError(miss.value.message, { kind: miss.value.kind || "not_found", definitive: true, provider: name });
     const hit = useCache ? s.quotes.get(cacheKey, { freshMs: 4 * HOUR }) : null;
     if (hit && hit.ageMs <= (QUOTE_FRESH_MS[hit.value.priceType] || 10 * MINUTE)) return { ...hit.value, cacheStatus: "cached", cachedAgeMs: hit.ageMs };
-    if (s.rejected) throw new DataError(`${name} rejected the key earlier on this page. Check it in Settings.`, { kind: "auth", definitive: true, provider: name });
-    const limit = id === "alphavantage" ? null : s.usage.limit;
-    if (limit) throw new DataError(`${name} reported its ${limit.scope} limit at ${new Date(limit.at).toISOString().slice(11, 16)} UTC. No more ${name} requests are sent from this browser until the ${limit.scope === "monthly" ? "month" : "day"} ends (UTC) unless you choose "Check again".`, { kind: "rate_limited", quotaScope: limit.scope, definitive: true, provider: name, notice: limit.notice, retryable: false });
+    if (s.rejected) throw rejected();
+    const limitError = limit => new DataError(`${name} reported its ${limit.scope} limit at ${new Date(limit.at).toISOString().slice(11, 16)} UTC. No more ${name} requests are sent from this browser until the ${limit.scope === "monthly" ? "month" : "day"} ends (UTC) unless you choose "Check again".`, { kind: "rate_limited", quotaScope: limit.scope, definitive: true, provider: name, notice: limit.notice, retryable: false });
+    const rejected = () => new DataError(`${name} rejected the key earlier on this page. Check it in Settings.`, { kind: "auth", definitive: true, provider: name });
+    if (id !== "alphavantage" && s.usage.limit) throw limitError(s.usage.limit);
 
     const run = async () => {
       let raw;
@@ -472,7 +473,14 @@ export function createMarketData({
         const adapter = ADAPTERS[id];
         for (let attempt = 0; ; attempt += 1) {
           const req = adapter.request(symbol, s.key);
-          const res = await s.scheduler.run(() => { s.usage.increment(); return fetchText(req.url, { fetchImpl, signal: s.controller.signal, provider: name, timeoutMs: 15000, headers: req.headers }); }, { signal: s.controller.signal });
+          // The limit and key checks run again when the request's turn comes: requests
+          // queued behind the one that hit a limit are not sent.
+          const res = await s.scheduler.run(() => {
+            if (s.usage.limit) throw limitError(s.usage.limit);
+            if (s.rejected) throw rejected();
+            s.usage.increment();
+            return fetchText(req.url, { fetchImpl, signal: s.controller.signal, provider: name, timeoutMs: 15000, headers: req.headers });
+          }, { signal: s.controller.signal });
           try {
             if (!res.ok) throw adapter.classify(res.status, res.text);
             raw = adapter.parse(res.text, { symbol, identity });
@@ -573,7 +581,7 @@ export function createMarketData({
     const plan = planFor(id);
     const sentToday = s?.usage.count ?? 0;
     const sentMonth = s?.usage.monthCount ?? 0;
-    const out = { sentToday, sentMonth, plan: plan.id, planLabel: plan.label, remaining: null, period: null, limitRecord: id === "alphavantage" ? (s?.usage.dailyLimit ? { scope: "daily", ...s.usage.dailyLimit } : null) : (s?.usage.limit || null) };
+    const out = { sentToday, sentMonth, planId: plan.id, planLabel: plan.label, remaining: null, period: null, limitRecord: id === "alphavantage" ? (s?.usage.dailyLimit ? { scope: "daily", ...s.usage.dailyLimit } : null) : (s?.usage.limit || null) };
     if (plan.limits.perDay) { out.remaining = Math.max(0, plan.limits.perDay - sentToday); out.period = "day"; }
     else if (plan.limits.perMonth) { out.remaining = Math.max(0, plan.limits.perMonth - sentMonth); out.period = "month"; }
     else if (plan.limits.perMinute) { out.period = "minute"; out.perMinute = plan.limits.perMinute; }

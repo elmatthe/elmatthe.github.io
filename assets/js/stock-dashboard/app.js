@@ -160,9 +160,12 @@ function init() {
     const detail = $("sddPipelineDetail");
     if (md.liveAvailable()) {
       const usage = md.usage();
-      pill.textContent = "Your key";
-      pill.className = `sdd-pill ${usage.count >= usage.limit ? "warn" : "ok"}`;
-      detail.textContent = `Alpha Vantage · about ${usage.count} of ${usage.limit} free requests used today in this browser.`;
+      pill.textContent = usage.dailyLimit ? "Limit reached" : "Your key";
+      pill.className = `sdd-pill ${usage.dailyLimit ? "warn" : "ok"}`;
+      // This browser's own count, never presented as the provider's quota usage.
+      detail.textContent = usage.dailyLimit
+        ? `Alpha Vantage reported this key's daily limit at ${new Date(usage.dailyLimit.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. No more Alpha Vantage requests are sent from this browser until 00:00 UTC (${new Date(usage.resetsAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} your time), unless you check again in Settings.`
+        : `Alpha Vantage · requests sent from this browser today (UTC): ${usage.count}. The free plan allows 25 per day; Alpha Vantage counts every use of the key.`;
     } else {
       pill.textContent = "Off";
       pill.className = "sdd-pill idle";
@@ -173,7 +176,7 @@ function init() {
     $("sddCacheCount").textContent = `${cached} saved response${cached === 1 ? "" : "s"}`;
     const where = md.settings.persistence;
     $("sddKeyState").textContent = md.liveAvailable()
-      ? `Your key is ${KEY_STORAGE_TEXT[where] || "saved in this browser"}. About ${md.usage().count} of ${md.usage().limit} free requests used today here.`
+      ? `Your key is ${KEY_STORAGE_TEXT[where] || "saved in this browser"}. Requests sent from this browser today (UTC): ${md.usage().count}.${md.usage().dailyLimit ? ` Alpha Vantage reported the daily limit${md.usage().dailyLimit.notice ? `: “${md.usage().dailyLimit.notice}”` : "."}` : ""}`
       : "No key saved. Live data is off.";
     if (md.liveAvailable()) $("sddKeyRemember").checked = where === "local";
     $("sddKeyRemove").disabled = !md.liveAvailable();

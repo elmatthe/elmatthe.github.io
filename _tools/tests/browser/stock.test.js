@@ -60,7 +60,7 @@ function sampleCsv() {
   await page.fill("#sddKey", TEST_KEY);
   await page.click("#sddKeyForm button[type=submit]");
   check(/kept for this tab only/.test(await page.locator("#sddKeyStatus").innerText())
-    && await page.evaluate(k => sessionStorage.getItem("md.settings.v1")?.includes(k) && !JSON.stringify(localStorage).includes(k), TEST_KEY), "key kept for this tab only by default");
+    && await page.evaluate(k => sessionStorage.getItem("md.key.v2.alphavantage") === k && !JSON.stringify(localStorage).includes(k), TEST_KEY), "key kept for this tab only by default");
   check(/Your key/.test(await page.locator("#sddPipelineState").innerText()), "masthead shows live data via the visitor's key");
   await page.click("#sddTab-compare");
 
@@ -195,7 +195,8 @@ function sampleCsv() {
   await page.click("#sddRunCompare");
   await waitCompare();
   const noticeText = await page.locator("#sddCompareNotice").innerText();
-  check(/request limit reached/.test(noticeText), "rate limit explained");
+  check(/daily request limit/.test(noticeText), "rate limit explained");
+  check(!/of 25/.test(await page.locator("#sdd-app, body").first().innerText()), "no 'N of 25 used' wording");
   check(await page.locator("#sddCompareResult").isHidden() && await page.locator("#sddExportXlsx").isDisabled(), "failed run hides the superseded result and disables exports");
   const avAfterLimit = calls.av.length;
   const externalBeforeDemo = net.external.length;

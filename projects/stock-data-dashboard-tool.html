@@ -228,7 +228,7 @@ sections:
       <div class="sdd-panel">
         <h3>Where the data comes from</h3>
         <ul class="sdd-list">
-          <li><strong>Live:</strong> Alpha Vantage with your key. Requests run one at a time, about a second apart. Each new ticker costs two requests: one to look up its listing currency and one for prices.</li>
+          <li><strong>Live:</strong> Alpha Vantage with your key. Requests run one at a time, at least 1.2 seconds apart, across every open tab of this site. A new ticker costs two or three requests (a listing search to confirm its currency, occasionally a second search, then its prices); data saved in this browser costs none. Alpha Vantage's free plan allows 25 requests per day.</li>
           <li><strong>CSV:</strong> files you open are read in this browser and never uploaded.</li>
           <li><strong>Exchange rates</strong> for normalization: Bank of Canada daily averages; if those cannot be reached, the European Central Bank's reference rates. Both are official and need no key.</li>
           <li><strong>Demo:</strong> synthetic prices generated from a fixed seed; not market data.</li>
