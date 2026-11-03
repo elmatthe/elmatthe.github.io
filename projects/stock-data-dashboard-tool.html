@@ -268,14 +268,14 @@ sections:
   <p>The two versions share a purpose, not code. Their numbers can differ slightly because they use different return conventions.</p>
   <div class="pj-table-wrap">
     <table class="pj-table">
-      <caption class="muted" style="caption-side:bottom;text-align:left;padding:.5rem .75rem;">The desktop app uses Yahoo Finance through <code>yfinance</code> on your own computer, for personal use under Yahoo's terms.</caption>
+      <caption class="muted" style="caption-side:bottom;text-align:left;padding:.5rem .75rem;">Both use only sources you choose with your own key, or your own files. The desktop app no longer uses Yahoo Finance (<code>yfinance</code>): Yahoo's terms do not permit automated collection.</caption>
       <thead><tr><th scope="col">Capability</th><th scope="col">Web app</th><th scope="col">Desktop app</th></tr></thead>
       <tbody>
         <tr><th scope="row">Install needed</th><td>None</td><td>ZIP + one launcher (sets itself up)</td></tr>
-        <tr><th scope="row">Price data</th><td>Your CSV files, or Alpha Vantage with your own key (daily or weekly adjusted)</td><td>Yahoo Finance via <code>yfinance</code>, or your own CSV files offline</td></tr>
+        <tr><th scope="row">Price data</th><td>Your CSV files, or Alpha Vantage with your own key (daily or weekly adjusted)</td><td>Alpha Vantage, Marketstack or Alpaca with your own key (daily, close and adjusted close where the provider has it), or your own CSV files offline</td></tr>
         <tr><th scope="row">Returns</th><td>Log returns on exact shared intervals; daily, weekly or monthly</td><td>Simple or log returns; daily, weekly or monthly frequency</td></tr>
         <tr><th scope="row">Annualization</th><td>exp(mean × P) − 1; stdev × √P (P = 252, 52 or 12)</td><td>Geometric compounding of total return; stdev × √periods</td></tr>
-        <tr><th scope="row">Currency normalization</th><td>Bank of Canada daily rates (ECB fallback)</td><td>Yahoo <code>=X</code> FX pairs, or <code>fx_rates.csv</code> offline</td></tr>
+        <tr><th scope="row">Currency normalization</th><td>Bank of Canada daily rates (ECB fallback)</td><td>Bank of Canada daily rates (latest fixing on or before each date, at most 7 days old), or <code>fx_rates.csv</code> offline</td></tr>
         <tr><th scope="row">Charts</th><td>Indexed price, drawdown, cumulative return, risk/return</td><td>Adds rolling volatility and rolling correlation</td></tr>
         <tr><th scope="row">Exports</th><td>XLSX, CSV, JSON</td><td>Excel, CSV, and JPG chart images</td></tr>
         <tr><th scope="row">Offline use</th><td>Your CSV files, or the synthetic demo</td><td>Real data from your own CSV files</td></tr>

@@ -37,6 +37,8 @@ from config import (
     parse_normalization_choice,
 )
 from data_sources import DataSourceError, OfflineCsvSource, get_data_source
+from market_data.catalog import PROVIDERS
+from market_data.service import MarketData
 from exports import export_plot_images, export_results_to_csv_folder, export_results_to_excel
 from plots import (
     plot_correlation_heatmap,
@@ -50,7 +52,9 @@ from plots import (
 )
 
 
-APP_VERSION = "v0.4.1"
+APP_VERSION = "v0.5.0"
+SOURCES = ["Alpha Vantage (your key)", "Marketstack (your key)", "Alpaca (your key)", "Offline CSV"]
+RUNTIME_DIR = Path(__file__).resolve().parents[1] / "files" / "runtime"
 
 MULTI_CURRENCY_WARNING = (
     "Multiple listing currencies were detected. Returns and correlations are currently computed in each security's "
@@ -65,8 +69,8 @@ def format_fx_normalization_note(target_currency: str, source_name: str) -> str:
             "Offline CSV FX rates (test-files/fx_rates.csv)."
         )
     return (
-        f"FX normalization ON - all series converted to {target_currency} using daily "
-        "Yahoo Finance FX rates."
+        f"FX normalization ON - series converted to {target_currency} with official Bank of Canada daily rates "
+        "(the latest fixing on or before each price date, at most 7 days old; series that cannot be converted are left out)."
     )
 
 
@@ -131,7 +135,7 @@ def build_offline_csv_not_enough_data_message(failed_tickers: dict[str, str]) ->
         [
             "",
             "To test Offline CSV with the included sample, use 2024-01-02 to 2024-01-04.",
-            "For live 2025-2026 market data, switch Data Source to Yahoo Finance.",
+            "For live 2025-2026 market data, switch Data Source to a provider with your own key.",
             "",
             "At least two valid securities are required for comparison, but the main issue appears to be that the selected date range does not overlap the Offline CSV data.",
         ]
@@ -152,7 +156,7 @@ def build_offline_csv_failure_summary(failed_tickers: dict[str, str]) -> str:
                 "The requested tickers were found, but the selected date range does not overlap the CSV data."
                 if not missing
                 else "Some requested tickers were found, but the selected date range does not overlap the CSV data for those tickers.",
-                "Use the CSV's available date range or switch to Yahoo Finance for live data.",
+                "Use the CSV's available date range or switch to a provider with your own key for live data.",
                 "",
             ]
         )
@@ -169,7 +173,7 @@ def build_offline_csv_failure_summary(failed_tickers: dict[str, str]) -> str:
         lines.extend(date_overlap)
         lines.append("")
         lines.append("The sample CSV in test-files/sample_prices.csv uses dates from 2024-01-02 to 2024-01-04.")
-        lines.append("Use that date range for Offline CSV sample testing, or switch Data Source to Yahoo Finance for live 2025-2026 market data.")
+        lines.append("Use that date range for Offline CSV sample testing, or switch Data Source to a provider with your own key for live 2025-2026 market data.")
     if other:
         lines.append("")
         lines.append("Other Offline CSV issues:")
@@ -185,6 +189,7 @@ class StockAnalyticsApp(tk.Tk):
         self.geometry("1180x760")
         self.minsize(1000, 660)
 
+        self.market = MarketData(RUNTIME_DIR)
         self.ticker_rows: list[dict[str, tk.Variable]] = []
         self.current_results: dict[str, object] = {}
         self.plot_image_ref: tk.PhotoImage | None = None
@@ -197,13 +202,13 @@ class StockAnalyticsApp(tk.Tk):
     def _build_variables(self) -> None:
         today = dt.date.today()
         self.num_tickers_var = tk.IntVar(value=3)
-        self.source_var = tk.StringVar(value="Yahoo Finance")
+        self.source_var = tk.StringVar(value=SOURCES[0])
         self.start_var = tk.StringVar(value=f"{today.year - 1}-01-01")
         self.end_var = tk.StringVar(value=today.isoformat())
         self.frequency_var = tk.StringVar(value="Monthly")
         self.price_type_var = tk.StringVar(value="Adjusted Close")
         self.return_type_var = tk.StringVar(value="Simple returns")
-        self.risk_free_var = tk.StringVar(value=str(DEFAULT_RISK_FREE_RATE))
+        self.risk_free_var = tk.StringVar(value=f"{DEFAULT_RISK_FREE_RATE * 100:g}")
         self.normalize_currency_var = tk.StringVar(value=NORMALIZE_CURRENCY_OPTIONS[0])
         self.regression_mode_var = tk.StringVar(value="Each vs chosen benchmark")
         self.benchmark_var = tk.StringVar(value="")
@@ -242,7 +247,7 @@ class StockAnalyticsApp(tk.Tk):
 
         row += 1
         controls = [
-            ("Data source", self.source_var, ["Yahoo Finance", "Offline CSV"]),
+            ("Data source", self.source_var, SOURCES),
             ("Frequency", self.frequency_var, ["Daily", "Weekly", "Monthly"]),
             ("Price type", self.price_type_var, ["Close", "Adjusted Close"]),
             ("Return type", self.return_type_var, ["Simple returns", "Log returns"]),
@@ -256,7 +261,9 @@ class StockAnalyticsApp(tk.Tk):
                 combo.bind("<<ComboboxSelected>>", lambda _event: self._update_offline_helper_visibility())
             row += 1
 
-        for label, variable in (("Start date", self.start_var), ("End date", self.end_var), ("Risk-free rate", self.risk_free_var), ("Benchmark", self.benchmark_var)):
+        ttk.Button(parent, text="API keys…", command=self._keys_dialog).grid(row=row, column=1, columnspan=2, sticky="ew", pady=2)
+        row += 1
+        for label, variable in (("Start date", self.start_var), ("End date", self.end_var), ("Risk-free rate (% per year)", self.risk_free_var), ("Benchmark", self.benchmark_var)):
             ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
             ttk.Entry(parent, textvariable=variable, width=26).grid(row=row, column=1, columnspan=2, sticky="ew", pady=2)
             row += 1
@@ -440,7 +447,13 @@ class StockAnalyticsApp(tk.Tk):
             raise ValueError("At least two tickers are required.")
         pd.to_datetime(self.start_var.get(), format="%Y-%m-%d")
         pd.to_datetime(self.end_var.get(), format="%Y-%m-%d")
-        risk_free_rate = float(self.risk_free_var.get() or 0)
+        try:
+            risk_free_pct = float(self.risk_free_var.get() or 0)
+        except ValueError:
+            raise ValueError("Risk-free rate must be a number of percent per year (for example 4 for 4%).") from None
+        if not 0 <= risk_free_pct <= 25:
+            raise ValueError("Risk-free rate must be between 0 and 25 (percent per year).")
+        risk_free_rate = risk_free_pct / 100
         return {
             "tickers": tickers,
             "source": self.source_var.get(),
@@ -460,9 +473,9 @@ class StockAnalyticsApp(tk.Tk):
     def run_analysis(self) -> None:
         try:
             settings = self._collect_settings()
-            source = get_data_source(settings["source"], settings["offline_folder"])
+            source = get_data_source(settings["source"], settings["offline_folder"], self.market)
             if not source.is_configured():
-                messagebox.showwarning("Data source unavailable", f"{settings['source']} is not configured.")
+                messagebox.showwarning("Data source unavailable", f"{settings['source']} needs your own key: use API keys… to add it, or choose Offline CSV.")
                 return
             is_offline_csv = isinstance(source, OfflineCsvSource)
             if is_offline_csv:
@@ -562,7 +575,7 @@ class StockAnalyticsApp(tk.Tk):
             )
             plot_paths = {
                 "Indexed Price": plot_price_index(prices, str(plots_dir / f"indexed_price_chart_{timestamp}.png")),
-                "Cumulative Return": plot_cumulative_returns(returns, str(plots_dir / f"cumulative_return_chart_{timestamp}.png")),
+                "Cumulative Return": plot_cumulative_returns(prices, str(plots_dir / f"cumulative_return_chart_{timestamp}.png")),
                 "Correlation Heatmap": plot_correlation_heatmap(corr, str(plots_dir / f"correlation_heatmap_{timestamp}.png")),
                 "Risk / Return Scatter": plot_risk_return_scatter(metrics, str(plots_dir / f"risk_return_scatter_{timestamp}.png")),
                 "Drawdown Chart": plot_drawdowns(prices, str(plots_dir / f"drawdown_chart_{timestamp}.png")),
@@ -603,7 +616,11 @@ class StockAnalyticsApp(tk.Tk):
             for item in flags["high_correlation_pairs"]:
                 warnings.append(f"High correlation: {item['pair'][0]} and {item['pair'][1]} at {item['correlation']:.2f}.")
 
+            for _, reg in regressions.iterrows() if not regressions.empty else []:
+                if isinstance(reg.get("note"), str) and reg.get("note"):
+                    warnings.append(f"{reg['Y Ticker']} vs {reg['X Ticker']}: {reg['note']}")
             self.current_results = {
+                "settings": {k: v for k, v in settings.items() if k not in ("export_folder",)},
                 "metrics": metrics,
                 "corr": corr,
                 "regressions": regressions,
@@ -826,6 +843,9 @@ class StockAnalyticsApp(tk.Tk):
                 self.current_results["regressions"],
                 self.current_results["warnings"],
                 self.current_results.get("plot_paths"),
+                prices=self.current_results.get("prices"),
+                returns=self.current_results.get("returns"),
+                settings=self.current_results.get("settings"),
             )
             csv_folder = export_results_to_csv_folder(
                 str(exports_dir / f"stock_analysis_csv_{timestamp}"),
@@ -833,12 +853,50 @@ class StockAnalyticsApp(tk.Tk):
                 self.current_results["corr"],
                 self.current_results["regressions"],
                 self.current_results["warnings"],
+                prices=self.current_results.get("prices"),
+                returns=self.current_results.get("returns"),
+                settings=self.current_results.get("settings"),
             )
             image_folder = export_plot_images(exports_dir, self.current_results.get("plot_paths", {}), timestamp, export_jpg=True, export_png=False)
             messagebox.showinfo("Export complete", f"Excel:\n{excel_path}\n\nCSV folder:\n{csv_folder}\n\nImage folder:\n{image_folder}")
         except Exception as exc:
             self._write_logs([*self.current_results.get("warnings", []), f"Export failed: {exc}"])
             messagebox.showwarning("Export failed", str(exc))
+
+    def _keys_dialog(self) -> None:
+        """Your own keys for Alpha Vantage, Marketstack and Alpaca (kept until you close the
+        program unless you tick Remember, which saves them in files/runtime/keys.json)."""
+        top = tk.Toplevel(self)
+        top.title("API keys")
+        ttk.Label(top, wraplength=520, justify="left", text=(
+            "Each key is yours and is sent only to its own provider. Free plans are for personal, non-commercial use. "
+            "Alpha Vantage: 25 requests per day free. Marketstack: 100 per month free (each symbol is one request). "
+            "Alpaca: US listings (IEX exchange on the free plan). Finnhub's free plan has no price history, and "
+            "Massive is not offered (its terms restrict applications used by others).")).pack(padx=10, pady=8, anchor="w")
+        for pid in ("alphavantage", "marketstack", "alpaca"):
+            st = self.market.status(pid)
+            box = ttk.LabelFrame(top, text=f"{PROVIDERS[pid]['name']} — {'key saved' if st['configured'] else 'no key saved'}", padding=6)
+            box.pack(fill="x", padx=10, pady=4)
+            key, secret, remember = tk.StringVar(), tk.StringVar(), tk.BooleanVar(value=st["persistence"] == "local")
+            ttk.Label(box, text="Key ID" if pid == "alpaca" else "API key").grid(row=0, column=0, sticky="w")
+            ttk.Entry(box, textvariable=key, show="•", width=30).grid(row=0, column=1, padx=4)
+            if pid == "alpaca":
+                ttk.Label(box, text="Secret").grid(row=1, column=0, sticky="w")
+                ttk.Entry(box, textvariable=secret, show="•", width=30).grid(row=1, column=1, padx=4)
+            ttk.Checkbutton(box, text="Remember on this computer", variable=remember).grid(row=2, column=0, columnspan=2, sticky="w")
+            message = ttk.Label(box, text=f"Requests sent from this computer: {st.get('sentToday', 0)} today (UTC), {st.get('sentMonth', 0)} this month.", wraplength=480)
+            message.grid(row=3, column=0, columnspan=4, sticky="w")
+
+            def save(pid=pid, key=key, secret=secret, remember=remember, message=message) -> None:
+                try:
+                    self.market.set_key(pid, key.get(), secret.get() or None, remember.get())
+                    key.set("")
+                    secret.set("")
+                    message.configure(text="Key saved.")
+                except ValueError as exc:
+                    message.configure(text=str(exc))
+            ttk.Button(box, text="Save key", command=save).grid(row=0, column=2, padx=4)
+            ttk.Button(box, text="Remove key", command=lambda pid=pid, message=message: (self.market.set_key(pid, ""), message.configure(text="Key removed."))).grid(row=0, column=3, padx=4)
 
     def clear_outputs(self) -> None:
         self.current_results = {}

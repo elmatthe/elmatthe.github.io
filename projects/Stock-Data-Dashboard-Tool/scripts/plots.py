@@ -32,9 +32,20 @@ def plot_price_index(prices: pd.DataFrame, output_path: str) -> str:
     return str(path)
 
 
-def plot_cumulative_returns(returns: pd.DataFrame, output_path: str) -> str:
+def plot_cumulative_returns(prices: pd.DataFrame, output_path: str) -> str:
+    """Cumulative return of each ticker from its OWN first price (D2).
+
+    Built from prices, so the last point equals the table's total return; gaps on one
+    exchange's holidays are not filled with zero returns.
+    """
     path = _prepare_output(output_path)
-    cumulative = (1 + returns.fillna(0)).cumprod() - 1
+    columns = {}
+    for ticker in prices.columns:
+        series = pd.to_numeric(prices[ticker], errors="coerce").dropna()
+        series = series[series > 0]
+        if len(series) >= 2:
+            columns[ticker] = series / series.iloc[0] - 1
+    cumulative = pd.concat(columns, axis=1).sort_index() if columns else pd.DataFrame()
     if cumulative.empty:
         fig, ax = plt.subplots(figsize=(9, 5))
         ax.set_title("Cumulative Returns")
@@ -44,7 +55,7 @@ def plot_cumulative_returns(returns: pd.DataFrame, output_path: str) -> str:
         plt.savefig(path, dpi=140)
         plt.close(fig)
         return str(path)
-    ax = cumulative.plot(figsize=(9, 5), title="Cumulative Returns")
+    ax = cumulative.interpolate(limit_area="inside").plot(figsize=(9, 5), title="Cumulative Returns")
     ax.set_ylabel("Cumulative Return")
     ax.grid(True, alpha=0.3)
     plt.tight_layout()

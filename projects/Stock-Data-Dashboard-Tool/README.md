@@ -1,9 +1,10 @@
 # Stock Comparison & Analytics Tool
 
 ## What It Does
-Stock Comparison & Analytics Tool v0.4.1 is a Python desktop app for comparing stocks,
-ETFs, indexes and funds. It downloads historical prices from Yahoo Finance (or loads them
-from offline CSV files), can convert every security into one common currency, computes
+Stock Comparison & Analytics Tool v0.5.0 is a Python desktop app for comparing stocks,
+ETFs and funds. It downloads historical prices from the provider you choose with **your own
+key** (Alpha Vantage, Marketstack or Alpaca), or loads them from your CSV files, can convert
+every security into one common currency with official Bank of Canada rates, computes
 performance and risk metrics, builds a correlation matrix, runs regression analytics,
 shows charts in the window, and exports data plus visuals.
 
@@ -12,8 +13,8 @@ A separate browser version runs on the project page with nothing to install:
 
 ## Features
 - Multi-ticker comparison (stocks, ETFs, indexes, funds)
-- Yahoo Finance historical data, or Offline CSV mode with no internet
-- Currency normalization to USD/CAD/EUR/GBP using Yahoo Finance FX pairs
+- Price history from Alpha Vantage, Marketstack or Alpaca with your own key, or Offline CSV
+- Currency normalization to USD/CAD/EUR/GBP with official Bank of Canada daily rates
 - Dashboard metrics, correlation matrix and diversification summary
 - Regression analytics (each vs benchmark, or pairwise)
 - In-app chart viewer
@@ -71,9 +72,19 @@ Healthy later launches skip straight to opening the program; no downloads happen
 The full guide, including troubleshooting, is at <https://elmatthe.github.io/projects/stock-data-dashboard-guide/>.
 
 ## Data Sources
-**Yahoo Finance is the only online data provider.** Yahoo Finance mode uses `yfinance` to
-download historical market data; no API key is needed. Offline CSV mode reads files from
-a folder you choose and is useful for demos, testing and working without internet access.
+**Online data needs your own key** (use **API keys…** in the window; keys are kept until
+you close the program unless you tick *Remember*, which saves them in `files/runtime/keys.json`):
+
+| Source | Coverage | Daily history | Free plan |
+|---|---|---|---|
+| Alpha Vantage | US, Toronto, TSX Venture, London, Xetra, Shanghai/Shenzhen | ~100 sessions as traded; longer windows use weekly adjusted closes | 25 requests per day |
+| Marketstack | many exchanges (free-plan coverage outside the US is not stated by Marketstack) | close and adjusted close | 100 requests per month |
+| Alpaca | US listings | raw and adjusted daily bars (IEX exchange on the free plan) | 200 calls per minute |
+
+Every series is checked for its symbol, exchange and currency; the price basis actually
+used is reported. Earlier versions used Yahoo Finance through `yfinance`; it is no longer
+used because Yahoo's terms do not permit automated collection. Offline CSV mode reads files
+from a folder you choose and works without internet access.
 
 Expected combined CSV format:
 
@@ -87,7 +98,8 @@ One-file-per-ticker CSVs are also supported when the filename is the ticker.
 The included Offline CSV sample is `test-files/sample_prices.csv`. In the window, choose
 the `test-files/` folder and use `2024-01-02` through `2024-01-04`. If the dates are set to
 a range the sample doesn't cover, Offline CSV mode explains that the data does not overlap
-the selected range; switch **Data source** to Yahoo Finance for recent market data.
+the selected range; switch **Data source** to a provider with your own key for recent data.
+CSV files must have one row per ticker and date and prices greater than 0.
 
 ## Visual Outputs
 - Indexed price chart: normalizes each security to 100 at the first valid date.
@@ -118,12 +130,12 @@ Use **Normalize to currency** to convert every security into USD, CAD, EUR or GB
 any metrics or charts are computed, so cross-currency comparisons reflect true performance
 instead of FX drift. **Off (native listing currency)** is the default.
 
-- FX rates come from Yahoo Finance FX pairs (`<native><target>=X`, e.g. `CADUSD=X`),
-  forward-filled and aligned to each security's price dates. Prices are converted first,
-  then returns are derived.
+- FX rates are official Bank of Canada daily averages, derived through CAD. Each price uses
+  the latest fixing on or before its date, at most 7 days old; nothing is back-filled (no
+  look-ahead). Prices are converted first, then returns are derived.
 - Securities already in the target currency are left unchanged.
-- If FX rates for a pair are unavailable, that security stays in its native currency and
-  a clear message is shown.
+- A security that cannot be converted (unknown currency, no fixing) is left out of the
+  normalized comparison with a clear message; it is never mixed in unconverted.
 - **Offline CSV mode** uses `test-files/fx_rates.csv` (columns `Date,Pair,Rate`, where
   `Pair` is `<FROM><TO>` and `Rate` is target units per native unit).
 
@@ -134,11 +146,14 @@ correlation matrix, diversification summary, regression table, PNG plots and Exc
 exports.
 
 ## Limitations
-- Yahoo Finance data is unofficial and may be delayed, rate-limited or temporarily
-  unavailable; retry later or use Offline CSV mode.
-- The browser version on the project page shares this tool's purpose but not its code: it
-  uses daily log returns with exact-interval correlation, the same Yahoo Finance FX pairs,
-  and an offline demo with synthetic prices.
+- Free provider plans have small request allowances (see above); the window shows how many
+  requests this computer sent. Your provider counts every use of the key.
+- Each ticker's returns are computed on its own price series, so exchange holidays elsewhere
+  do not remove its returns; correlations use dates where both have returns (at least 3).
+- Weekly and monthly bars are dated by their last trading day; the period still trading is
+  left out.
+- The browser version on the project page shares this tool's purpose and providers but not
+  its code: it uses log returns with exact-interval correlation and an offline demo.
 - The app does not save comparison profiles; export results when you want to keep them.
 
 ## Project Structure
@@ -151,7 +166,7 @@ Stock-Data-Dashboard-Tool/
   scripts/
     bootstrap.py       <- assess / repair / prove / launch logic used by the launchers
     main.py            <- the tkinter window
-    data_sources.py    <- Yahoo Finance and Offline CSV sources, FX
+    data_sources.py    <- provider-key and Offline CSV sources, Bank of Canada FX
     analytics.py       <- metrics, correlation, regression
     plots.py           <- charts
     exports.py         <- Excel / CSV / image export
