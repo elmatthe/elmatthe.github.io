@@ -17,7 +17,8 @@ const REDIRECTS = {
   "/projects/portfolio-rebalancer-tool/": "/projects/portfolio-rebalancer-guide/",
   "/projects/Stock-Data-Dashboard-Tool/": "/projects/stock-data-dashboard-guide/",
 };
-const ALLOWED_ON_LOAD = /^https:\/\/cdn\.jsdelivr\.net\/npm\/chart\.js@/;
+// Every script, style and chart library is served by this site: no third-party host on load.
+const ALLOWED_ON_LOAD = /^$/;
 // The Rebalancer loads official exchange rates once on load (one keyless request).
 const BOC_FX = /^https:\/\/www\.bankofcanada\.ca\/valet\/observations\/[A-Z,]+\/json\?recent=5$/;
 

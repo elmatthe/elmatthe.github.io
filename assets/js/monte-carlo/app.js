@@ -1,8 +1,13 @@
 // Monte Carlo Retirement Simulator web app controller.
 // Runs entirely in the browser: no network requests and no backend. The model is
 // in ./engine.js and matches the desktop program (see _tools/tests/test_engine_parity.py).
+// Warnings from a run stay listed until the next run; editing an input after a run
+// marks the results as stale.
 
-import { validateInputs, runSimulation, LIMITS, ValidationError, boxMuller, mulberry32, parseSeed, MAX_SEED } from "./engine.js";
+import {
+  validateInputs, runSimulation, LIMITS, ValidationError, boxMuller, mulberry32, parseSeed, MAX_SEED,
+  firstYearWithdrawal, typicalGrowth, parseNumberText, SPENDING_BASES, ENGINE_VERSION, RNG_NAME,
+} from "./engine.js";
 import { toCsv, downloadBlob, timestampSlug } from "../shared/export-files.js";
 
 const root = document.getElementById("mc-app");
@@ -13,7 +18,7 @@ function init() {
   const FIELDS = ["currentPortfolio", "annualContribution", "contributionGrowth", "yearsToRetirement", "yearsInRetirement",
     "expectedReturn", "volatility", "inflation", "annualSpending", "pensionIncome", "simulations"];
   const input = field => $(`mc-${field}`);
-  const state = { mode: "nominal", result: null, runtimeMs: 0, chart: null, seed: null };
+  const state = { mode: "nominal", result: null, runtimeMs: 0, chart: null, seed: null, stale: false };
   const CHART = typeof window.Chart === "function";
 
   const money = v => (Number.isFinite(v) ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(v) : "n/a");
@@ -31,7 +36,43 @@ function init() {
     node.textContent = text;
     if (tone) node.dataset.tone = tone; else delete node.dataset.tone;
   }
-  function clearInvalid() { [...FIELDS, "seed"].forEach(f => input(f).removeAttribute("aria-invalid")); }
+  function clearInvalid() { [...FIELDS, "seed", "spendingBasis"].forEach(f => input(f).removeAttribute("aria-invalid")); }
+  const rawInputs = () => ({ ...Object.fromEntries(FIELDS.map(f => [f, input(f).value])), spendingBasis: input("spendingBasis").value });
+
+  // Live notes: the first-year withdrawal the model will use, and typical compound growth.
+  function refreshNotes() {
+    const raw = rawInputs();
+    const spending = parseNumberText(raw.annualSpending);
+    const pension = parseNumberText(raw.pensionIncome);
+    const inflation = parseNumberText(raw.inflation);
+    const years = parseNumberText(raw.yearsToRetirement);
+    const note = $("mc-spendingNote");
+    if (spending === null || pension === null) note.textContent = "Enter spending and pension to see the first-year withdrawal.";
+    else if (raw.spendingBasis === "today" && (inflation === null || years === null || !Number.isInteger(years) || years < 1)) note.textContent = "Enter inflation and years to retirement to convert today's dollars.";
+    else {
+      const first = firstYearWithdrawal({ annualSpending: spending, pensionIncome: pension, inflation: inflation ?? 0, yearsToRetirement: years ?? 0, spendingBasis: raw.spendingBasis });
+      note.textContent = raw.spendingBasis === "today"
+        ? `First-year net withdrawal: ${money(first.entered)} in today's dollars = ${money(first.nominal)} in the first year of retirement (× ${first.factor.toFixed(4)} = (1 + inflation)^${years}).`
+        : `First-year net withdrawal: ${money(first.nominal)} in first-retirement-year dollars (spending minus pension). Choose “Today's dollars” if these amounts are in today's prices.`;
+    }
+    const mu = parseNumberText(raw.expectedReturn);
+    const sigma = parseNumberText(raw.volatility);
+    const growth = mu !== null && sigma !== null && sigma >= 0 ? typicalGrowth(mu, sigma) : null;
+    $("mc-growthNote").textContent = growth === null
+      ? "The expected return is an arithmetic mean of yearly returns."
+      : `The expected return is an arithmetic mean; with this volatility, typical (median) compound growth is about ${growth.toFixed(2)}% a year.`;
+  }
+  function markStale() {
+    if (!state.result || state.stale) return;
+    state.stale = true;
+    $("mcStale").hidden = false;
+    $("mcResults").dataset.stale = "true";
+  }
+  function renderWarnings(warnings) {
+    const list = $("mcWarnings");
+    list.replaceChildren(...warnings.map(w => { const li = el("li", w.message); li.dataset.code = w.code; return li; }));
+    list.hidden = warnings.length === 0;
+  }
 
   // Randomized but plausible sample, same ranges as the desktop "Load Sample Scenario".
   function loadSample() {
@@ -45,6 +86,8 @@ function init() {
     values.pensionIncome = Math.min(step(0, 40000, 1000), values.annualSpending - 5000);
     Object.entries(values).forEach(([f, v]) => { input(f).value = String(v); });
     clearInvalid();
+    refreshNotes();
+    markStale();
     setStatus("Random sample scenario loaded. Run the simulation to see results.", null);
   }
 
@@ -69,12 +112,13 @@ function init() {
     return [...years].filter(y => y >= 0 && y <= result.totalYears).sort((a, b) => a - b);
   }
   function renderTable(result) {
-    const table = el("table", null, "pj-table");
+    const table = el("table", null, "pj-table mc-checkpoints");
     const caption = el("caption", `Portfolio value percentiles at checkpoints (${unit()})`, "muted");
     caption.style.cssText = "caption-side:top;text-align:left;padding:.5rem .75rem;";
     const head = el("thead");
     const hr = el("tr");
-    ["Checkpoint", "P10", "P25", "Median", "P75", "P90"].forEach((h, i) => { const th = el("th", h, i ? "num" : ""); th.scope = "col"; hr.append(th); });
+    const HEADS = ["Checkpoint", "P10", "P25", "Median", "P75", "P90"];
+    HEADS.forEach((h, i) => { const th = el("th", h, i ? "num" : ""); th.scope = "col"; hr.append(th); });
     head.append(hr);
     const body = el("tbody");
     checkpoints(result).forEach(year => {
@@ -85,7 +129,7 @@ function init() {
       const th = el("th", label);
       th.scope = "row";
       tr.append(th);
-      ["p10", "p25", "p50", "p75", "p90"].forEach(k => tr.append(el("td", money(values[k]), "num")));
+      ["p10", "p25", "p50", "p75", "p90"].forEach((k, i) => { const td = el("td", money(values[k]), "num"); td.dataset.label = HEADS[i + 1]; tr.append(td); });
       if (year === result.retirementYear) tr.className = "mc-retirement-row";
       body.append(tr);
     });
@@ -114,6 +158,8 @@ function init() {
     },
   };
   function renderChart(result) {
+    $("mcChartBox").hidden = !CHART;
+    $("mcChartLegend").hidden = !CHART;
     if (!CHART) return;
     state.chart?.destroy();
     const rows = result.percentilesByYear.map(r => (state.mode === "real" ? r.real : r.nominal));
@@ -160,11 +206,13 @@ function init() {
     if (!r) return;
     $("mcResults").hidden = false;
     $("mcEmpty").hidden = true;
-    $("mcMeta").textContent = `${count(r.summary.totalRuns)} simulations · ${r.inputs.yearsToRetirement} years saving · ${r.inputs.yearsInRetirement} years in retirement · first-year net withdrawal ${money(r.summary.netWithdrawal)} · seed ${state.seed} (enter it to reproduce this run) · ${state.runtimeMs.toFixed(0)} ms`;
+    const basis = r.summary.spendingBasis === "today"
+      ? `first-year net withdrawal ${money(r.summary.netWithdrawal)} (${money(r.summary.netWithdrawalEntered)} in today's dollars)`
+      : `first-year net withdrawal ${money(r.summary.netWithdrawal)} (retirement-year dollars)`;
+    $("mcMeta").textContent = `${count(r.summary.totalRuns)} simulations · ${r.inputs.yearsToRetirement} years saving · ${r.inputs.yearsInRetirement} years in retirement · ${basis} · seed ${state.seed} (enter it to reproduce this run) · ${state.runtimeMs.toFixed(0)} ms`;
     renderTiles(r);
     renderChart(r);
     renderTable(r);
-    if (!r.summary.realAvailable && state.mode === "real") setStatus("Real (today's) dollars are undefined when inflation is −100%; showing n/a. Switch to nominal dollars.", "warn");
     $("mcExportCsv").disabled = false;
   }
 
@@ -173,7 +221,7 @@ function init() {
     let inputs;
     let seed;
     try {
-      inputs = validateInputs(Object.fromEntries(FIELDS.map(f => [f, input(f).value])));
+      inputs = validateInputs(rawInputs());
       seed = parseSeed(input("seed").value);
       // A blank seed draws a fresh one, which is shown with the results.
       if (seed === null) seed = Math.floor(Math.random() * MAX_SEED);
@@ -191,8 +239,15 @@ function init() {
         state.result = runSimulation(inputs, { normal: boxMuller(mulberry32(seed)) });
         state.seed = seed;
         state.runtimeMs = performance.now() - started;
+        state.stale = false;
+        $("mcStale").hidden = true;
+        delete $("mcResults").dataset.stale;
         renderAll();
-        setStatus(`Done. ${count(inputs.simulations)} simulations complete.`, "ok");
+        const warnings = [...state.result.warnings];
+        if (!CHART) warnings.push({ code: "chart_unavailable", message: "The chart library did not load, so the fan chart is hidden; the tiles, table and CSV export are complete." });
+        renderWarnings(warnings);
+        const n = warnings.length;
+        setStatus(`Done. ${count(inputs.simulations)} simulations complete.${n ? ` ${n} warning${n === 1 ? "" : "s"} below.` : ""}`, n ? "warn" : "ok");
       } catch (error) {
         setStatus(error.message, "error");
       } finally {
@@ -204,32 +259,40 @@ function init() {
   $("mcRun").addEventListener("click", run);
   $("mcForm").addEventListener("submit", event => { event.preventDefault(); run(); });
   $("mcSample").addEventListener("click", loadSample);
+  input("spendingBasis").addEventListener("change", () => { refreshNotes(); markStale(); });
   root.querySelectorAll('input[name="mcMode"]').forEach(radio => radio.addEventListener("change", () => {
     state.mode = radio.value;
     renderAll();
   }));
-  [...FIELDS, "seed"].forEach(f => input(f).addEventListener("input", () => input(f).removeAttribute("aria-invalid")));
+  [...FIELDS, "seed"].forEach(f => input(f).addEventListener("input", () => { input(f).removeAttribute("aria-invalid"); refreshNotes(); markStale(); }));
   $("mcExportCsv").addEventListener("click", () => {
     const r = state.result;
     if (!r) return;
     const rows = [
-      ["Monte Carlo Retirement Simulator — browser export", new Date().toISOString()],
+      ["Monte Carlo Retirement Simulator - browser export", new Date().toISOString()],
       ["Probability of success (%)", r.summary.successProbability],
       ["Failed simulations", r.summary.failedRuns, "of", r.summary.totalRuns],
       ["Initial withdrawal rate (%)", r.summary.swr],
-      ["Inputs", ...FIELDS.map(f => `${f}=${r.inputs[f]}`)],
+      ["Spending basis", SPENDING_BASES[r.summary.spendingBasis]],
+      ["First-year net withdrawal (retirement-year dollars)", r.summary.netWithdrawal],
+      ["Inputs", ...FIELDS.map(f => `${f}=${r.inputs[f]}`), `spendingBasis=${r.inputs.spendingBasis}`],
       ["Random seed", state.seed],
-      ["Model", "Annual return ~ Normal(expected return, volatility), independent each year; year-end contributions and withdrawals; withdrawal grows with inflation; real = nominal / (1 + inflation)^year; percentiles by linear interpolation."],
+      ["Random generator", RNG_NAME],
+      ["Engine version", ENGINE_VERSION],
+      ["Model", r.model],
+      ["Warnings", ...(r.warnings.length ? r.warnings.map(w => w.message) : ["None"])],
       [],
       ["Year", "P10 nominal", "P25 nominal", "Median nominal", "P75 nominal", "P90 nominal", "P10 real", "P25 real", "Median real", "P75 real", "P90 real"],
       ...r.percentilesByYear.map(row => [row.year, ...["p10", "p25", "p50", "p75", "p90"].map(k => row.nominal[k]), ...["p10", "p25", "p50", "p75", "p90"].map(k => row.real[k])]),
     ];
     const name = `monte-carlo-percentiles-${timestampSlug()}.csv`;
-    downloadBlob(new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" }), name);
+    // UTF-8 byte-order mark so spreadsheet programs read the text as UTF-8.
+    downloadBlob(new Blob(["\uFEFF", toCsv(rows)], { type: "text/csv;charset=utf-8" }), name);
     setStatus(`Downloaded ${name}.`, "ok");
   });
 
   input("simulations").max = String(LIMITS.maxSimulations);
+  refreshNotes();
   if (!CHART) setStatus("The chart library did not load; results and tables still work.", "warn");
   else setStatus("Ready. Adjust the assumptions and run the simulation.", null);
   root.dataset.ready = "true";

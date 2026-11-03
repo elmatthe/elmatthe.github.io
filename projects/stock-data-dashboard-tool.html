@@ -10,9 +10,9 @@ last_updated: 2026-11-02
 page_css:
   - /assets/css/stock-dashboard.css
 vendor_js:
-  # Chart.js 4.4.2 as published to npm (dist/chart.umd.js is its minified build);
-  # the hash was checked against the npm tarball. Update both together.
-  - src: https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.js
+  # Chart.js 4.4.2 (MIT), self-hosted: dist/chart.umd.js copied unmodified from the npm
+  # tarball (tarball sha512 matched the registry). Update the file and hash together.
+  - src: /assets/vendor/chart.js/4.4.2/chart.umd.js
     integrity: sha384-zuFoHkJ6+XzUchVtS39qBWxb+LvdA7aQ/ze8jYdufBf/A1jeuKGDBg4crfxvZAr8
 page_js:
   - /assets/js/stock-dashboard/app.js

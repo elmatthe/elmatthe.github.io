@@ -4,7 +4,7 @@
 monte-carlo:
   name: Monte Carlo Retirement Simulator
   category: Retirement Planning Tool
-  version: 1.1.0
+  version: 1.2.0
   web_app: Runs in your browser
   platforms: Windows · macOS
   python: "3.11–3.14"

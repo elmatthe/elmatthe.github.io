@@ -9,7 +9,7 @@ redirect_from:
 eyebrow: Setup & user guide
 summary: How to install, run, repair and use the Monte Carlo Retirement Simulator desktop program on Windows or macOS.
 lede: Install the desktop simulator with one launcher, run scenarios, and produce Excel and CSV reports. No manual Python setup is needed.
-last_updated: 2026-09-28
+last_updated: 2026-11-03
 sections:
   - { id: before, label: Before you start }
   - { id: install, label: Install }
@@ -25,19 +25,21 @@ sections:
 <section class="pj-section" id="use" aria-labelledby="use-h">
   <h2 id="use-h">Using the simulator</h2>
   <ol class="pj-steps">
-    <li><strong>Enter your assumptions:</strong> current portfolio, annual contribution and its growth rate, years to retirement and in retirement, expected return, volatility, inflation, first-year retirement spending, CPP/OAS/pension income, and the number of simulations (1–10,000). <em>Load Sample Scenario</em> fills in a random plausible example.</li>
-    <li><strong>Choose the target <code>.xlsx</code> workbook</strong> for the report (a new or existing file), and optionally tick <em>Also export to CSV</em> and choose a CSV path.</li>
-    <li><strong>Click <em>Run Simulation</em>.</strong> Invalid inputs are named in the status line. Spending must be greater than pension income, which is the same rule the web version applies.</li>
+    <li><strong>Enter your assumptions:</strong> current portfolio, annual contribution and its growth rate, years to retirement and in retirement, expected return (an arithmetic mean, in percent: 7 means 7%), volatility, inflation, retirement spending, CPP/OAS/pension income, and the number of simulations (1–10,000). <em>Load Sample Scenario</em> fills in a random plausible example.</li>
+    <li><strong>Choose what your spending is in.</strong> <em>Retirement-year dollars</em> (the default, as in earlier versions) means the first year of retirement, in that year's prices. <em>Today's dollars</em> converts the amounts with inflation; the line under the form shows the first-year withdrawal the model will use (for example $42,000 today is $88,098 in 30 years at 2.5% inflation).</li>
+    <li><strong>Optionally enter a random seed.</strong> Leave it blank for a new run; the seed used is shown and written to the report. The same seed and inputs give the same results here and in the web version.</li>
+    <li><strong>Choose the target <code>.xlsx</code> workbook</strong> for the report (a new or existing file), and optionally tick <em>Also export CSV</em> and choose a CSV path.</li>
+    <li><strong>Click <em>Run Simulation</em>.</strong> Invalid inputs are named in the status line with the same messages as the web version. Warnings about the assumptions (for example very high volatility) stay listed under the results.</li>
   </ol>
-  <p>The model (identical to the <a href="{{ p.page | relative_url }}#model">web version</a>): returns are drawn from a normal distribution each year; contributions grow yearly until retirement; withdrawals start at spending minus pension income and rise with inflation; a path fails when it reaches $0 in retirement.</p>
+  <p>The model (identical to the <a href="{{ p.page | relative_url }}#model">web version</a>): returns are drawn from a normal distribution each year; contributions and withdrawals happen at year-end; contributions grow yearly until retirement; withdrawals start at spending minus pension income and rise with inflation; a path fails when it reaches $0 or less in retirement.</p>
 </section>
 
 <section class="pj-section" id="outputs" aria-labelledby="outputs-h">
   <h2 id="outputs-h">Outputs</h2>
   <ul>
-    <li><strong>Excel report</strong> in the workbook you chose, as three sheets that are replaced on each run (other sheets in the workbook are left alone): <code>MC_Summary</code> (inputs and headline results), <code>MC_Percentiles</code> (10th/25th/50th/75th/90th percentile for every year, with the retirement year marked) and <code>MC_Chart</code> (fan-chart image).</li>
-    <li><strong>CSV</strong> (optional): columns <code>Year, Date, P10, P25, P50, P75, P90</code>.</li>
-    <li>Values are nominal dollars; the inflation rate used is recorded in the report. The web version can also show real (today's) dollars.</li>
+    <li><strong>Excel report</strong> in the workbook you chose, as three sheets that are replaced on each run: <code>MC_Summary</code> (inputs, spending basis, seed, generator, engine version, model, warnings and headline results), <code>MC_Percentiles</code> (10th/25th/50th/75th/90th percentile for every year in nominal and today's dollars, with the retirement year marked) and <code>MC_Chart</code> (fan-chart image, nominal dollars).</li>
+    <li><strong>Existing workbooks:</strong> cell values, formulas and formatting on your other sheets are kept, but the library used to write Excel files cannot keep pictures, shapes, text boxes, charts, pivot tables or form controls. If your workbook has any of these, the program lists them and offers to save the report as a new workbook (<code>name (Monte Carlo report).xlsx</code>) instead, leaving your workbook unchanged.</li>
+    <li><strong>CSV</strong> (optional): the same layout as the web version's CSV: summary, inputs, seed, generator, engine version, model and warnings, then one row per year with P10–P90 in nominal and real dollars.</li>
   </ul>
 </section>
 
@@ -50,6 +52,10 @@ sections:
   <details class="pj-details">
     <summary>The Excel report can't be saved</summary>
     <div class="pj-details-body"><p>Close the workbook if it's open in Excel, and choose a folder you can write to (not a read-only or synced placeholder folder).</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>“Save the report as a new workbook instead?”</summary>
+    <div class="pj-details-body"><p>Your workbook contains content that would be lost if the report were written into it (the message lists it). Choose <em>Yes</em> to save a separate report workbook next to it, or <em>No</em> to cancel and pick another file.</p></div>
   </details>
   {% include project-desktop-troubleshooting.html %}
 </section>

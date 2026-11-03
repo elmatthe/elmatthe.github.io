@@ -252,7 +252,7 @@ function sampleCsv() {
   check(!/did not confirm the listing currency/.test(await page.locator("#sddCompareWarnings").innerText()), "demo run has no false currency warnings");
 
   const disallowed = disallowedRequests(net.external);
-  check(disallowed.length === 0 && calls.blocked.length === 0, `only the central banks, Alpha Vantage and the Chart.js CDN were contacted${disallowed.length ? ": " + disallowed.slice(0, 3).join(" ") : ""}`);
+  check(disallowed.length === 0 && calls.blocked.length === 0, `only the central banks and the chosen providers were contacted (no CDN)${disallowed.length ? ": " + disallowed.slice(0, 3).join(" ") : ""}`);
   check(net.errors.length === 0, `no JavaScript errors${net.errors.length ? ": " + net.errors.join(" | ") : ""}`);
 
   await browser.close();

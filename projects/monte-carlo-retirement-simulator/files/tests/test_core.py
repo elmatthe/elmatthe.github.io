@@ -2,7 +2,7 @@
 import sys
 from pathlib import Path
 
-import numpy as np
+import numpy as np  # noqa: F401 - used in assertions
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
@@ -33,8 +33,7 @@ def _inputs(**overrides) -> SimulationInputs:
 
 def test_result_shape_and_percentile_ordering():
     """Paths span every year and percentile bands are correctly ordered."""
-    np.random.seed(42)
-    result = run_monte_carlo(_inputs())
+    result = run_monte_carlo(_inputs(seed=42))
     total_years = 30 + 25
     assert len(result.years) == total_years + 1
     for arr in (result.p10, result.p25, result.p50, result.p75, result.p90):
@@ -47,8 +46,7 @@ def test_result_shape_and_percentile_ordering():
 def test_success_probability_within_bounds():
     """Probability of success is always a valid percentage and matches failures."""
     sims = 500
-    np.random.seed(7)
-    result = run_monte_carlo(_inputs(simulations=sims))
+    result = run_monte_carlo(_inputs(simulations=sims, seed=7))
     assert 0.0 <= result.success_probability <= 100.0
     assert 0 <= result.failed_simulations <= sims
     expected = (sims - result.failed_simulations) / sims * 100.0
@@ -57,21 +55,27 @@ def test_success_probability_within_bounds():
 
 def test_strong_plan_rarely_fails():
     """A well-funded, low-spending plan should almost always succeed."""
-    np.random.seed(1)
     result = run_monte_carlo(
-        _inputs(current_portfolio=2_000_000.0, annual_spending=40000.0, pension_income=20000.0, volatility=8.0)
+        _inputs(current_portfolio=2_000_000.0, annual_spending=40000.0, pension_income=20000.0, volatility=8.0, seed=1)
     )
     assert result.success_probability >= 95.0
 
 
 def test_seed_makes_run_deterministic():
-    """Same seed + same inputs -> identical headline numbers."""
-    np.random.seed(123)
-    first = run_monte_carlo(_inputs())
-    np.random.seed(123)
-    second = run_monte_carlo(_inputs())
+    """Same seed + same inputs -> identical results; the seed is reported."""
+    first = run_monte_carlo(_inputs(seed=123))
+    second = run_monte_carlo(_inputs(seed=123))
+    other = run_monte_carlo(_inputs(seed=124))
     assert first.success_probability == second.success_probability
     assert first.median_final_value == second.median_final_value
+    assert np.array_equal(first.p50, second.p50)
+    assert first.seed == 123 and "mulberry32" in first.rng
+    assert not np.array_equal(first.p50, other.p50)
+
+
+def test_blank_seed_draws_and_reports_a_fresh_seed():
+    result = run_monte_carlo(_inputs(seed=None, simulations=20))
+    assert isinstance(result.seed, int) and 0 <= result.seed < 4294967295
 
 
 def test_pension_must_be_less_than_spending():

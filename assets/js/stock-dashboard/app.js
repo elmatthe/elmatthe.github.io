@@ -744,7 +744,7 @@ function init() {
   }
   function renderCompareCharts(c) {
     if (!CHART_AVAILABLE) {
-      $("sddCompareWarnings").append(el("p", "Charts could not load (the Chart.js CDN is blocked or offline). Tables and metrics still work.", "sdd-different"));
+      $("sddCompareWarnings").append(el("p", "The chart library did not load (it is part of this site; reload the page). Tables and metrics still work.", "sdd-different"));
       return;
     }
     const indexed = datasetsFor(c, A.indexedSeries);
@@ -963,6 +963,6 @@ function init() {
   renderDataStatus();
   syncSource();
   updateExportState();
-  if (!CHART_AVAILABLE) setStatus($("sddCompareStatus"), "Charts could not load (Chart.js CDN blocked or offline); tables and metrics still work.", "warn");
+  if (!CHART_AVAILABLE) setStatus($("sddCompareStatus"), "The chart library did not load; reload the page. Tables and metrics still work.", "warn");
   app.dataset.ready = "true";
 }

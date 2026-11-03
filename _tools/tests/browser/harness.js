@@ -210,7 +210,7 @@ async function mockMarketData(context, mode = {}) {
   await context.route(url => {
     const u = new URL(url);
     return u.protocol.startsWith("http") && !/^(127\.0\.0\.1|localhost)$/.test(u.hostname)
-      && !/^(www\.bankofcanada\.ca|data-api\.ecb\.europa\.eu|www\.alphavantage\.co|api\.marketstack\.com|finnhub\.io|cdn\.jsdelivr\.net)$/.test(u.hostname);
+      && !/^(www\.bankofcanada\.ca|data-api\.ecb\.europa\.eu|www\.alphavantage\.co|api\.marketstack\.com|finnhub\.io)$/.test(u.hostname);
   }, route => { calls.blocked.push(route.request().url()); return route.abort("blockedbyclient"); });
   await context.route(/favicon\.ico/, r => r.fulfill({ status: 204 }));
   return calls;
@@ -235,7 +235,7 @@ function watchNetwork(page) {
   return { external, errors };
 }
 
-const ALLOWED_HOSTS = /^(www\.bankofcanada\.ca|data-api\.ecb\.europa\.eu|www\.alphavantage\.co|api\.marketstack\.com|finnhub\.io|cdn\.jsdelivr\.net)$/;
+const ALLOWED_HOSTS = /^(www\.bankofcanada\.ca|data-api\.ecb\.europa\.eu|www\.alphavantage\.co|api\.marketstack\.com|finnhub\.io)$/;
 const disallowedRequests = urls => urls.filter(u => !ALLOWED_HOSTS.test(new URL(u).hostname));
 
 function checker() {

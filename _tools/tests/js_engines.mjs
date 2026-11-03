@@ -15,12 +15,16 @@ if (request.tool === "monte-carlo") {
   for (const c of request.cases) {
     try {
       const inputs = E.validateInputs(c.raw);
+      if (c.validateOnly) { out.push({ ok: true, inputs, warnings: E.assumptionWarnings(inputs), first: E.firstYearWithdrawal(inputs), growth: E.typicalGrowth(inputs.expectedReturn, inputs.volatility) }); continue; }
       let i = 0;
       const z = c.z || [];
-      const result = E.runSimulation(inputs, { normal: () => { if (i >= z.length) throw new Error("z sequence exhausted"); return z[i++]; } });
-      out.push({ summary: result.summary, bands: result.percentilesByYear.map(r => r.nominal), used: i });
+      // c.seed: the apps' own seeded generator instead of injected draws.
+      const normal = c.seed !== undefined ? E.boxMuller(E.mulberry32(c.seed))
+        : () => { if (i >= z.length) throw new Error("z sequence exhausted"); return z[i++]; };
+      const result = E.runSimulation(inputs, { normal });
+      out.push({ summary: result.summary, bands: result.percentilesByYear.map(r => r.nominal), real: result.percentilesByYear.map(r => r.real), used: c.seed !== undefined ? result.summary.draws : i, warnings: result.warnings, engineVersion: result.engineVersion, model: result.model });
     } catch (error) {
-      out.push({ error: error.message });
+      out.push({ error: error.message, field: error.field ?? null });
     }
   }
 } else if (request.tool === "rebalancer") {

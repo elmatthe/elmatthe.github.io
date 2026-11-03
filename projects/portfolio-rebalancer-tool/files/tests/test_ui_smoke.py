@@ -63,7 +63,8 @@ def test_window_workflow():
     pump(root, 0.3)
     assert "Price:" in app.details.get("1.0", "end")
     root.update_idletasks()
-    assert root.winfo_width() <= 1366 and root.winfo_height() <= 768
+    # The window sizes itself to the screen (CI runs Xvfb at 1366x768): it must fit.
+    assert root.winfo_width() <= root.winfo_screenwidth() and root.winfo_height() <= root.winfo_screenheight()
     shot = os.environ.get("RB_SCREENSHOT")
     if shot:
         pump(root, 0.5)
