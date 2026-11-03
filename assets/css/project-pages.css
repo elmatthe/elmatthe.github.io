@@ -188,6 +188,15 @@
   .pj table.mc-checkpoints tr > td { display: flex; justify-content: space-between; gap: .5rem; padding: .1rem 0; border: 0; }
   .pj table.mc-checkpoints tr > td::before { content: attr(data-label); color: var(--pj-muted); font-weight: 600; }
 }
+/* The same stacked layout when the table would not fit at its natural width (set by app.js). */
+  .pj .mc-table-wrap.mc-stacked table.mc-checkpoints thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .pj .mc-table-wrap.mc-stacked table.mc-checkpoints, .pj .mc-table-wrap.mc-stacked table.mc-checkpoints tbody { display: block; width: 100%; }
+  .pj .mc-table-wrap.mc-stacked table.mc-checkpoints caption { display: block; }
+  .pj .mc-table-wrap.mc-stacked table.mc-checkpoints tr { display: grid; grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); gap: .1rem 1rem; padding: .55rem .75rem; border-bottom: 1px solid var(--pj-border); }
+  .pj .mc-table-wrap.mc-stacked table.mc-checkpoints tbody tr:last-child { border-bottom: 0; }
+  .pj .mc-table-wrap.mc-stacked table.mc-checkpoints tr > th { grid-column: 1 / -1; padding: 0 0 .15rem; border: 0; }
+  .pj .mc-table-wrap.mc-stacked table.mc-checkpoints tr > td { display: flex; justify-content: space-between; gap: .5rem; padding: .1rem 0; border: 0; }
+  .pj .mc-table-wrap.mc-stacked table.mc-checkpoints tr > td::before { content: attr(data-label); color: var(--pj-muted); font-weight: 600; }
 .pj table.pj-table td.num, .pj table.pj-table th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* The [hidden] attribute must win over component display rules (e.g. .pj-field { display: grid }). */

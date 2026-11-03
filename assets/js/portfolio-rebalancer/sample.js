@@ -5,7 +5,7 @@
 // from a price the user deliberately enters.
 //
 // The same data is in the desktop app (portfolio_rebalancer/sample.py) and the two
-// are checked against each other by _tools/tests/test_sample_portfolio.py.
+// are checked against each other by _tools/tests/test_market_data_parity.py (test_sample_portfolio_identical).
 
 export const SAMPLE_PORTFOLIO = Object.freeze({
   schema: "rb.sample-portfolio.v1",

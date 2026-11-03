@@ -135,6 +135,19 @@ function init() {
     });
     table.append(caption, head, body);
     $("mcTable").replaceChildren(table);
+    fitTable();
+  }
+  // Stack the checkpoint table into labelled rows whenever it would not fit its column
+  // (large values or narrow layouts), so it never scrolls or clips sideways.
+  let fittedWidth = -1;
+  function fitTable() {
+    const wrap = $("mcTable");
+    fittedWidth = wrap.clientWidth;
+    wrap.classList.remove("mc-stacked");
+    if (wrap.scrollWidth > wrap.clientWidth + 1) wrap.classList.add("mc-stacked");
+  }
+  if (typeof ResizeObserver === "function") {
+    new ResizeObserver(() => { if ($("mcTable").clientWidth !== fittedWidth) fitTable(); }).observe($("mcTable"));
   }
 
   const retirementMarker = {
