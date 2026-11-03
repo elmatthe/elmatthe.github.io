@@ -23,3 +23,5 @@ exclude:
   - projects/portfolio-rebalancer-tool/
   - projects/Stock-Data-Dashboard-Tool/
   - projects/CPI-Webscraper/
+# Engineering plans, audits and briefings: repository documents, not site pages.
+  - md-instructions/
