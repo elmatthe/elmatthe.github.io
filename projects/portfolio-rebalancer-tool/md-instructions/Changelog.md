@@ -1,5 +1,18 @@
 # Portfolio Rebalancer — Changelog
 
+## v1.3.0 — 2026-11-03
+- Sample portfolio: fourteen ordinary holdings (targets total exactly 100%): the ten
+  Questrade holdings with targets scaled to 90%, then 7203.T, SAP.DE, VOD.L and 600519.SS
+  with one share and 2.5% each. YNVD.NE in the sample; YNVD.TO remains a supported alias of
+  the same Cboe Canada ETF.
+- Removed the separate "International currency tests" group and its "Price test rows" /
+  "Remove test rows" buttons. "Get prices" covers every active holding and, when it
+  finishes, names each holding still without a usable price. "Remove international
+  examples" removes the four sample rows only while they are unchanged.
+- The estimate names listings outside Canada and the US before any request.
+- "My price" refuses minor-unit codes (GBX) and loads the official rate for a new currency.
+- Plan freshness uses the market-data clock (identical in production; testable).
+
 ## v1.1.1 — 2026-11-02
 - Built-in fallback exchange rates (used only when live FX is off or unavailable) were stale
   approximations (CAD 0.74, JPY 0.0067, CNY 0.14 USD per unit; up to 7% off). They are now the

@@ -1,5 +1,43 @@
 # Release notes: web tools on /projects/
 
+## 2026-11-03 (later): unified Rebalancer sample, CPI web app
+
+Owner decisions 1A–4A. Nothing below is investment advice.
+
+### Portfolio Rebalancer (web; desktop 1.3.0)
+- **One list for every market.** The sample is fourteen ordinary holdings with targets
+  totalling exactly 100%: the ten Questrade holdings with their targets scaled to 90%
+  (63 / 9 / 6.3 / 4.5 / 1.8 / 0.9 / 0.9 / 0.9 / 1.8 / 0.9), then one share each of 7203.T
+  (JPY), SAP.DE (EUR), VOD.L (quoted in pence, converted to pounds) and 600519.SS (CNY) at
+  2.5% each. The separate "International currency tests" group and its *Price test rows*
+  button are gone: every holding uses the same row, *Get prices*, quota checks, valuation
+  gate, plan and exports.
+- The sample uses **YNVD.NE**; YNVD.TO (as Questrade shows it) is still accepted and is the
+  same Cboe Canada instrument. Neither is ever priced as a TSX listing.
+- *Get prices* identifies typed tickers first, estimates requests per provider with the
+  allowance they use, names listings outside Canada and the US and the holdings no saved
+  source covers before any request, shows progress, and afterwards names each holding
+  still without a usable price and why. The plan stays withheld until each has a verified
+  price or one you supply.
+- Optional *Remove international examples* removes the four sample rows only while they
+  are exactly as loaded; edited rows and the same securities you added stay.
+- A user-supplied price refuses minor-unit codes such as GBX (choose GBP and "pence");
+  a price in a currency not loaded yet loads its official rate.
+
+### CPI Web Scraper (new web app; desktop 0.4.0 unchanged)
+- The project page now has a **working browser app**: single month or date range back to
+  1913, the five Statistics Canada series fetched directly (no key), the thirteen FRED
+  series with your own FRED key through a small data gateway, results twelve months per
+  page in four groups (Canada, US Inflation, Rates, Other) with no sideways scrolling, and
+  **Download CSV** with the exact nineteen A–S columns of the CPI_Downloader sheet for
+  every requested month — byte-identical to the desktop tool's CSV for the same data.
+- Without a key the page fetches the Canadian data and leaves the US columns blank, saying
+  why; every blank cell has a reason (not published, before the series, month not over,
+  unavailable, restricted, …); nothing is ever filled in or set to zero.
+- **The data gateway is not deployed yet** (it needs the owner's Cloudflare account), so the
+  live page currently works in Canadian-only mode and says so. Writing into an existing
+  Excel workbook remains a desktop feature.
+
 ## 2026-11-03: four-tool financial suite (implementation of the independent-review plan)
 
 Gate-by-gate evidence is in the pull request. Nothing below is investment advice.

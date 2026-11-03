@@ -29,7 +29,10 @@ values, never presented as real time.
 | Valuation readiness gate, freshness, user-supplied prices | ✔ | ✔ | Equivalent — `test_market_data_parity.py` (`valuation`, `freshness`) |
 | Whole-share option, cash left | ✔ | ✔ | Equivalent — `test_market_data_parity.py` (`whole`) |
 | Instrument identity and routing | ✔ | ✔ | Equivalent — `test_market_data_parity.py` (`resolve`, `route`, `catalog`) |
-| Sample 10 + 4 rows, no prices | ✔ | ✔ | Identical — `test_sample_portfolio_identical` |
+| Sample: 14 ordinary holdings (targets 100.0%, YNVD.NE, four international at 1 share / 2.5%), no prices | ✔ | ✔ | Identical — `test_sample_portfolio_identical` |
+| One *Get prices* for every holding (no separate international group), incomplete holdings named | ✔ | ✔ | Equivalent — `rebalancer.test.js`, `test_ui_smoke.py` |
+| 14-holding plan with identical reference prices and FX (JPY, EUR, GBP pence, CNY) | ✔ | ✔ | Equivalent to 1e-12 — `test_sample_plan_identical_with_reference_prices` |
+| *Remove international examples* (unchanged sample rows only) | ✔ | ✔ | Equivalent — `rebalancer-sample.test.mjs`, `test_model.py` |
 | Provider notice and error classification | ✔ | ✔ | Equivalent — shared fixtures `fixtures/providers/*.json` |
 | Automatic price on ticker commit | ✔ (Enter/Tab/blur) | ✔ (Enter/Tab, or *Get prices*) | Equivalent behaviour |
 | FX | BoC daily (ECB fallback), editable | BoC daily, editable | Equivalent rates; the web also falls back to ECB |
@@ -65,11 +68,19 @@ values, never presented as real time.
 
 ## CPI Web Scraper
 
-Desktop only (needs desktop Excel on Windows). A browser could read the five Statistics
-Canada series (CORS `*`, verified in the audit), but FRED blocks browser requests, browser
-spreadsheet libraries cannot recalculate or preserve this model's charts and dynamic
-arrays, and S&P 500 history may not be redistributed. A values-only browser data pack is
-feasible (audit Appendix F.6) but **not built in this release**.
+| Capability | Web | Desktop | Verdict / test |
+|---|---|---|---|
+| 19 columns A:S: ids, headers, order, sources, aggregation, first months | ✔ | ✔ | Identical — `test_schema_matches_the_desktop_downloader` |
+| Month rules (1913 clamp, current-month ceiling, invalid input) | ✔ | ✔ | Identical — `test_month_rules_match_the_desktop`, `test_range_clamp_matches_normalize_range` |
+| Daily series → latest valid observation of the month; current month blank for M/N/O | ✔ | ✔ | Identical — `test_daily_end_of_month_reduction_identical`, `test_csv_edge_values_and_current_month` |
+| CSV (dates, values, blanks, headers, CRLF, UTF-8) | ✔ | ✔ (optional, beside Excel) | **Byte-identical** from the same source fixture — `test_csv_identical_to_the_desktop_downloader` (6 ranges) |
+| Statistics Canada | Direct from the browser (CORS `*`) | Direct | Same vectors and validation; the web app chunks five vectors per request |
+| FRED | Through the data gateway with the visitor's own key; **gateway not deployed yet** | Direct with the user's key | Same series and aggregation; the gateway allowlist is checked against the desktop |
+| Without a FRED key | Canadian-only dataset (US columns blank, reason shown) | Refuses to start (key required) | Different by design |
+| A source fails | Other columns kept; failed months/series blank with the reason | Whole download stops before Excel opens | Different by design (the desktop must not half-write a workbook) |
+| Single month with a published gap (`..`/`.`) | Cell blank ("No value") | Download stops | Documented difference — `test_known_difference_single_month_with_a_published_gap` |
+| Writing into an existing workbook (merge, formulas kept) | — | ✔ (desktop Excel on Windows) | Desktop only (decision 4A) |
+| Preview | 12-month pages, four groups | — | Web only |
 
 ## Not verified here (owner acceptance)
 
@@ -79,4 +90,7 @@ feasible (audit Appendix F.6) but **not built in this release**.
   prompt), the CPI COM write and merge on a real workbook, and the Monte Carlo/Rebalancer
   workbooks in Excel.
 - Real provider responses with real keys (every automated test uses mocked responses).
+- The CPI data gateway deployed on Cloudflare, called from https://elmatthe.github.io with
+  a real FRED key (it was run in Cloudflare's local runtime against the real FRED API with
+  a made-up key only).
 - Browsers other than Chromium.

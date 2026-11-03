@@ -19,15 +19,20 @@ Portfolio Rebalancer, and Stock Comparison & Analytics Tool.
 | `tests/test_bootstrap.py` | Bootstrap contract tests (mocked) and opt-in end-to-end runs (`-m e2e`). |
 | `tests/test_market_data_parity.py` | JS vs Python market-data layer: identity, routing, catalog, notice classification, quote adapters, freshness, valuation, whole shares, sample portfolio. Fixtures in `tests/fixtures/providers/`. |
 | `tests/test_cpi_public_workbook.py` | The shipped CPI workbook stays clean and structurally intact. |
-| `tests/unit/*.test.mjs` | Node unit tests for `assets/js/market-data/` (including per-key isolation and key storage, CSV calendar dates), Stock analytics consistency and currency safeguards, and the Monte Carlo engine (no network). |
-| `tests/browser/*.test.js` | Playwright tests against a locally served build, with every market-data host mocked. |
+| `tests/test_cpi_parity.py` | CPI web app vs the desktop downloader: 19-column schema, gateway allowlist, month rules, daily end-of-month reduction, and byte-identical CSVs from `tests/fixtures/cpi/sources.json` (regenerate with `generate.py`). Uses Node through `tests/cpi_engines.mjs`. |
+| `tests/unit/*.test.mjs` | Node unit tests for `assets/js/market-data/` (including per-key isolation and key storage, CSV calendar dates), the Rebalancer sample, Stock analytics consistency and currency safeguards, the Monte Carlo engine, the CPI engine and clients, and the CPI data gateway's security rules (no network). |
+| `tests/browser/*.test.js` | Playwright tests against a locally served build, with every market-data host, Statistics Canada and the CPI data gateway mocked. |
 | `tests/live_fx_matrix.mjs` | Optional live check of the official FX sources (two requests). |
 | `MARKET_DATA.md` | Where prices and exchange rates come from, why, licensing, caching, testing and troubleshooting (section 0 = current design). |
 | `PROVIDER_MATRIX.md` | Dated eligibility, plans, request accounting and licensing for the five provider candidates. |
-| `INSTRUMENT_IDENTITY.md` | Ticker → listing identity, YNVD.TO alias, ambiguity policy, the sample portfolio. |
+| `INSTRUMENT_IDENTITY.md` | Ticker → listing identity, YNVD.NE / YNVD.TO, ambiguity policy, the 14-holding sample portfolio. |
+| `CPI_DATA.md` | CPI web app: architecture (Statistics Canada direct, FRED through the data gateway), the 19-column contract, missing data, CSV, key handling, free-tier operations, licensing, adding a series. |
 | `CALCULATION_METHODOLOGY.md` | Units, conventions, changed formulas and limitations of all four engines. |
 | `BROWSER_DESKTOP_PARITY.md` | Capability matrix web vs desktop, with the test behind each equivalence. |
 | `RELEASE_NOTES.md` | User-visible changes to the tools. |
+
+`../_services/cpi-data-gateway/` (also unpublished) is the Cloudflare Worker that lets the
+CPI web app reach FRED with each visitor's own key; deployment steps are in its README.
 
 CPI Web Scraper is not rendered from these templates. Its folder
 `projects/CPI-Webscraper/` is a copy of `elmatthe/CPI-Webscraper` `main` without the
@@ -61,7 +66,7 @@ Python tests need `pytest`, `numpy`, `scipy` and `openpyxl`, pinned in
 `tests/requirements.txt` (`python3 -m pip install -r _tools/tests/requirements.txt`):
 
 ```bash
-node --test _tools/tests/unit/*.test.mjs   # market data, key isolation, CSV dates, analytics consistency, Monte Carlo (seconds, no network)
+node --test _tools/tests/unit/*.test.mjs   # market data, key isolation, CSV dates, Rebalancer sample, analytics, Monte Carlo, CPI engine, data gateway (seconds, no network)
 cd _tools/tests
 python3 -m pytest -q -m "not e2e"   # parity, financial/analytics references, mocked bootstrap (seconds)
 python3 -m pytest -q -m e2e         # real venv builds and pip installs for each tool (minutes, needs network)
@@ -77,6 +82,7 @@ node pages.test.js        # project pages, guides, /projects/, redirects, ZIP li
 node stock.test.js        # Stock web app: visitor key, CSV import, demo, FX normalization, exports
 node rebalancer.test.js   # Rebalancer web app: official FX, provenance, visitor key, failures, exports
 node montecarlo.test.js   # Monte Carlo web app, seeded runs, no network, exports
+node cpi.test.js          # CPI web app: Canadian-only, mocked gateway, failures, 12-month pages, CSV, layout
 node live.test.js         # OPTIONAL: real Bank of Canada / ECB; Alpha Vantage only with ALPHAVANTAGE_KEY
 ```
 
@@ -90,8 +96,8 @@ tests are excluded there by name; run them on Windows with
 server. `CHROMIUM_ARGS` passes extra Chromium flags, split on whitespace.
 
 The deterministic suites never contact a market-data provider. `harness.js` answers the
-Bank of Canada, ECB, Alpha Vantage, Marketstack and Finnhub with synthetic data in their
-exact response shapes, and blocks (and the suites fail on) any other host, including CDNs
+Bank of Canada, ECB, Alpha Vantage, Marketstack, Finnhub, Statistics Canada and a stand-in
+CPI data gateway (`*.gateway.test`) with synthetic data in their exact response shapes, and blocks (and the suites fail on) any other host, including CDNs
 (Chart.js is self-hosted). Desktop Tk smoke tests need a display: on Linux run them with
 `xvfb-run -a -s "-screen 0 1366x768x24" python -m pytest files/tests`. `live.test.js` and
 `live_fx_matrix.mjs` make a handful of real requests and are informational. Never
