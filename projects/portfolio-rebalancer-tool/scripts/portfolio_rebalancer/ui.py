@@ -34,7 +34,7 @@ from portfolio_rebalancer import core
 from portfolio_rebalancer.export import write_csv_export, write_excel_export
 from portfolio_rebalancer.model import (ACCOUNT_TYPES, REPORTING, Row, Settings, action_lines, build_plan, money, qty, quote_label,
                                          rows_from_sample)
-from portfolio_rebalancer.sample import CURRENCY_TEST_GROUP, SAMPLE_PORTFOLIO
+from portfolio_rebalancer.sample import SAMPLE_PORTFOLIO, is_unchanged_international_example, target_total_basis_points
 
 TOOL_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = TOOL_ROOT / "files" / "runtime"
@@ -69,6 +69,7 @@ class RebalancerApp:
         self.pool = ThreadPoolExecutor(max_workers=4)
         self.row_widgets: dict[str, dict] = {}
         self.closing = False
+        self.batch: dict | None = None  # the last Get prices, until every holding in it has an answer
         root.title("Portfolio Rebalancer")
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
         root.geometry(f"{min(1360, int(sw * 0.92))}x{min(900, int(sh * 0.88))}")
@@ -127,7 +128,7 @@ class RebalancerApp:
         tools.pack(fill="x")
         # Two rows of buttons so nothing is cut off on a 1366-pixel screen at 125% scaling.
         for i, (text, cmd) in enumerate((("Add holding", self._add_row), ("Load sample", self._load_sample), ("Get prices", self._price_all),
-                                         ("Clear", self._clear), ("Price test rows", self._price_tests), ("Remove test rows", self._remove_tests),
+                                         ("Clear", self._clear), ("Remove international examples", self._remove_international),
                                          ("Import CSV…", self._import_holdings), ("Export CSV…", self._export_holdings))):
             ttk.Button(tools, text=text, command=cmd).grid(row=i // 4, column=i % 4, padx=(0, 4), pady=(0, 4), sticky="we")
         self.estimate = ttk.Label(left, text="", wraplength=560, justify="left", foreground=COLORS[""])
@@ -209,17 +210,10 @@ class RebalancerApp:
             child.destroy()
         self.row_widgets.clear()
         show_acct = self.show_accounts.get()
-        main = [r for r in self.rows if r.group != CURRENCY_TEST_GROUP]
-        tests = [r for r in self.rows if r.group == CURRENCY_TEST_GROUP]
+        # One list: every holding uses the same card and the same rules, whatever its market.
         line = 0
-        for group, rows in (("Holdings", main), ("International currency tests (0 shares, 0% target)", tests)):
-            if not rows:
-                continue
-            if group != "Holdings":
-                ttk.Label(self.rows_frame, text=group, font=("TkDefaultFont", 10, "bold")).grid(row=line, column=0, columnspan=6, sticky="w", pady=(10, 2))
-                line += 1
-            for row in rows:
-                line = self._build_row(row, line, show_acct)
+        for row in self.rows:
+            line = self._build_row(row, line, show_acct)
         self._after_change()
 
     def _build_row(self, row: Row, line: int, show_acct: bool) -> int:
@@ -285,7 +279,7 @@ class RebalancerApp:
         if eff:
             value = (core.parse_number(row.shares) or 0) * eff["price"]
             if eff["source"]["kind"] == "provider":
-                state, missed = freshness_of(eff["source"]["tradingDate"], time.time(), ident.get("timeZone") if ident else None)
+                state, missed = freshness_of(eff["source"]["tradingDate"], self.md.now(), ident.get("timeZone") if ident else None)
                 note = {"stale": f" · older than the latest session ({missed} missed)", "too_old": " · too old to use", "unknown": " · date unknown"}.get(state, "")
                 cached = " (saved copy)" if row.quote.get("cacheStatus") == "cached" else ""
                 return head + f"Verified {money(eff['price'], eff['currency'])} · {quote_label(row.quote)}{cached}{note} · value {money(value, eff['currency'])}", "ok" if state == "current" else "warn"
@@ -360,6 +354,7 @@ class RebalancerApp:
         for r in targets:
             if not r.identity or r.committed != r.ticker:
                 r.apply_identity(self.md.resolve(r.ticker))
+        self.batch = {"label": label, "rows": [r for r in targets if not r.effective()]}
         remaining = {}
         for pid in self.md.configured():
             b = self.md.budget(pid)
@@ -380,12 +375,38 @@ class RebalancerApp:
             self._price(r)
             count += 1
         self._status(f"{label}: fetching {count} price{'s' if count != 1 else ''}…", "busy")
+        self._batch_report()
 
     def _price_all(self) -> None:
-        self._price_many([r for r in self.rows if r.group != CURRENCY_TEST_GROUP and r.active], "Holdings")
+        self._price_many([r for r in self.rows if r.active], "Holdings")
 
-    def _price_tests(self) -> None:
-        self._price_many([r for r in self.rows if r.group == CURRENCY_TEST_GROUP], "Currency-test rows")
+    @staticmethod
+    def _short_problem(r: Row) -> str:
+        if not r.identity:
+            return "ticker not looked up yet"
+        if r.identity["status"] != "resolved":
+            return r.identity.get("reason") or "ticker not recognised"
+        kind = (r.error or {}).get("kind")
+        return {"not_covered": "not covered by your saved sources", "not_configured": "no price source set up",
+                "budget_withheld": "not requested: allowance used up", "rate_limited": "provider limit reached"}.get(
+            kind, "price unavailable" if r.error else "no price yet")
+
+    def _batch_report(self) -> None:
+        """Once every holding of the last Get prices has an answer, name the ones still without a usable price."""
+        batch = self.batch
+        if not batch or any(r.status == "pricing" for r in batch["rows"] if r in self.rows):
+            return
+        self.batch = None
+        rows = [r for r in self.rows if r in batch["rows"]]  # in the order of the holdings list
+        missing = [r for r in rows if not r.effective()]
+        if not rows:
+            return
+        if missing:
+            names = ", ".join(f"{r.ticker} ({self._short_problem(r)})" for r in missing)
+            self._status(f"{batch['label']}: {len(rows) - len(missing)} of {len(rows)} priced. Without a usable price: {names}. "
+                         "The plan stays withheld until each has a verified price or one you supply.", "warn")
+        else:
+            self._status(f"{batch['label']}: all {len(rows)} priced.", "ok")
 
     def _poll(self) -> None:
         try:
@@ -404,6 +425,7 @@ class RebalancerApp:
                 elif kind == "status":
                     self._status(*payload)
                 self._after_change()
+                self._batch_report()
         except queue.Empty:
             pass
         if not self.closing:
@@ -414,7 +436,7 @@ class RebalancerApp:
             self._paint_row(r)
 
     def _after_change(self) -> None:
-        main = [r for r in self.rows if r.group != CURRENCY_TEST_GROUP and r.ticker]
+        main = [r for r in self.rows if r.ticker]
         priced = sum(1 for r in main if r.effective())
         active = sum(1 for r in main if r.active)
         rep = self.reporting.get()
@@ -427,16 +449,15 @@ class RebalancerApp:
                 complete = False
                 continue
             total += (core.parse_number(r.shares) or 0) * eff["price"] * self.fx[eff["currency"]]["cadPer"] / self.fx[rep]["cadPer"]
-        tests = sum(1 for r in self.rows if r.group == CURRENCY_TEST_GROUP)
         parts = [f"{len(main)} holdings", f"{priced} priced"]
         if active - priced > 0:
             parts.append(f"{active - priced} without a usable price")
-        if tests:
-            parts.append(f"{tests} currency-test rows")
         if main:
             parts.append(f"value {money(total, rep)}{'' if complete else ' (incomplete)'}")
+            bp = target_total_basis_points([{"targetWeight": core.parse_number(r.target) or 0} for r in main if r.active])
+            parts.append(f"targets {bp / 100:.2f}%{' (the plan scales them to 100%)' if bp not in (0, 10000) else ''}")
         self.summary.configure(text=" · ".join(parts) if main else "")
-        pending = [r.identity for r in self.rows if r.group != CURRENCY_TEST_GROUP and r.active and r.identity and r.identity["status"] == "resolved" and not r.effective()]
+        pending = [r.identity for r in self.rows if r.active and r.identity and r.identity["status"] == "resolved" and not r.effective()]
         if not self.md.configured():
             self.estimate.configure(text="To get prices automatically, add your own key for at least one source under API keys…. You can also use My price on each holding.")
         elif pending:
@@ -444,7 +465,10 @@ class RebalancerApp:
             parts = [f"about {e['requests']} {PROVIDERS[p]['name']} request{'s' if e['requests'] != 1 else ''} for {e['rows']} holding{'s' if e['rows'] != 1 else ''}"
                      f" (this computer sent {e['sentToday']} today{', ' + str(e['sentMonth']) + ' this month' if e['period'] == 'month' else ''})" for p, e in est["perProvider"].items()]
             unc = ", ".join(u["displayTicker"] for u in est["uncovered"])
-            self.estimate.configure(text=f"Get prices: {'; '.join(parts) or 'no requests'}.{' Not covered by your saved sources: ' + unc + '.' if unc else ''}")
+            abroad = ", ".join(f"{i['displayTicker']} ({i['venueName']}, {i['currency']})" for i in pending if i.get("currency") not in ("CAD", "USD"))
+            self.estimate.configure(text=f"Get prices: {'; '.join(parts) or 'no requests'}."
+                                         f"{' Listings outside Canada and the US: ' + abroad + '; they count against the same allowances.' if abroad else ''}"
+                                         f"{' Not covered by your saved sources: ' + unc + '.' if unc else ''}")
         else:
             self.estimate.configure(text="")
         mode_new = self.mode.get().startswith("New")
@@ -456,18 +480,22 @@ class RebalancerApp:
         if len(self.rows) >= 50:
             self._status("At most 50 holdings.", "warn")
             return
-        idx = next((i for i, r in enumerate(self.rows) if r.group == CURRENCY_TEST_GROUP), len(self.rows))
-        self.rows.insert(idx, Row())
+        self.rows.append(Row())
         self._render_rows()
 
     def _remove_row(self, row: Row) -> None:
         self.rows = [r for r in self.rows if r is not row] or [Row()]
         self._render_rows()
 
-    def _remove_tests(self) -> None:
-        self.rows = [r for r in self.rows if r.group != CURRENCY_TEST_GROUP] or [Row()]
+    def _remove_international(self) -> None:
+        """Removes the four sample international examples only while they are exactly as loaded."""
+        removed = [r for r in self.rows if is_unchanged_international_example(r)]
+        if not removed:
+            self._status("No unchanged international examples to remove (edited rows and holdings you added are kept).")
+            return
+        self.rows = [r for r in self.rows if not is_unchanged_international_example(r)] or [Row()]
         self._render_rows()
-        self._status("Currency-test rows removed.")
+        self._status(f"Removed {', '.join(r.ticker for r in removed)}. The remaining targets are scaled to 100% in the plan.")
 
     def _clear(self) -> None:
         self.rows = [Row()]
@@ -484,7 +512,8 @@ class RebalancerApp:
         for r in self.rows:
             r.apply_identity(self.md.resolve(r.ticker))
         self._render_rows()
-        self._clear_plan("Sample portfolio loaded: 10 holdings and 4 international currency-test rows, with no prices. Press Get prices; nothing is fetched until you do.")
+        total = target_total_basis_points(SAMPLE_PORTFOLIO["rows"]) / 100
+        self._clear_plan(f"Sample portfolio loaded: {len(self.rows)} holdings (targets total {total:.1f}%), with no prices. Press Get prices; nothing is fetched until you do.")
 
     def _on_source(self) -> None:
         self.md.set_routing(mode=self._source_id())
@@ -571,6 +600,8 @@ class RebalancerApp:
                 error.configure(text=str(e))
                 return
             top.destroy()
+            # A price in a currency not loaded yet needs its official rate before it can be valued.
+            self.pool.submit(self._load_fx, [row.manual["currency"]], self.reporting.get())
             self._paint_row(row)
             self._after_change()
 
@@ -663,7 +694,7 @@ class RebalancerApp:
 
     def _calculate(self, quiet: bool = False) -> None:
         self.plan_requested = True
-        run = build_plan(self.rows, self._settings(), self.fx)
+        run = build_plan(self.rows, self._settings(), self.fx, now=self.md.now())  # the clock the quotes were dated with
         self._clear_plan()
         v = run["valuation"]
         if not run["plan"]:

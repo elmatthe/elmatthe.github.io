@@ -189,7 +189,7 @@ test("every sample row resolves to its verified listing and currency, with no pr
   const expected = {
     "VEQT.TO": ["XTSE:VEQT", "CAD"], "CNQ.TO": ["XTSE:CNQ", "CAD"], "XQQ.TO": ["XTSE:XQQ", "CAD"], "HEWB.TO": ["XTSE:HEWB", "CAD"],
     AAPL: ["XNAS:AAPL", "USD"], "VFV.TO": ["XTSE:VFV", "CAD"], SPCX: ["XNAS:SPCX", "USD"], CBRS: ["XNAS:CBRS", "USD"],
-    "YNVD.TO": ["NEOE:YNVD", "CAD"], VST: ["XNYS:VST", "USD"], "7203.T": ["XTKS:7203", "JPY"], "SAP.DE": ["XETR:SAP", "EUR"],
+    "YNVD.NE": ["NEOE:YNVD", "CAD"], VST: ["XNYS:VST", "USD"], "7203.T": ["XTKS:7203", "JPY"], "SAP.DE": ["XETR:SAP", "EUR"],
     "VOD.L": ["XLON:VOD", "GBP"], "600519.SS": ["XSHG:600519", "CNY"],
   };
   for (const row of SAMPLE_PORTFOLIO.rows) {
@@ -268,20 +268,25 @@ test("freshness counts missed weekday sessions in the listing's time zone", () =
 /* ---------------- valuation gate ---------------- */
 const vrow = (ticker, shares, target, price, extra = {}) => ({ rowId: ticker, ticker, shares, targetWeight: target, price, currency: price ? "CAD" : null, fxAvailable: true, source: price ? { kind: "provider", currencyVerified: true, freshness: "current" } : {}, ...extra });
 
-test("0 of 10 priced: no plan; 0-share 0% rows never block; manual prices are allowed but listed", () => {
-  const ten = SAMPLE_PORTFOLIO.rows.map(r => vrow(r.ticker, r.shares, r.targetWeight, null));
-  let v = E.assessValuation(ten);
+test("0 of 14 priced: no plan; every sample holding is required; manual prices are allowed but listed", () => {
+  const all = SAMPLE_PORTFOLIO.rows.map(r => vrow(r.ticker, r.shares, r.targetWeight, null));
+  let v = E.assessValuation(all);
   assert.equal(v.ready, false);
-  assert.equal(v.required, 10);
-  assert.equal(v.unpriced.length, 10);
-  assert.equal(v.notValued.length, 4);
-  assert.match(v.blockedReason, /10 of 10 holdings have no usable price/);
-  const priced = SAMPLE_PORTFOLIO.rows.map(r => (r.group === "main" ? vrow(r.ticker, r.shares, r.targetWeight, 10) : vrow(r.ticker, 0, 0, null)));
-  assert.equal(E.assessValuation(priced).ready, true, "the four test rows with no price do not block");
-  priced[8] = vrow("YNVD.TO", 4, 2, 44, { source: { kind: "manual", freshness: "current" } });
+  assert.equal(v.required, 14, "the four international holdings are ordinary required holdings");
+  assert.equal(v.unpriced.length, 14);
+  assert.equal(v.notValued.length, 0);
+  assert.match(v.blockedReason, /14 of 14 holdings have no usable price/);
+  const priced = SAMPLE_PORTFOLIO.rows.map(r => vrow(r.ticker, r.shares, r.targetWeight, 10));
+  assert.equal(E.assessValuation(priced).ready, true);
+  priced[13] = vrow("600519.SS", 1, 2.5, null);
+  v = E.assessValuation(priced);
+  assert.equal(v.ready, false, "an unpriced international holding blocks the plan like any other");
+  assert.deepEqual(v.unpriced.map(u => u.ticker), ["600519.SS"]);
+  priced[13] = vrow("600519.SS", 1, 2.5, 10);
+  priced[8] = vrow("YNVD.NE", 4, 1.8, 44, { source: { kind: "manual", freshness: "current" } });
   v = E.assessValuation(priced);
   assert.equal(v.ready, true);
-  assert.deepEqual(v.manualOverrides.map(m => m.ticker), ["YNVD.TO"]);
+  assert.deepEqual(v.manualOverrides.map(m => m.ticker), ["YNVD.NE"]);
 });
 
 test("unverified currency, too-old prices, missing FX and unaccepted stale prices block the plan", () => {

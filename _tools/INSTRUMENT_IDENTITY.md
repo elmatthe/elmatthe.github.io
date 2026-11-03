@@ -67,46 +67,63 @@ venue.
 - A response whose symbol, exchange or currency differs from the request is not used.
 - Recent listings carry `listedFrom`; history before it is discarded.
 
-## 4. `YNVD.TO` (Questrade display symbol for a Cboe Canada ETF)
+## 4. `YNVD.NE` and `YNVD.TO` (one Cboe Canada ETF, two spellings)
 
 - **What it is:** NVIDIA (NVDA) Yield Shares Purpose ETF, listed on **Cboe Canada**
   (MIC `NEOE`), CAD. Evidence: the Purpose Investments fund page and the Cboe Canada
-  security page (both `confirmed`).
-- **Why `.TO`:** Questrade shows Cboe Canada listings with `.TO`. The user's holding is
-  therefore **kept verbatim as `YNVD.TO`** (no forced rename to `.NE`), and the curated
-  alias list `["YNVD.TO", "YNVD.NE", "YNVD.NEO"]` maps all three to `NEOE:YNVD`.
-- **Never priced as a TSX listing.** Routing for `NEOE` is Marketstack → Finnhub (where
-  plans cover it); Alpha Vantage is not used for NEOE. Marketstack's coverage of NEOE:YNVD
-  is a recorded **known gap** (`catalog.gaps`), so on the free sources this row shows
-  "not covered" and the plan is withheld until the user supplies a labelled price (*My
-  price*). That is the intended, honest outcome; it is not a defect.
+  security page (both `confirmed`). The venue comes from these issuer and exchange
+  records, not from the suffix: `.NE` is never read as a TSX listing.
+- **Spellings:** the sample uses `YNVD.NE` (owner's choice, 2026-11-03). Questrade shows
+  the same fund as `YNVD.TO`; a holding imported or typed that way is **kept verbatim**
+  (no forced rename). The curated alias list `["YNVD.TO", "YNVD.NE", "YNVD.NEO"]` maps all
+  three to `NEOE:YNVD`, so they share one identity, one cache key and one route: they
+  are never two different instruments.
+- **Never priced as a TSX listing,** nor from NVIDIA common shares or another ETF.
+  Routing for `NEOE` is Marketstack → Finnhub (where plans cover it); Alpha Vantage is
+  not used for NEOE. Marketstack's coverage of NEOE:YNVD is a recorded **known gap**
+  (`catalog.gaps`), so on the free sources this row shows "Not covered" and the plan is
+  withheld until the user supplies a labelled price (*My price* / *Use my own price*).
+  That is the intended, honest outcome; it is not a defect.
 
-## 5. The sample portfolio (exact owner input; no prices)
+## 5. The sample portfolio (fourteen ordinary holdings; no prices)
 
 `assets/js/portfolio-rebalancer/sample.js` and `portfolio_rebalancer/sample.py` (checked
-identical by `test_market_data_parity.py::test_sample_portfolio_identical`): reporting
-currency CAD, New Money mode, budget 3,000.
+identical by `test_market_data_parity.py::test_sample_portfolio_identical`; schema
+`rb.sample-portfolio.v2`): reporting currency CAD, New Money mode, budget 3,000, account
+type blank. The ten Questrade targets of v1 (70/10/7/5/2/1/1/1/2/1) are scaled to 90%;
+the four international holdings have one share and 2.5% each. Targets total exactly
+10,000 basis points (100.0%).
 
 | # | Ticker (as entered) | Shares | Target % | Canonical ID | Currency | Evidence |
 |---|---|---|---|---|---|---|
-| 1 | VEQT.TO | 305 | 70 | XTSE:VEQT | CAD | audit |
-| 2 | CNQ.TO | 48 | 10 | XTSE:CNQ | CAD | audit |
-| 3 | XQQ.TO | 27 | 7 | XTSE:XQQ | CAD | audit |
-| 4 | HEWB.TO | 14 | 5 | XTSE:HEWB | CAD | audit |
-| 5 | AAPL | 2 | 2 | XNAS:AAPL | USD | audit |
-| 6 | VFV.TO | 8 | 1 | XTSE:VFV | CAD | audit |
-| 7 | SPCX | 1 | 1 | XNAS:SPCX (listed 2026-06-12) | USD | secondary — re-verify with SEC filings |
-| 8 | CBRS | 4 | 1 | XNAS:CBRS (listed 2026-05-14) | USD | secondary — re-verify with SEC filings |
-| 9 | YNVD.TO | 4 | 2 | NEOE:YNVD | CAD | confirmed |
-| 10 | VST | 1 | 1 | XNYS:VST | USD | audit |
-| T1 | 7203.T | 0 | 0 | XTKS:7203 | JPY | audit |
-| T2 | SAP.DE | 0 | 0 | XETR:SAP | EUR | audit |
-| T3 | VOD.L | 0 | 0 | XLON:VOD | GBP (pence) | audit |
-| T4 | 600519.SS | 0 | 0 | XSHG:600519 | CNY | audit |
+| 1 | VEQT.TO | 305 | 63.0 | XTSE:VEQT | CAD | audit |
+| 2 | CNQ.TO | 48 | 9.0 | XTSE:CNQ | CAD | audit |
+| 3 | XQQ.TO | 27 | 6.3 | XTSE:XQQ | CAD | audit |
+| 4 | HEWB.TO | 14 | 4.5 | XTSE:HEWB | CAD | audit |
+| 5 | AAPL | 2 | 1.8 | XNAS:AAPL | USD | audit |
+| 6 | VFV.TO | 8 | 0.9 | XTSE:VFV | CAD | audit |
+| 7 | SPCX | 1 | 0.9 | XNAS:SPCX (listed 2026-06-12) | USD | secondary — re-verify with SEC filings |
+| 8 | CBRS | 4 | 0.9 | XNAS:CBRS (listed 2026-05-14) | USD | secondary — re-verify with SEC filings |
+| 9 | YNVD.NE | 4 | 1.8 | NEOE:YNVD | CAD | confirmed |
+| 10 | VST | 1 | 0.9 | XNYS:VST | USD | audit |
+| 11 | 7203.T | 1 | 2.5 | XTKS:7203 | JPY | audit |
+| 12 | SAP.DE | 1 | 2.5 | XETR:SAP | EUR | audit |
+| 13 | VOD.L | 1 | 2.5 | XLON:VOD | GBP (quoted in pence, ÷100) | audit |
+| 14 | 600519.SS | 1 | 2.5 | XSHG:600519 | CNY | audit |
 
-Rows T1–T4 form the `currency-tests` group: zero shares and zero target, so they never
-block a plan and are not fetched by *Get prices* (inactive rows), and one action removes
-them. No example market price is embedded anywhere in the sample.
+All fourteen are ordinary holdings: the same row, the same **Get prices** action (one
+estimate and one batch for all, largest targets first, each provider's remaining quota
+checked before a request), the same valuation gate and the same plan. There is no
+separate group, button or rule for the international rows. Rows 11–14 carry a
+`sampleTag` (provenance only) so the optional *Remove international examples* control
+can remove them while they are exactly as loaded (same ticker, shares, target and
+account, no user price); an edited row, or the same security added by the user, is
+never removed. No example market price is embedded anywhere in the sample.
+
+With Alpha Vantage and Finnhub keys (automatic routing): 8 Alpha Vantage quotes (five
+TSX, Xetra, London, Shanghai; all curated, so no symbol search) and 4 Finnhub quotes;
+YNVD.NE and 7203.T are named as not covered before any request (Tokyo needs
+Marketstack). With Marketstack only: 13 requests of the free 100 per month.
 
 ## 6. Adding or correcting an instrument
 

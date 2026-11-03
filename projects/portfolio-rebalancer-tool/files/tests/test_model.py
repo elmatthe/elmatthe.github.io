@@ -12,12 +12,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from market_data.service import MarketData  # noqa: E402
 from portfolio_rebalancer.export import write_csv_export, write_excel_export  # noqa: E402
 from portfolio_rebalancer.model import Row, Settings, action_lines, build_plan, rows_from_sample  # noqa: E402
-from portfolio_rebalancer.sample import SAMPLE_PORTFOLIO  # noqa: E402
+from portfolio_rebalancer.sample import SAMPLE_PORTFOLIO, is_unchanged_international_example, target_total_basis_points  # noqa: E402
 
 AV_KEY, FH_KEY = "AVKEY1234567", "FHKEY1234567890ABCDEF"
+NOW = 1793718000.0  # 2026-11-03 15:00 UTC: the fixtures' 2026-11-02 closes are the latest session everywhere
 PRICES = {"VEQT.TRT": 60.84, "CNQ.TRT": 75.12, "XQQ.TRT": 68.0, "HEWB.TRT": 74.04, "VFV.TRT": 187.16, "AAPL": 338.32, "SPCX": 136.37, "CBRS": 96.36, "VST": 134.61,
           "SAP.DEX": 220.0, "VOD.LON": 7215.0, "600519.SHH": 1500.0}
-FX = {"USD": 1.3978, "EUR": 1.6, "GBP": 1.85, "JPY": 0.0091, "CNY": 0.2102}
+FX = {"USD": 1.3978, "EUR": 1.6, "GBP": 1.85, "JPY": 0.0091, "CNY": 0.2102, "HKD": 0.1797, "CHF": 1.74, "AUD": 0.92}
 
 
 class FakeProviders:
@@ -45,7 +46,7 @@ class FakeProviders:
 
 def market(**kw):
     fake = FakeProviders()
-    md = MarketData(None, http=fake, sleep=lambda s: None, pacing_override_ms=0, now=lambda: 1793718000.0, **kw)
+    md = MarketData(None, http=fake, sleep=lambda s: None, pacing_override_ms=0, now=lambda: NOW, **kw)
     return md, fake
 
 
@@ -72,39 +73,80 @@ def test_sample_loads_exactly_with_no_prices_and_no_requests():
     rows = rows_from_sample(SAMPLE_PORTFOLIO)
     for r in rows:
         r.apply_identity(md.resolve(r.ticker))
-    assert [(r.ticker, r.shares, r.target) for r in rows[:10]] == [("VEQT.TO", "305", "70"), ("CNQ.TO", "48", "10"), ("XQQ.TO", "27", "7"), ("HEWB.TO", "14", "5"),
-                                                                  ("AAPL", "2", "2"), ("VFV.TO", "8", "1"), ("SPCX", "1", "1"), ("CBRS", "4", "1"), ("YNVD.TO", "4", "2"), ("VST", "1", "1")]
-    assert [r.ticker for r in rows[10:]] == ["7203.T", "SAP.DE", "VOD.L", "600519.SS"]
+    assert [(r.ticker, r.shares, r.target) for r in rows] == [
+        ("VEQT.TO", "305", "63"), ("CNQ.TO", "48", "9"), ("XQQ.TO", "27", "6.3"), ("HEWB.TO", "14", "4.5"), ("AAPL", "2", "1.8"),
+        ("VFV.TO", "8", "0.9"), ("SPCX", "1", "0.9"), ("CBRS", "4", "0.9"), ("YNVD.NE", "4", "1.8"), ("VST", "1", "0.9"),
+        ("7203.T", "1", "2.5"), ("SAP.DE", "1", "2.5"), ("VOD.L", "1", "2.5"), ("600519.SS", "1", "2.5")]
+    assert target_total_basis_points(SAMPLE_PORTFOLIO["rows"]) == 10000
+    assert all(r.active for r in rows) and all(r.account == "" for r in rows)
     assert all(r.effective() is None for r in rows) and fake.calls == []
-    assert rows[8].identity["canonicalId"] == "NEOE:YNVD" and rows[8].ticker == "YNVD.TO"
+    assert rows[8].identity["canonicalId"] == "NEOE:YNVD" and rows[8].ticker == "YNVD.NE"
+    assert md.resolve("YNVD.TO")["canonicalId"] == "NEOE:YNVD", "legacy Questrade alias: same instrument"
+    assert [(r.identity["currency"], r.identity["unitScale"]) for r in rows[10:]] == [("JPY", 1), ("EUR", 1), ("GBP", 0.01), ("CNY", 1)]
 
 
-def test_routing_requests_and_withheld_plan_then_user_supplied_price():
+def test_routing_requests_and_withheld_plan_then_user_supplied_prices():
     md, fake = market()
     md.set_key("alphavantage", AV_KEY)
     md.set_key("finnhub", FH_KEY)
-    est = md.estimate([md.resolve(r["ticker"]) for r in SAMPLE_PORTFOLIO["rows"][:10]])
-    assert est["perProvider"]["alphavantage"]["requests"] == 5 and est["perProvider"]["finnhub"]["requests"] == 4
-    assert [u["displayTicker"] for u in est["uncovered"]] == ["YNVD.TO"]
+    est = md.estimate([md.resolve(r["ticker"]) for r in SAMPLE_PORTFOLIO["rows"]])
+    assert est["perProvider"]["alphavantage"]["requests"] == 8 and est["perProvider"]["finnhub"]["requests"] == 4
+    assert [u["displayTicker"] for u in est["uncovered"]] == ["YNVD.NE", "7203.T"]
     rows = priced_sample(md)
     sent = [c for c in fake.calls if c[0] != "www.bankofcanada.ca"]
-    assert len(sent) == 9 and not any("YNVD" in str(c) for c in sent), sent
+    assert len(sent) == 12 and not any("YNVD" in str(c) or "7203" in str(c) for c in sent), sent
     fx = fx_table(md, ["USD", "GBP", "EUR", "CNY", "JPY"])
-    run = build_plan(rows, Settings(), fx)
-    assert run["plan"] is None and run["valuation"]["unpriced"][0]["ticker"] == "YNVD.TO"
+    run = build_plan(rows, Settings(), fx, now=NOW)
+    assert run["plan"] is None and [u["ticker"] for u in run["valuation"]["unpriced"]] == ["YNVD.NE", "7203.T"]
     rows[8].set_manual("44.21", "CAD")
-    run = build_plan(rows, Settings(), fx)
-    assert run["plan"] is not None and run["valuation"]["manualOverrides"] == [{"rowId": rows[8].id, "ticker": "YNVD.TO", "kind": "manual"}]
-    assert any("User-supplied prices" in n and "YNVD.TO" in n for n in run["notes"]["attention"])
+    assert build_plan(rows, Settings(), fx, now=NOW)["plan"] is None, "7203.T still has no price"
+    rows[10].set_manual("2850", "JPY")
+    run = build_plan(rows, Settings(), fx, now=NOW)
+    assert run["plan"] is not None and [m["ticker"] for m in run["valuation"]["manualOverrides"]] == ["YNVD.NE", "7203.T"]
+    assert any("User-supplied prices" in n and "YNVD.NE" in n and "7203.T" in n for n in run["notes"]["attention"])
     s = run["plan"]["summary"]
     assert s["totalBuys"] <= 3000 + 0.01 and s["totalSells"] == 0
-    assert [r.ticker for r in run["notValued"]] == ["7203.T", "SAP.DE", "VOD.L", "600519.SS"]
-    # Independent valuation: VEQT 305 x 60.84 CAD; AAPL 2 x 338.32 USD x 1.3978.
+    assert run["notValued"] == [] and len(run["plan"]["results"]) == 14
+    # Independent valuation: VEQT 305 x 60.84 CAD; AAPL 2 x 338.32 USD x 1.3978; VOD 7215p = 72.15 GBP x 1.85.
     lines = {x["row"].ticker: x for x in action_lines(run)}
     assert lines["VEQT.TO"]["result"]["currentValue"] == pytest.approx(305 * 60.84)
     assert lines["AAPL"]["result"]["currentValue"] == pytest.approx(2 * 338.32 * 1.3978)
-    whole = build_plan(rows, Settings(whole_shares=True), fx)
+    assert lines["VOD.L"]["result"]["currentValue"] == pytest.approx(72.15 * 1.85)
+    assert lines["7203.T"]["result"]["currentValue"] == pytest.approx(2850 * 0.0091)
+    assert lines["SAP.DE"]["result"]["targetWeightNorm"] == pytest.approx(0.025)
+    whole = build_plan(rows, Settings(whole_shares=True), fx, now=NOW)
     assert whole["whole"]["totalBuys"] <= 3000 + 1e-9 and all(float(r["wholeShares"]).is_integer() for r in whole["whole"]["results"])
+    # Removing a holding updates the plan and the 100% check.
+    run = build_plan([r for r in rows if r.ticker != "VST"], Settings(), fx, now=NOW)
+    assert len(run["plan"]["results"]) == 13 and any("99.10%" in w for w in run["plan"]["warnings"] + run["notes"]["info"])
+
+
+def test_remove_international_examples_only_unchanged_rows():
+    rows = rows_from_sample(SAMPLE_PORTFOLIO)
+    assert [r.ticker for r in rows if is_unchanged_international_example(r)] == ["7203.T", "SAP.DE", "VOD.L", "600519.SS"]
+    rows[10].shares = "2"
+    rows[11].set_manual("220", "EUR")
+    rows[12].edit_ticker("TSCO.L")
+    rows.append(Row("600519.SS", "1", "2.5"))
+    assert [r.ticker for r in rows if is_unchanged_international_example(r)] == ["600519.SS"]
+    kept = [r for r in rows if not is_unchanged_international_example(r)]
+    assert len(kept) == 14 and sum(1 for r in kept if r.ticker == "600519.SS") == 1 and kept[-1].sample_tag is None
+
+
+def test_invalid_currencies_and_units_are_rejected():
+    row = Row("VOD.L", "1", "2.5")
+    for bad in ["", "gbp", "GB", "GBPX", "US$"]:
+        with pytest.raises(ValueError, match="currency"):
+            row.set_manual("1", bad)
+    with pytest.raises(ValueError, match="minor unit"):
+        row.set_manual("7215", "GBX")
+    with pytest.raises(ValueError, match="pence"):
+        row.set_manual("1", "GBP", 0.5)
+    for bad in ["0", "-1", "nan", "abc", ""]:
+        with pytest.raises(ValueError, match="greater than 0"):
+            row.set_manual(bad, "GBP")
+    row.set_manual("7215", "GBP", 0.01)
+    assert row.effective()["price"] == pytest.approx(72.15) and row.effective()["currency"] == "GBP"
 
 
 def test_ticker_edit_clears_price_and_late_answer_is_ignored():
@@ -122,7 +164,7 @@ def test_ticker_edit_clears_price_and_late_answer_is_ignored():
     assert row.effective()["price"] == PRICES["VFV.TRT"]
 
 
-def test_pence_conversion_and_test_rows_priced_only_on_request():
+def test_pence_conversion_and_tokyo_not_covered_without_marketstack():
     md, fake = market()
     md.set_key("alphavantage", AV_KEY)
     vod = md.price_instrument(md.resolve("VOD.L"))
@@ -138,10 +180,12 @@ def test_exports_carry_sources_and_no_keys(tmp_path):
     md.set_key("finnhub", FH_KEY)
     rows = priced_sample(md)
     rows[8].set_manual("44.21", "CAD")
-    run = build_plan(rows, Settings(), fx_table(md, ["USD"]))
+    rows[10].set_manual("2850", "JPY")
+    run = build_plan(rows, Settings(), fx_table(md, ["USD", "EUR", "GBP", "JPY", "CNY"]), now=NOW)
     write_csv_export(tmp_path / "plan.csv", run)
     text = (tmp_path / "plan.csv").read_text(encoding="utf-8")
-    assert "YNVD.TO,NEOE:YNVD" in text and "Entered by you (user-supplied)" in text and "Includes 1 user-supplied price" in text
+    assert "YNVD.NE,NEOE:YNVD" in text and "Entered by you (user-supplied)" in text and "Includes 2 user-supplied price" in text
+    assert "VOD.L,XLON:VOD" in text and "600519.SS,XSHG:600519" in text and "SAP.DE,XETR:SAP" in text
     assert "Alpha Vantage (provider),VEQT.TRT,latest price for trading day,2026-11-02" in text
     assert "Bank of Canada" in text and AV_KEY not in text and FH_KEY not in text
     rows_csv = list(csv.reader(text.splitlines()))
@@ -151,8 +195,8 @@ def test_exports_carry_sources_and_no_keys(tmp_path):
     wb = openpyxl.load_workbook(tmp_path / "plan.xlsx")
     assert wb.sheetnames == ["Trade Plan", "Summary"]
     ws = wb["Trade Plan"]
-    assert ws.max_row == 11 and ws.cell(1, 1).value == "Ticker (as entered)"
-    assert "YNVD.TO" in [ws.cell(i, 1).value for i in range(2, 12)]
+    assert ws.max_row == 15 and ws.cell(1, 1).value == "Ticker (as entered)"
+    assert [ws.cell(i, 1).value for i in range(2, 16)] == [r["ticker"] for r in SAMPLE_PORTFOLIO["rows"]]
 
 
 def test_formula_like_text_is_neutralized():

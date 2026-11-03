@@ -122,7 +122,7 @@ function avBody(url, mode) {
   if (unknown) return fn === "GLOBAL_QUOTE" ? JSON.stringify({ "Global Quote": {} }) : JSON.stringify({ "Error Message": `Invalid API call. Please retry or visit the documentation (https://www.alphavantage.co/documentation/) for ${fn}.` });
   const days = businessDays(Date.now() - 6 * 365 * DAY, Date.now() - DAY);
   if (fn === "GLOBAL_QUOTE") {
-    const t = days[days.length - 1];
+    const t = /\.(SHH|SHZ)$/.test(symbol) ? sessionFor(symbol) : days[days.length - 1];
     const p = avPrice(symbol, t);
     return JSON.stringify({ "Global Quote": { "01. symbol": symbol, "02. open": String(p), "03. high": String(p * 1.01), "04. low": String(p * 0.99), "05. price": String(p), "06. volume": "1234567", "07. latest trading day": iso(t), "08. previous close": String(avPrice(symbol, t - DAY)), "09. change": "0.1", "10. change percent": "0.1000%" } });
   }
@@ -143,13 +143,25 @@ function avBody(url, mode) {
 // as Marketstack reports them (London in GBX, Tokyo as XJPX). YNVD is not listed.
 const MS_VENUE = [[/\.TO$/, "XTSE", "CAD"], [/\.V$/, "XTSX", "CAD"], [/\.NE$/, "NEOE", "CAD"], [/\.L$/, "XLON", "GBX"], [/\.DE$/, "XETR", "EUR"], [/\.T$/, "XJPX", "JPY"], [/\.SS$/, "XSHG", "CNY"], [/\.SZ$/, "XSHE", "CNY"]];
 function lastSession() { const days = businessDays(Date.now() - 10 * DAY, Date.now() - DAY); return days[days.length - 1]; }
+// The weekday before "today" in the listing's own time zone: always the latest or the
+// previous session there, whatever the time of day the tests run (Shanghai and Tokyo
+// are already on the next calendar day from 15:00/16:00 UTC).
+const VENUE_TZ = [[/\.(SHH|SHZ|SS|SZ)$/, "Asia/Shanghai"], [/\.T$/, "Asia/Tokyo"], [/\.(LON|L)$/, "Europe/London"], [/\.(DEX|DE)$/, "Europe/Berlin"]];
+function sessionFor(symbol) {
+  const tz = (VENUE_TZ.find(([re]) => re.test(symbol)) || [null, null])[1];
+  if (!tz) return lastSession();
+  const today = Date.parse(`${new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())}T00:00:00Z`);
+  let t = today - DAY;
+  while ([0, 6].includes(new Date(t).getUTCDay())) t -= DAY;
+  return t;
+}
 function msBody(url, mode) {
   if (url.searchParams.get("access_key") !== MS_KEY) return { status: 401, body: JSON.stringify({ error: { code: "invalid_access_key", message: "You have not supplied a valid API Access Key." } }) };
   mode.msCalls = (mode.msCalls || 0) + 1;
   if (mode.msLimit !== undefined && mode.msCalls > mode.msLimit) return { status: 429, body: JSON.stringify({ error: { code: "usage_limit_reached", message: "Your monthly usage limit has been reached. Please upgrade your Subscription Plan." } }) };
   const symbols = String(url.searchParams.get("symbols") || "").split(",").filter(Boolean);
-  const t = lastSession();
   const data = symbols.filter(sym => !/^(YNVD|ZZZ)/.test(sym)).map(sym => {
+    const t = /\.(SS|SZ|T)$/.test(sym) ? sessionFor(sym) : lastSession();
     const venue = MS_VENUE.find(([re]) => re.test(sym)) || [null, "XNAS", "USD"];
     const p = avPrice(venue[1] === "XLON" ? `${sym}LON` : sym, t);
     return { open: p, high: p, low: p, close: venue[1] === "XLON" ? Number((p * 1).toFixed(2)) : p, volume: 1000, adj_close: p, name: `Mock ${sym}`, exchange_code: venue[1], asset_type: "Stock", price_currency: venue[2], symbol: sym, exchange: venue[1], date: `${iso(t)}T00:00:00+0000` };

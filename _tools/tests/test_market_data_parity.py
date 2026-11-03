@@ -31,14 +31,14 @@ from market_data.freshness import freshness_of  # noqa: E402
 from market_data.instruments import InstrumentResolver, load_reference  # noqa: E402
 from market_data.service import MarketData, compare_quotes  # noqa: E402
 from portfolio_rebalancer import core  # noqa: E402
-from portfolio_rebalancer.sample import SAMPLE_PORTFOLIO  # noqa: E402
+from portfolio_rebalancer.sample import SAMPLE_PORTFOLIO, target_total_basis_points  # noqa: E402
 
 REFERENCE = json.loads((ROOT / "assets" / "data" / "instruments.v1.json").read_text(encoding="utf-8"))
 NOTICES = json.loads((FIXTURES / "alphavantage-notices.json").read_text(encoding="utf-8"))
 RESPONSES = json.loads((FIXTURES / "quote-responses.json").read_text(encoding="utf-8"))
 TICKERS = [r["ticker"] for r in SAMPLE_PORTFOLIO["rows"]] + [
     "RY.TO", "DLR-U.TO", "MSFT", "BRK.B", "TSX:RY", "^GSPC", "CADUSD=X", "CL=F", "AB.XYZ", "bad ticker!", "0700.HK",
-    "TSCO.L", "YNVD.NE", "ynvd.to", "SHOP.V", "MC.PA", "BHP.AX", "RELIANCE.BO", "", "  vfv.to ",
+    "TSCO.L", "YNVD.TO", "ynvd.to", "SHOP.V", "MC.PA", "BHP.AX", "RELIANCE.BO", "", "  vfv.to ",
 ]
 
 
@@ -218,10 +218,51 @@ def test_compare_quotes_and_freshness_identical():
 def test_sample_portfolio_identical():
     (js,) = run_js("market-data", [{"op": "sample"}])
     assert js == SAMPLE_PORTFOLIO
-    assert [r["ticker"] for r in SAMPLE_PORTFOLIO["rows"][:10]] == ["VEQT.TO", "CNQ.TO", "XQQ.TO", "HEWB.TO", "AAPL", "VFV.TO", "SPCX", "CBRS", "YNVD.TO", "VST"]
-    assert sum(r["targetWeight"] for r in SAMPLE_PORTFOLIO["rows"]) == 100
-    assert all(r["shares"] == 0 and r["targetWeight"] == 0 for r in SAMPLE_PORTFOLIO["rows"][10:])
-    assert not any("price" in r for r in SAMPLE_PORTFOLIO["rows"])
+    rows = SAMPLE_PORTFOLIO["rows"]
+    assert [(r["ticker"], r["shares"], r["targetWeight"]) for r in rows] == [
+        ("VEQT.TO", 305, 63), ("CNQ.TO", 48, 9), ("XQQ.TO", 27, 6.3), ("HEWB.TO", 14, 4.5), ("AAPL", 2, 1.8), ("VFV.TO", 8, 0.9),
+        ("SPCX", 1, 0.9), ("CBRS", 4, 0.9), ("YNVD.NE", 4, 1.8), ("VST", 1, 0.9),
+        ("7203.T", 1, 2.5), ("SAP.DE", 1, 2.5), ("VOD.L", 1, 2.5), ("600519.SS", 1, 2.5)]
+    assert target_total_basis_points(rows) == 10000, "targets total exactly 100.0%"
+    assert target_total_basis_points(rows[:10]) == 9000, "the ten Questrade targets scaled to 90%"
+    assert all(r["accountType"] == "" for r in rows)
+    assert not any("price" in r or "group" in r for r in rows), "no prices and no separate group"
+    assert [r.get("sampleTag") for r in rows].count("international-example") == 4
+    assert SAMPLE_PORTFOLIO["reportingCurrency"] == "CAD" and SAMPLE_PORTFOLIO["mode"] == "new_money" and SAMPLE_PORTFOLIO["budget"] == 3000
+
+
+# Identical reference prices (major units; VOD.L 7215 pence = 72.15 GBP) and FX for the
+# 14-row sample: the browser and desktop engines must give the same plan.
+SAMPLE_REFERENCE_PRICES = {"VEQT.TO": (60.84, "CAD"), "CNQ.TO": (75.12, "CAD"), "XQQ.TO": (68.0, "CAD"), "HEWB.TO": (74.04, "CAD"),
+                           "AAPL": (338.32, "USD"), "VFV.TO": (187.16, "CAD"), "SPCX": (136.37, "USD"), "CBRS": (96.36, "USD"),
+                           "YNVD.NE": (44.21, "CAD"), "VST": (134.61, "USD"), "7203.T": (2850.0, "JPY"), "SAP.DE": (220.0, "EUR"),
+                           "VOD.L": (7215 * 0.01, "GBP"), "600519.SS": (1500.0, "CNY")}
+SAMPLE_CAD_PER = {"CAD": 1.0, "USD": 1.3978, "EUR": 1.6, "GBP": 1.85, "JPY": 0.0091, "CNY": 0.2102}
+
+
+@pytest.mark.parametrize("mode", ["new_money", "rebalance"])
+def test_sample_plan_identical_with_reference_prices(mode):
+    positions = [{"rowIndex": i, "ticker": r["ticker"], "shares": r["shares"], "price": SAMPLE_REFERENCE_PRICES[r["ticker"]][0],
+                  "currencyKey": SAMPLE_REFERENCE_PRICES[r["ticker"]][1], "targetWeight": r["targetWeight"], "accountType": ""}
+                 for i, r in enumerate(SAMPLE_PORTFOLIO["rows"])]
+    case = {"op": "whole", "positions": positions, "fxToUsd": SAMPLE_CAD_PER, "reportingKey": "CAD", "mode": mode, "budget": SAMPLE_PORTFOLIO["budget"]}
+    (browser,) = run_js("rebalancer-extras", [case])
+    summary, results, warnings, _ = _desktop_plan(case)
+    assert len(results) == len(browser["plan"]["results"]) == 14, "all fourteen holdings are in the plan"
+    assert browser["plan"]["warnings"] == warnings
+    for d, b in zip(results, browser["plan"]["results"]):
+        assert d["ticker"] == b["ticker"] and d["action"] == b["action"]
+        for key in ("currentValue", "targetWeightNorm", "targetValue", "tradeValue", "tradeValueLocal", "tradeShares"):
+            assert math.isclose(d[key], b[key], rel_tol=1e-12, abs_tol=1e-9), (d["ticker"], key)
+    by = {r["ticker"]: r for r in results}
+    assert math.isclose(by["VOD.L"]["currentValue"], 72.15 * 1.85, rel_tol=1e-12), "pence converted to pounds, then GBP to CAD"
+    assert math.isclose(by["7203.T"]["currentValue"], 2850 * 0.0091, rel_tol=1e-12)
+    assert all(math.isclose(by[t]["targetWeightNorm"], 0.025, rel_tol=1e-12) for t in ("7203.T", "SAP.DE", "VOD.L", "600519.SS"))
+    assert math.isclose(sum(r["targetWeightNorm"] for r in results), 1.0, rel_tol=1e-12)
+    whole = core.apply_whole_shares(summary, results)
+    assert [r["wholeShares"] for r in browser["whole"]["results"]] == [r["wholeShares"] for r in whole["results"]]
+    if mode == "new_money":
+        assert summary["totalSells"] == 0 and summary["totalBuys"] <= 3000 + 1e-9
 
 
 # ---------------------------------------------------------------- Rebalancer extras
@@ -296,7 +337,8 @@ def test_valuation_gate_identical():
                 "fxAvailable": True, "source": {"kind": "provider", "currencyVerified": True, "freshness": "current"} if price else {}, **kw}
     sets = [
         [row(r["ticker"], r["shares"], r["targetWeight"], None) for r in SAMPLE_PORTFOLIO["rows"]],
-        [row(r["ticker"], r["shares"], r["targetWeight"], 10 if r["group"] == "main" else None) for r in SAMPLE_PORTFOLIO["rows"]],
+        [row(r["ticker"], r["shares"], r["targetWeight"], 10) for r in SAMPLE_PORTFOLIO["rows"]],
+        [row(r["ticker"], r["shares"], r["targetWeight"], None if r["ticker"] == "600519.SS" else 10) for r in SAMPLE_PORTFOLIO["rows"]],
         [row("A", 1, 1, 10, source={"kind": "provider", "currencyVerified": False, "freshness": "current"})],
         [row("A", 1, 1, 10, source={"kind": "provider", "currencyVerified": True, "freshness": "stale", "tradingDate": "2026-10-29"})],
         [row("A", 1, 1, 10, source={"kind": "manual", "freshness": "current"}), row("B", "", 1, 10)],
