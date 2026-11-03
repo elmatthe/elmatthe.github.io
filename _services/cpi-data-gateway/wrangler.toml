@@ -1,0 +1,35 @@
+# Cloudflare Workers configuration for the CPI FRED gateway (Workers Free plan).
+# Deploy steps, limits and verification: README.md in this folder.
+#
+# Uses no paid feature and no storage: no KV, D1, R2, Durable Objects, Queues or
+# Workers Paid features. Keep the account on the Workers Free plan; Cloudflare then
+# stops serving requests above the free daily allowance instead of billing for them.
+name = "cpi-data-gateway"
+main = "src/worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+# Request logs are not stored by default. If you enable Workers Logs, the gateway
+# still never logs keys, URLs, request bodies or IP addresses (see src/gateway.js).
+[observability]
+enabled = false
+
+[vars]
+# Exact browser origins allowed to call the gateway (comma separated; https, or
+# http://127.0.0.1:<port> / http://localhost:<port> for local development only).
+ALLOWED_ORIGINS = "https://elmatthe.github.io"
+# Series the operator has switched off (comma separated FRED IDs), e.g. "SP500" if
+# S&P 500 retrieval through this gateway is not permitted for your use.
+DISABLED_SERIES = ""
+
+# Cross-isolate rate limit per caller (hashed client IP), in addition to the
+# in-memory limiter in src/gateway.js. Requires Wrangler 4.36.0 or later. namespace_id
+# is any integer unique within your Cloudflare account. Remove this block if your
+# account cannot use the binding; the in-memory limiter still applies.
+[[ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "21001"
+
+  [ratelimits.simple]
+  limit = 60
+  period = 60

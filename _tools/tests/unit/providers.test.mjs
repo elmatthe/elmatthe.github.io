@@ -112,20 +112,25 @@ test("routing of the 14-row sample with each key set, and the request estimate b
   const byTicker = configured => Object.fromEntries(ids.map(i => [i.displayTicker, first(i, configured)]));
   assert.deepEqual(byTicker(["alphavantage", "finnhub"]), {
     "VEQT.TO": "alphavantage", "CNQ.TO": "alphavantage", "XQQ.TO": "alphavantage", "HEWB.TO": "alphavantage", AAPL: "finnhub", "VFV.TO": "alphavantage",
-    SPCX: "finnhub", CBRS: "finnhub", "YNVD.TO": null, VST: "finnhub", "7203.T": null, "SAP.DE": "alphavantage", "VOD.L": "alphavantage", "600519.SS": "alphavantage",
+    SPCX: "finnhub", CBRS: "finnhub", "YNVD.NE": null, VST: "finnhub", "7203.T": null, "SAP.DE": "alphavantage", "VOD.L": "alphavantage", "600519.SS": "alphavantage",
   });
   const withMs = byTicker(["marketstack"]);
-  assert.equal(withMs["YNVD.TO"], null, "YNVD is not in Marketstack's ticker list");
+  assert.equal(withMs["YNVD.NE"], null, "YNVD is not in Marketstack's ticker list");
   assert.equal(withMs["7203.T"], "marketstack");
   const { md } = make(() => F.response(500, "{}"), { keys: { alphavantage: KEYS.alphavantage, finnhub: KEYS.finnhub } });
-  const active = ids.slice(0, 10);
-  const est = md.estimate(active);
-  assert.equal(est.perProvider.alphavantage.requests, 5, "five TSX ETFs/stocks, curated: one GLOBAL_QUOTE each");
+  // All fourteen holdings are active: one estimate covers them, before any fetch.
+  const est = md.estimate(ids);
+  assert.equal(est.perProvider.alphavantage.requests, 8, "five TSX + Xetra, London, Shanghai, all curated: one GLOBAL_QUOTE each, no search");
   assert.equal(est.perProvider.finnhub.requests, 4);
-  assert.deepEqual(est.uncovered.map(u => u.displayTicker), ["YNVD.TO"]);
+  assert.deepEqual(est.uncovered.map(u => u.displayTicker), ["YNVD.NE", "7203.T"]);
   assert.equal(est.perProvider.alphavantage.remaining, 25);
-  const avOnly = make(() => F.response(500, "{}"), { keys: { alphavantage: KEYS.alphavantage } }).md.estimate(active);
-  assert.equal(avOnly.perProvider.alphavantage.requests, 9, "Alpha Vantage only: 9 requests, within 25");
+  const avOnly = make(() => F.response(500, "{}"), { keys: { alphavantage: KEYS.alphavantage } }).md.estimate(ids);
+  assert.equal(avOnly.perProvider.alphavantage.requests, 12, "Alpha Vantage only: 12 requests, within 25");
+  const msOnly = make(() => F.response(500, "{}"), { keys: { marketstack: KEYS.marketstack } });
+  msOnly.md.setRouting({ mode: "marketstack" });
+  const ms = msOnly.md.estimate(ids);
+  assert.equal(ms.perProvider.marketstack.requests, 13, "Marketstack: one per symbol, YNVD excluded");
+  assert.equal(ms.perProvider.marketstack.remaining, 100);
 });
 
 test("fallback is opt-in and says which source failed first", async () => {

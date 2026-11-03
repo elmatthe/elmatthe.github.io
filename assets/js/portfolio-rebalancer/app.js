@@ -13,12 +13,14 @@
 //   * a plan is shown only when every holding with shares or a target has a verified
 //     price in a confirmed currency, or a price the visitor deliberately supplied
 //     (labelled as such on screen and in every export).
+// Every holding is an ordinary row in one list, whatever its market or currency: the
+// same card, the same Get prices action, the same valuation gate and the same plan.
 // Holdings are never sent anywhere or stored: only ticker symbols go to the price
 // provider, and only currency codes go to the central banks.
 
 import * as E from "./engine.js";
 import * as R from "./rows.js";
-import { SAMPLE_PORTFOLIO, CURRENCY_TEST_GROUP } from "./sample.js";
+import { SAMPLE_PORTFOLIO, isUnchangedInternationalExample, targetTotalBasisPoints } from "./sample.js";
 import { createMarketData, KEY_STORAGE_TEXT, PROVIDERS, providerAvailable } from "../market-data/index.js";
 import { csvRecords } from "../market-data/csv.js";
 import { buildXlsx, toCsv, downloadBlob, timestampSlug } from "../shared/export-files.js";
@@ -51,7 +53,7 @@ function init() {
   };
   const nodes = new Map(); // row id -> card element
   const els = {
-    rows: $("rbRows"), testRows: $("rbTestRows"), testGroup: $("rbTestGroup"),
+    rows: $("rbRows"),
     reporting: $("rbReporting"), mode: $("rbMode"), budget: $("rbBudget"), rounding: $("rbRounding"),
     showAccount: $("rbShowAccount"), source: $("rbSource"), fallback: $("rbFallback"),
     status: $("rbStatus"), results: $("rbResults"), estimate: $("rbEstimate"), summary: $("rbSummary"),
@@ -94,8 +96,6 @@ function init() {
   /* ---------------- rows ---------------- */
   const getRow = id => state.rows.find(r => r.id === id);
   const putRow = row => { const i = state.rows.findIndex(r => r.id === row.id); if (i >= 0) state.rows[i] = row; };
-  const mainRows = () => state.rows.filter(r => r.group !== CURRENCY_TEST_GROUP);
-  const testRows = () => state.rows.filter(r => r.group === CURRENCY_TEST_GROUP);
   const resolveIdentity = text => { try { return md.resolve(text); } catch (_) { return null; } };
 
   function commitTicker(id) {
@@ -146,15 +146,43 @@ function init() {
     afterChange();
   }
 
+  // Short reason for a holding that has no usable price after Get prices.
+  function shortProblem(row) {
+    if (row.identity && row.identity.status !== "resolved") return row.identity.reason || "ticker not recognised";
+    if (!row.identity) return "ticker not looked up yet";
+    const kind = row.error?.kind;
+    if (kind === "not_covered") return "not covered by your saved sources";
+    if (kind === "not_configured") return "no price source set up";
+    if (kind === "budget_withheld") return "not requested: allowance used up";
+    if (kind === "rate_limited") return "provider limit reached";
+    if (row.error) return "price unavailable";
+    return "no price yet";
+  }
+
+  // Get prices for every active holding (shares or a target) that has no usable price:
+  // tickers still being typed are identified first (no request), and each holding
+  // then follows exactly the same route, quota and safety rules whatever its market.
+  async function priceAll() {
+    resolveAll();
+    const active = state.rows.filter(r => r.ticker && R.isActive(r));
+    const notIdentified = active.filter(r => r.identity?.status !== "resolved");
+    await priceMany(active.filter(r => r.identity?.status === "resolved" && !R.effectivePrice(r)), "Holdings", { notIdentified, activeCount: active.length });
+  }
+
   // Prices several holdings. Each provider's requests are paced by its scheduler;
   // holdings that would exceed the provider's remaining quota (by this browser's own
-  // count) are not requested and say so.
-  async function priceMany(rows, label) {
+  // count) are not requested and say so. Progress and the holdings left without a
+  // usable price are reported by ticker.
+  async function priceMany(rows, label, { notIdentified = [], activeCount = null } = {}) {
     const targets = rows.filter(r => r.identity?.status === "resolved" && !(r.useManual && r.manual))
       .sort((a, b) => (E.parseNumber(b.targetWeight) || 0) - (E.parseNumber(a.targetWeight) || 0));
-    if (!targets.length) { setStatus("Nothing to price: commit a ticker first.", "warn"); return; }
+    if (!targets.length) {
+      const all = activeCount !== null && activeCount > 0 && !notIdentified.length;
+      setStatus(all ? `${label}: every holding already has a usable price.` : notIdentified.length ? `Nothing to price: ${notIdentified.map(r => `${r.ticker} (${shortProblem(r)})`).join(", ")}.` : "Nothing to price: commit a ticker first.", all ? "ok" : "warn");
+      return;
+    }
     root.setAttribute("aria-busy", "true");
-    setStatus(`${label}: getting prices…`, null);
+    setStatus(`${label}: getting prices for ${targets.length} holding${targets.length === 1 ? "" : "s"}…`, null);
     await ensureFx([...new Set(targets.map(r => r.identity.currency).filter(Boolean))]);
     const remaining = {};
     for (const id of md.configuredProviders()) {
@@ -177,13 +205,20 @@ function init() {
         }
         remaining[first.id] -= cost;
       }
-      jobs.push(priceRow(row.id));
+      jobs.push(row.id);
     }
-    setStatus(`${label}: fetching ${jobs.length} price${jobs.length === 1 ? "" : "s"}…`, null);
-    await Promise.allSettled(jobs);
+    let done = 0;
+    const progress = () => setStatus(`${label}: ${done} of ${jobs.length} price request${jobs.length === 1 ? "" : "s"} finished…`, null);
+    progress();
+    await Promise.allSettled(jobs.map(id => priceRow(id).finally(() => { done += 1; progress(); })));
     root.setAttribute("aria-busy", "false");
-    const failed = targets.filter(r => !R.effectivePrice(getRow(r.id) || r)).length;
-    setStatus(failed ? `${label}: ${targets.length - failed} of ${targets.length} priced; see the holdings marked in red or amber.` : `${label}: all ${targets.length} priced.`, failed ? "warn" : "ok");
+    const order = new Map(state.rows.map((r, i) => [r.id, i]));
+    const missing = [...targets.map(r => getRow(r.id) || r).filter(r => !R.effectivePrice(r)), ...notIdentified]
+      .sort((a, b) => (order.get(a.id) ?? 1e9) - (order.get(b.id) ?? 1e9)); // in the order of the holdings list
+    const total = targets.length + notIdentified.length;
+    setStatus(missing.length
+      ? `${label}: ${total - missing.length} of ${total} priced. Without a usable price: ${missing.map(r => `${r.ticker} (${shortProblem(r)})`).join(", ")}. The plan stays withheld until each has a verified price or one you supply.`
+      : `${label}: all ${total} priced.`, missing.length ? "warn" : "ok");
     renderProviders();
     afterChange();
   }
@@ -406,6 +441,8 @@ function init() {
         box.hidden = true;
         renderRow(getRow(row.id));
         afterChange();
+        // A price in a currency not loaded yet needs its official rate before it can be valued.
+        if (!state.fx[cur.value]) ensureFx([cur.value]).then(afterChange);
       } catch (error) { msg.textContent = error.message; }
     }));
     if (row.manual) actions.append(button("Remove my price", () => { putRow(R.clearManualPrice(getRow(row.id))); renderRow(getRow(row.id)); afterChange(); }));
@@ -415,9 +452,7 @@ function init() {
 
   function rebuildRows() {
     nodes.clear();
-    els.rows.replaceChildren(...mainRows().map(buildRowNode));
-    els.testRows.replaceChildren(...testRows().map(buildRowNode));
-    els.testGroup.hidden = !testRows().length;
+    els.rows.replaceChildren(...state.rows.map(buildRowNode));
     afterChange();
   }
 
@@ -445,10 +480,9 @@ function init() {
 
   /* ---------------- summary, estimate ---------------- */
   function renderSummary() {
-    const main = mainRows().filter(r => r.ticker);
+    const main = state.rows.filter(r => r.ticker);
     const priced = main.filter(r => R.effectivePrice(r)).length;
     const active = main.filter(R.isActive).length;
-    const tests = testRows().length;
     let total = 0;
     let complete = true;
     for (const r of main) {
@@ -459,18 +493,18 @@ function init() {
     }
     const parts = [`${main.length} holding${main.length === 1 ? "" : "s"}`, `${priced} priced`];
     if (active - priced > 0) parts.push(`${active - priced} without a usable price`);
-    if (tests) parts.push(`${tests} currency-test row${tests === 1 ? "" : "s"}`);
     if (main.length) parts.push(`value ${money(total)}${complete ? "" : " (incomplete)"}`);
-    const weights = main.filter(R.isActive).reduce((s, r) => s + (E.parseNumber(r.targetWeight) || 0), 0);
-    if (main.length) parts.push(`targets ${weights.toFixed(2)}%`);
+    const bp = targetTotalBasisPoints(main.filter(R.isActive).map(r => ({ targetWeight: E.parseNumber(r.targetWeight) || 0 })));
+    if (main.length) parts.push(`targets ${(bp / 100).toFixed(2)}%${bp !== 10000 && bp > 0 ? " (the plan scales them to 100%)" : ""}`);
     els.summary.textContent = main.length ? parts.join(" · ") : "";
   }
 
   function renderEstimate() {
-    const pending = mainRows().filter(r => r.identity?.status === "resolved" && R.isActive(r) && !R.effectivePrice(r));
+    const pending = state.rows.filter(r => r.identity?.status === "resolved" && R.isActive(r) && !R.effectivePrice(r));
     const btn = $("rbPriceAll");
+    $("rbRemoveIntl").hidden = !state.rows.some(isUnchangedInternationalExample);
     if (!md.configuredProviders().length) {
-      els.estimate.textContent = mainRows().some(r => r.ticker) ? "To get prices automatically, add your own key for at least one source under Market data → Your API keys. Without a key you can still enter your own prices." : "";
+      els.estimate.textContent = state.rows.some(r => r.ticker) ? "To get prices automatically, add your own key for at least one source under Market data → Your API keys. Without a key you can still enter your own prices." : "";
       btn.textContent = "Get prices";
       btn.disabled = !pending.length;
       return;
@@ -480,11 +514,17 @@ function init() {
       const limit = e.period === "day" ? `${PROVIDERS[id].name} allows ${md.providerStatus(id).plan.limits.perDay} per day on your plan; this browser sent ${e.sentToday} today`
         : e.period === "month" ? `${PROVIDERS[id].name} allows ${md.providerStatus(id).plan.limits.perMonth.toLocaleString("en-US")} per month on your plan; this browser sent ${e.sentMonth} this month`
           : `${PROVIDERS[id].name} allows ${e.perMinute} per minute`;
-      return `about ${e.requests} ${PROVIDERS[id].name} request${e.requests === 1 ? "" : "s"} for ${e.rows} holding${e.rows === 1 ? "" : "s"} (${limit})`;
+      const left = e.remaining !== null && e.remaining !== undefined
+        ? e.requests > e.remaining ? `; only ${e.remaining} left by this browser's count, so some holdings will not be requested` : `; uses ${e.requests} of the ${e.remaining} left`
+        : "";
+      return `about ${e.requests} ${PROVIDERS[id].name} request${e.requests === 1 ? "" : "s"} for ${e.rows} holding${e.rows === 1 ? "" : "s"} (${limit}${left})`;
     });
     const uncovered = est.uncovered.map(u => u.displayTicker);
+    // Listings outside Canada and the US are priced like any other holding, but free
+    // plans often cover fewer of those exchanges, so they are named before any request.
+    const abroad = pending.filter(r => !["CAD", "USD"].includes(r.identity.currency)).map(r => `${r.ticker} (${r.identity.venueName}, ${r.identity.currency})`);
     els.estimate.textContent = pending.length
-      ? `Getting ${pending.length} price${pending.length === 1 ? "" : "s"} needs ${parts.join("; ") || "no requests"}.${uncovered.length ? ` Not covered by your saved sources: ${uncovered.join(", ")} (use your own price, or add a source that covers it).` : ""}`
+      ? `Getting ${pending.length} price${pending.length === 1 ? "" : "s"} needs ${parts.join("; ") || "no requests"}.${abroad.length ? ` Listings outside Canada and the US: ${abroad.join(", ")}; they count against the same allowances.` : ""}${uncovered.length ? ` Not covered by your saved sources: ${uncovered.join(", ")} (use your own price, or add a source that covers it).` : ""}`
       : "";
     btn.textContent = pending.length ? `Get prices (about ${est.total} request${est.total === 1 ? "" : "s"})` : "Get prices";
     btn.disabled = !pending.length || est.total === 0 && !uncovered.length && !pending.length;
@@ -1043,8 +1083,7 @@ function init() {
   $("rbAddRow").addEventListener("click", () => {
     if (state.rows.length >= E.MAX_ROWS) { setStatus(`At most ${E.MAX_ROWS} holdings.`, "warn"); return; }
     const row = R.createRow();
-    const firstTest = state.rows.findIndex(r => r.group === CURRENCY_TEST_GROUP);
-    if (firstTest >= 0) state.rows.splice(firstTest, 0, row); else state.rows.push(row);
+    state.rows.push(row);
     rebuildRows();
     nodes.get(row.id)?.querySelector(".rb-ticker").focus();
   });
@@ -1060,11 +1099,20 @@ function init() {
     resolveAll();
     els.results.replaceChildren(el("p", "Get the prices, then calculate the plan.", "muted"));
     afterChange();
-    setStatus("Sample portfolio loaded: 10 holdings and 4 international currency-test rows, with no prices. Press Get prices; nothing is fetched until you do.", null);
+    const bp = targetTotalBasisPoints(SAMPLE_PORTFOLIO.rows);
+    setStatus(`Sample portfolio loaded: ${SAMPLE_PORTFOLIO.rows.length} holdings (targets total ${(bp / 100).toFixed(1)}%), with no prices. Press Get prices; nothing is fetched until you do.`, null);
   });
-  $("rbPriceAll").addEventListener("click", () => priceMany(mainRows().filter(r => R.isActive(r) && !R.effectivePrice(r)), "Holdings"));
-  $("rbPriceTests").addEventListener("click", () => priceMany(testRows(), "Currency-test rows"));
-  $("rbRemoveTests").addEventListener("click", () => { state.rows = state.rows.filter(r => r.group !== CURRENCY_TEST_GROUP); rebuildRows(); setStatus("Currency-test rows removed.", null); });
+  $("rbPriceAll").addEventListener("click", () => priceAll());
+  // Optional convenience: removes only the four international examples that are still
+  // exactly as loaded. Edited rows, and the same securities added by the user, stay.
+  $("rbRemoveIntl").addEventListener("click", () => {
+    const removed = state.rows.filter(isUnchangedInternationalExample);
+    if (!removed.length) return;
+    state.rows = state.rows.filter(r => !isUnchangedInternationalExample(r));
+    if (!state.rows.length) state.rows.push(R.createRow());
+    rebuildRows();
+    setStatus(`Removed ${removed.map(r => r.ticker).join(", ")}. The remaining targets are scaled to 100% in the plan.`, null);
+  });
   function syncMode() { $("rbBudgetField").hidden = els.mode.value !== "new_money"; $("rbBudgetLabel").textContent = `New money budget (${rep()})`; }
   els.mode.addEventListener("change", () => { syncMode(); afterChange(); });
   els.reporting.addEventListener("change", async () => { syncMode(); await ensureFx([]); state.rows.forEach(renderRow); afterChange(); });

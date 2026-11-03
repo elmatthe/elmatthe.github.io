@@ -105,15 +105,18 @@ async function readBounded(response, maxBytes) {
   return text + decoder.decode();
 }
 
-// GET a URL and return { status, ok, text, headers }. Network failures, timeouts and
-// aborts become DataError; HTTP error statuses are returned for the caller to judge.
-export async function fetchText(url, { fetchImpl = globalThis.fetch, signal, timeoutMs = DEFAULT_TIMEOUT_MS, maxBytes = DEFAULT_MAX_BYTES, headers = {}, provider = null } = {}) {
+// GET (or, with `body`, POST) a URL and return { status, ok, text, headers }. Network
+// failures, timeouts and aborts become DataError; HTTP error statuses are returned for
+// the caller to judge. Requests never carry cookies or a referrer.
+export async function fetchText(url, { fetchImpl = globalThis.fetch, signal, timeoutMs = DEFAULT_TIMEOUT_MS, maxBytes = DEFAULT_MAX_BYTES, headers = {}, provider = null, body = undefined } = {}) {
   if (signal?.aborted) throw new DataError("Request cancelled.", { kind: "aborted", provider });
   const timer = linkSignals(signal, timeoutMs);
   try {
     let response;
     try {
-      response = await fetchImpl(url, { signal: timer.signal, credentials: "omit", referrerPolicy: "no-referrer", headers: { Accept: "application/json", ...headers } });
+      const init = { signal: timer.signal, credentials: "omit", referrerPolicy: "no-referrer", headers: { Accept: "application/json", ...headers } };
+      if (body !== undefined) Object.assign(init, { method: "POST", body, cache: "no-store" });
+      response = await fetchImpl(url, init);
     } catch (error) {
       if (signal?.aborted) throw new DataError("Request cancelled.", { kind: "aborted", provider });
       if (timer.signal.aborted) throw new DataError("timed out", { kind: "timeout", provider });

@@ -13,7 +13,10 @@ let nextId = 1;
 
 export const ROW_STATES = ["empty", "draft", "resolved", "invalid", "unsupported", "unresolved", "pricing", "priced", "failed", "not_covered"];
 
-export function createRow({ ticker = "", shares = "", targetWeight = "", accountType = "", group = "main" } = {}) {
+// Every holding is an ordinary row: there is no separate group or pricing rule for any
+// market. `sampleTag` (set only for rows loaded from the sample) is provenance for the
+// optional "Remove international examples" button; `sampleTicker` is the ticker as loaded.
+export function createRow({ ticker = "", shares = "", targetWeight = "", accountType = "", sampleTag = null } = {}) {
   const text = String(ticker || "").trim().toUpperCase();
   return {
     id: `r${nextId++}`,
@@ -22,7 +25,8 @@ export function createRow({ ticker = "", shares = "", targetWeight = "", account
     shares: shares === null || shares === undefined ? "" : String(shares),
     targetWeight: targetWeight === null || targetWeight === undefined ? "" : String(targetWeight),
     accountType: accountType || "",
-    group,
+    sampleTag: sampleTag || null,
+    sampleTicker: sampleTag ? text : null,
     status: text ? "draft" : "empty",
     identity: null,
     quote: null, // md.quote.v1 from a provider, for this row's current instrument only
@@ -98,12 +102,17 @@ export function applyError(row, token, error) {
   return { row: { ...row, status, error, quote: null }, applied: true };
 }
 
+const MINOR_UNIT_CODES = new Map([["GBX", "GBP"], ["ZAC", "ZAR"], ["ILA", "ILS"]]);
+
 // The user deliberately supplies a price (or imports one from a CSV file). It is
 // kept separately from any provider quote and labelled as user-supplied everywhere.
 export function setManualPrice(row, { price, currency, unitScale = 1, kind = "manual", label = null, at = Date.now() }) {
   const n = Number(price);
   if (!(Number.isFinite(n) && n > 0)) throw new Error("Enter a price greater than 0.");
   if (!/^[A-Z]{3}$/.test(String(currency || ""))) throw new Error("Choose the currency the price is in.");
+  // Minor-unit codes are units, not currencies: pence are GBP with "pence (÷100)".
+  if (MINOR_UNIT_CODES.has(currency)) throw new Error(`${currency} is a minor unit, not a currency: choose ${MINOR_UNIT_CODES.get(currency)} and "pence / cents (÷100)".`);
+  if (!(unitScale === 1 || unitScale === 0.01)) throw new Error("Choose units of the currency, or pence / cents (÷100).");
   return { ...row, manual: { price: n * unitScale, enteredPrice: n, currency, unitScale, kind, label: label || (kind === "csv" ? "Imported from CSV (user-supplied)" : "Entered by you (user-supplied)"), at }, useManual: true };
 }
 

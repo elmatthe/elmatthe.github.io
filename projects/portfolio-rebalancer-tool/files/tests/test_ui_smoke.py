@@ -47,16 +47,26 @@ def test_window_workflow():
     pump(root, 0.5)
     app._load_sample()
     pump(root, 0.3)
-    assert "Get prices: about 5 Alpha Vantage requests" in app.estimate.cget("text")
-    assert "YNVD.TO" in app.estimate.cget("text")
+    estimate = app.estimate.cget("text")
+    assert "Get prices: about 8 Alpha Vantage requests" in estimate and "about 4 Finnhub requests" in estimate
+    assert "YNVD.NE" in estimate and "Listings outside Canada and the US: 7203.T" in estimate
+    assert len(app.rows) == 14 and all(r.active for r in app.rows)
     app._price_all()
-    assert pump(root, 10, until=lambda: sum(1 for r in app.rows if r.effective()) == 9)
+    assert pump(root, 10, until=lambda: sum(1 for r in app.rows if r.effective()) == 12)
+    assert pump(root, 3, until=lambda: "12 of 14 priced" in app.status.cget("text"))
+    assert "YNVD.NE (not covered" in app.status.cget("text") and "7203.T (not covered" in app.status.cget("text")
     app._calculate()
     assert app.headline.cget("text") == "Plan withheld"
     app.rows[8].set_manual("44.21", "CAD")
+    app.rows[10].set_manual("2850", "JPY")
     app._calculate()
-    assert app.headline.cget("text").startswith("Plan includes 1 user-supplied price")
-    assert len(app.tree.get_children()) == 10
+    assert app.headline.cget("text").startswith("Plan includes 2 user-supplied price")
+    assert len(app.tree.get_children()) == 14
+    app._remove_international()
+    pump(root, 0.3)
+    # 7203.T has a price the user supplied, so it is a user holding now and stays.
+    assert [r.ticker for r in app.rows][-2:] == ["VST", "7203.T"] and len(app.rows) == 11, [r.ticker for r in app.rows]
+    app._calculate()
     first = app.tree.item(app.tree.get_children()[0])["values"]
     assert first[0] in ("BUY", "HOLD")
     app.tree.selection_set(app.tree.get_children()[0])

@@ -24,6 +24,7 @@ REPORTING = ["CAD", "USD", "EUR", "GBP", "JPY", "CNY", "HKD", "CHF", "AUD"]
 PRICE_TYPE = {"latest_trading_day": "latest price for trading day", "eod_close": "close", "previous_close": "previous close", "last_trade": "last price"}
 SYMBOLS = {"CAD": "C$", "USD": "US$", "EUR": "€", "GBP": "£", "JPY": "¥", "CNY": "CN¥", "HKD": "HK$", "AUD": "A$", "CHF": "CHF "}
 ZERO_DECIMALS = {"JPY", "KRW", "IDR"}
+MINOR_UNIT_CODES = {"GBX": "GBP", "ZAC": "ZAR", "ILA": "ILS"}
 DISCLAIMER = "Illustrative planning only; not financial, investment, or trading advice. Verify prices and holdings at your broker before trading."
 _ids = itertools.count(1)
 
@@ -44,7 +45,10 @@ class Row:
     shares: str = ""
     target: str = ""
     account: str = ""
-    group: str = "main"
+    # Provenance for "Remove international examples" only (no pricing or plan rule):
+    # set for rows loaded from the sample, with the ticker as loaded.
+    sample_tag: str | None = None
+    sample_ticker: str | None = None
     id: str = field(default_factory=lambda: f"r{next(_ids)}")
     revision: int = 0
     status: str = "empty"
@@ -58,6 +62,8 @@ class Row:
         self.ticker = str(self.ticker or "").strip().upper()
         self.shares = "" if self.shares is None else str(self.shares)
         self.target = "" if self.target is None else str(self.target)
+        if self.sample_tag and self.sample_ticker is None:
+            self.sample_ticker = self.ticker
         if self.ticker and self.status == "empty":
             self.status = "draft"
 
@@ -112,6 +118,11 @@ class Row:
             raise ValueError("Enter a price greater than 0.")
         if not (isinstance(currency, str) and len(currency) == 3 and currency.isalpha() and currency.isupper()):
             raise ValueError("Choose the currency the price is in.")
+        # Minor-unit codes are units, not currencies: pence are GBP with unit_scale 0.01.
+        if currency in MINOR_UNIT_CODES:
+            raise ValueError(f'{currency} is a minor unit, not a currency: choose {MINOR_UNIT_CODES[currency]} and "pence / cents (÷100)".')
+        if unit_scale not in (1, 1.0, 0.01):
+            raise ValueError("Choose units of the currency, or pence / cents (÷100).")
         self.manual = {"price": value * unit_scale, "enteredPrice": value, "currency": currency, "unitScale": unit_scale, "kind": kind,
                        "label": label or ("Imported from CSV (user-supplied)" if kind == "csv" else "Entered by you (user-supplied)"),
                        "at": time.time()}
@@ -159,7 +170,7 @@ def quote_label(q: dict) -> str:
 
 
 def rows_from_sample(sample: dict) -> list[Row]:
-    return [Row(r["ticker"], str(r["shares"]), str(r["targetWeight"]), r.get("accountType", ""), r.get("group", "main")) for r in sample["rows"]]
+    return [Row(r["ticker"], str(r["shares"]), str(r["targetWeight"]), r.get("accountType", ""), r.get("sampleTag")) for r in sample["rows"]]
 
 
 @dataclass

@@ -81,8 +81,6 @@
 .rb-row details dd, .rb-plan details dd { margin: 0; font-variant-numeric: tabular-nums; }
 .rb-manual { border: 1px dashed var(--pj-warn); border-radius: 8px; padding: .55rem .7rem; margin-top: .5rem; }
 .rb-manual .rb-manual-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 8.5rem), 1fr)); gap: .5rem; align-items: end; }
-.rb-group { border: 1px solid var(--pj-border); border-radius: 12px; padding: .6rem .75rem; margin: .8rem 0; background: color-mix(in srgb, var(--pj-surface-2) 40%, transparent); }
-.rb-group-head h4 { margin: .1rem 0 .2rem; }
 .rb-file { position: relative; overflow: hidden; }
 .rb-file input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; }
 .rb-file:focus-within { outline: 3px solid var(--pj-focus); outline-offset: 2px; }

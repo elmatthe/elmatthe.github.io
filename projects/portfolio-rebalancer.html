@@ -107,25 +107,15 @@ sections:
         <button type="button" class="pj-btn" id="rbSample">Load sample portfolio</button>
         <button type="button" class="pj-btn pj-btn-primary" id="rbPriceAll">Get prices</button>
         <button type="button" class="pj-btn" id="rbClear">Clear all</button>
+        <button type="button" class="pj-btn" id="rbRemoveIntl" hidden title="Removes 7203.T, SAP.DE, VOD.L and 600519.SS only while they are exactly as loaded">Remove international examples</button>
       </div>
       <p class="rb-note" id="rbEstimate" role="status" aria-live="polite"></p>
       <p class="rb-summary" id="rbSummary"></p>
       <ul class="rb-rows" id="rbRows" aria-label="Holdings"></ul>
-      <div class="rb-group" id="rbTestGroup" hidden>
-        <div class="rb-group-head">
-          <h4 id="rbTestGroupH">International currency tests</h4>
-          <p class="rb-note">0 shares and a 0% target: they never change the plan and are not priced unless you ask.</p>
-          <div class="pj-actions rb-tight">
-            <button type="button" class="pj-btn" id="rbPriceTests">Price test rows</button>
-            <button type="button" class="pj-btn" id="rbRemoveTests">Remove test rows</button>
-          </div>
-        </div>
-        <ul class="rb-rows" id="rbTestRows" aria-labelledby="rbTestGroupH"></ul>
-      </div>
       <details class="pj-details rb-csv">
         <summary>Import or export holdings and prices (CSV)</summary>
         <div class="pj-details-body">
-          <p class="rb-note"><strong>Holdings</strong> CSV columns: <code>ticker,shares,target_pct,account</code>. Tickers are kept exactly as written (for example <code>YNVD.TO</code>).</p>
+          <p class="rb-note"><strong>Holdings</strong> CSV columns: <code>ticker,shares,target_pct,account</code>. Tickers are kept exactly as written (for example <code>YNVD.NE</code>, or <code>YNVD.TO</code> as Questrade shows the same fund).</p>
           <div class="pj-actions rb-tight">
             <label class="pj-btn rb-file"><input type="file" id="rbImportHoldings" accept=".csv,text/csv"> Import holdings</label>
             <button type="button" class="pj-btn" id="rbExportHoldings">Export holdings</button>
@@ -201,7 +191,8 @@ sections:
   <ul>
     <li><strong>Your holdings never leave your device.</strong> Calculations run in this page and nothing about your portfolio is stored or sent. The page sends only ticker symbols to the price provider you choose and currency codes to the central banks.</li>
     <li><strong>Prices:</strong> fetched with <em>your own</em> key from Alpha Vantage (US, Toronto, TSX Venture, London, Xetra, Shanghai, Shenzhen; 25 requests per day free), Marketstack (end-of-day closes, many exchanges; 100 requests per month free, each symbol counts as one) or Finnhub (US listings; 60 per minute free). Each holding shows the provider, the price type (for example the end-of-day close), the trading date and the currency. Prices are not called real-time unless the provider says so. See the <a href="https://github.com/elmatthe/elmatthe.github.io/blob/main/_tools/PROVIDER_MATRIX.md">provider matrix</a> for coverage, limits and terms.</li>
-    <li><strong>Identity before price:</strong> the ticker you type is kept exactly. Internally it is matched to one listing (exchange and currency) from a small curated reference with sources, or from the provider's own answer, and a price is accepted only if it is for that listing. For example <code>YNVD.TO</code> (as Questrade shows it) is the NVIDIA (NVDA) Yield Shares Purpose ETF on Cboe Canada, which the free sources do not cover; it is never priced as a Toronto Stock Exchange symbol.</li>
+    <li><strong>Identity before price:</strong> the ticker you type is kept exactly. Internally it is matched to one listing (exchange and currency) from a small curated reference with sources, or from the provider's own answer, and a price is accepted only if it is for that listing. For example <code>YNVD.NE</code> (and <code>YNVD.TO</code>, as Questrade shows the same fund) is the NVIDIA (NVDA) Yield Shares Purpose ETF on Cboe Canada, in CAD; both spellings are the same instrument. The free sources do not cover it, so it shows <em>Not covered</em> until you supply a price; it is never priced as a Toronto Stock Exchange symbol, from NVIDIA shares or from another ETF.</li>
+    <li><strong>Sample portfolio:</strong> fourteen ordinary holdings with targets totalling 100%, including one share each of Toyota (Tokyo, JPY), SAP (Xetra, EUR), Vodafone (London, quoted in pence and converted to pounds) and Kweichow Moutai (Shanghai, CNY) at 2.5% each. They are priced, valued and planned exactly like the others; <em>Remove international examples</em> removes those four only while they are unchanged. The sample contains no prices.</li>
     <li><strong>Keys:</strong> kept in this browser only (this tab, unless you tick <em>Remember</em>), sent only to their own provider, never in exports or messages. "Forget all keys" removes them and everything fetched with them. Request counts shown are what this browser sent; your provider counts every use of the key.</li>
     <li><strong>Exchange rates:</strong> Bank of Canada daily average rates (<a href="https://www.bankofcanada.ca/terms/">terms</a>), with the European Central Bank's reference rates as a fallback. Pairs not involving CAD are derived through CAD.</li>
     <li><strong>No relays, no scraping, no shared keys.</strong></li>

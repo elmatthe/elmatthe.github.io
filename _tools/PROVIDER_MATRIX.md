@@ -48,7 +48,7 @@ Coverage is per exchange. A provider listing an exchange does not prove that a p
 | Shanghai (XSHG) | ✔ `600519.SHH` | listed (`600519.SS`) | ✘ | ✘ | ✘ |
 | Indexes | premium | not used | ✘ | ✘ | separate plan |
 
-**The owner's sample:** with free keys, `YNVD.TO` (NVIDIA (NVDA) Yield Shares Purpose ETF on Cboe Canada) is not covered by any enabled provider. The app says so, keeps the Questrade symbol unchanged, and withholds the plan unless the user deliberately supplies a labelled price. It never prices YNVD as a TSX symbol (`YNVD.TRT` does not exist).
+**The owner's sample (14 holdings):** with free keys, `YNVD.NE` (NVIDIA (NVDA) Yield Shares Purpose ETF on Cboe Canada; Questrade shows it as `YNVD.TO`, the same instrument) is not covered by any enabled provider, and `7203.T` (Tokyo) needs Marketstack. The app names them before any request, keeps the symbols as entered, and withholds the plan unless the user deliberately supplies a labelled price. It never prices YNVD as a TSX symbol (`YNVD.TRT` does not exist). With Alpha Vantage and Finnhub keys the sample needs 8 + 4 requests; with Marketstack alone, 13 of its 100 monthly requests.
 
 ## 4. Quote semantics as shown to the user
 

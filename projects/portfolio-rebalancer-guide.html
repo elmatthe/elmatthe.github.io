@@ -25,21 +25,23 @@ sections:
 <section class="pj-section" id="use" aria-labelledby="use-h">
   <h2 id="use-h">Using the rebalancer</h2>
   <ol class="pj-steps">
-    <li><strong>Choose a mode.</strong> <em>New Money</em> gives buy-only trades that never spend more than your budget. <em>Rebalance</em> adds no cash: sells fund the buys, so the plan never spends more than the sales raise.</li>
-    <li><strong>Choose the reporting currency</strong> and the number of rows (<em>Apply Rows</em>, <em>Add Row</em>, <em>Remove Last</em>).</li>
-    <li><strong>Fill each row:</strong> ticker exactly as your broker shows it, shares (fractions allowed), target weight % and, optionally, the account type. Weights are relative; they're normalised to 100%. When you press Enter or Tab, the ticker is identified (exchange, currency) without any request and its price is fetched from your chosen source. Add your own key under <em>API keys…</em> first (Alpha Vantage, Marketstack, Finnhub or Alpaca).</li>
-    <li><strong>Optional run options:</strong> <em>Fetch live prices and FX rates</em> (internet required), <em>Show Account Type column</em> (warns when a plan would need money moved between TFSA, RRSP, margin and so on), and <em>Export CSV</em> / <em>Export Excel</em> with a file path.</li>
-    <li><strong>Click <em>Run Rebalance</em></strong> and review the summary, the per-row plan and any warnings. <em>Load Sample</em> fills a demonstration portfolio.</li>
+    <li><strong>Choose the settings:</strong> reporting currency, mode (<em>New Money</em> gives buy-only trades that never spend more than your budget; <em>Rebalance</em> adds no cash, so sells fund the buys), budget, and fractional or whole shares.</li>
+    <li><strong>Add your own key</strong> under <em>API keys…</em> (Alpha Vantage, Marketstack, Finnhub or Alpaca). Keys are sent only to their own provider and never appear in exports.</li>
+    <li><strong>Enter each holding:</strong> ticker exactly as your broker shows it, shares (fractions allowed), target weight % and, optionally, the account type. Weights are relative; they're normalised to 100%. When you press Enter or Tab the ticker is identified (exchange, currency, pence or pounds) without any request and its price is fetched from your chosen source.</li>
+    <li><strong>Press <em>Get prices</em></strong> to price every holding that has no usable price yet. Canadian, US and international holdings follow the same rules; the line above the list estimates the requests per provider first, names listings outside Canada and the US, and names any holding no saved source covers. When it finishes, the status names each holding still without a price and why.</li>
+    <li><strong>Press <em>Calculate plan</em></strong> and review the summary, the per-holding plan and any warnings. Export CSV or Excel when it is ready.</li>
   </ol>
-  <div class="pj-note"><p>If a live price or FX lookup fails, that row falls back to the price you typed and the output says so. Nothing is silently guessed. Always confirm prices at your broker before trading.</p></div>
+  <h3>The sample portfolio</h3>
+  <p><em>Load sample</em> fills fourteen ordinary holdings, with no prices and targets totalling exactly 100%: VEQT.TO 305 (63%), CNQ.TO 48 (9%), XQQ.TO 27 (6.3%), HEWB.TO 14 (4.5%), AAPL 2 (1.8%), VFV.TO 8 (0.9%), SPCX 1 (0.9%), CBRS 4 (0.9%), YNVD.NE 4 (1.8%), VST 1 (0.9%), and one share each of Toyota (7203.T, JPY), SAP (SAP.DE, EUR), Vodafone (VOD.L, quoted in pence and converted to pounds) and Kweichow Moutai (600519.SS, CNY) at 2.5% each. Reporting currency CAD, New Money, budget 3,000. <em>Remove international examples</em> removes the last four only while they are exactly as loaded.</p>
+  <div class="pj-note"><p>No plan is shown until every holding with shares or a target has a verified price in a confirmed currency, or a price you supplied (labelled as user-supplied everywhere). Nothing is silently guessed. Always confirm prices at your broker before trading.</p></div>
 </section>
 
 <section class="pj-section" id="outputs" aria-labelledby="outputs-h">
   <h2 id="outputs-h">Outputs</h2>
   <ul>
     <li><strong>On screen:</strong> totals, the buy/sell/hold plan per row (shares and amount in both local and reporting currency), and warnings.</li>
-    <li><strong>Excel</strong> (optional): <code>RB_Summary</code> and <code>RB_TradePlan</code> sheets, which are replaced on each run; other sheets in the workbook are kept.</li>
-    <li><strong>CSV</strong> (optional): the trade plan, one row per position.</li>
+    <li><strong>Excel</strong>: a new workbook with <em>Trade Plan</em> and <em>Summary</em> sheets: provider, symbol, price type, trading date and currency evidence for every holding, the exchange rates with their sources, warnings and a disclaimer.</li>
+    <li><strong>CSV</strong>: the same content as one file.</li>
   </ul>
 </section>
 
@@ -47,7 +49,7 @@ sections:
   <h2 id="troubleshooting-h">Troubleshooting</h2>
   <details class="pj-details">
     <summary>A ticker isn't found, or is found in another currency</summary>
-    <div class="pj-details-body"><p>Use Yahoo-style suffixes: <code>.TO</code> (TSX), <code>.V</code> (TSX-V), <code>.NE</code> (Cboe Canada), <code>.L</code> (London, priced in pence and converted to pounds), <code>.DE</code> (Xetra). The currency is identified for you. <code>YNVD.TO</code> as Questrade shows it is recognised as the Cboe Canada ETF; the free sources do not cover Cboe Canada, so use <em>My price</em> for it.</p></div>
+    <div class="pj-details-body"><p>Use Yahoo-style suffixes: <code>.TO</code> (TSX), <code>.V</code> (TSX-V), <code>.NE</code> (Cboe Canada), <code>.L</code> (London, priced in pence and converted to pounds), <code>.DE</code> (Xetra). The currency is identified for you. <code>YNVD.NE</code>, and <code>YNVD.TO</code> as Questrade shows the same fund, are recognised as the Cboe Canada ETF; the free sources do not cover Cboe Canada, so use <em>My price</em> for it. Tokyo listings such as <code>7203.T</code> need a Marketstack key.</p></div>
   </details>
   <details class="pj-details">
     <summary>Live prices didn't load</summary>

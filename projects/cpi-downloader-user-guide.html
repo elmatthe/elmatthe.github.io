@@ -22,6 +22,7 @@ sections:
 {%- assign p = site.data.tool_projects.cpi -%}
 <section class="pj-section" id="before" aria-labelledby="before-h">
   <h2 id="before-h">Before you start</h2>
+  <div class="pj-note"><p><strong>Only need the data?</strong> The <a href="{{ p.page | relative_url }}#web-app">web app</a> fetches the same nineteen columns in your browser and downloads them as a CSV identical to this tool's CSV, with no installation (Canadian data with no key; US data with your FRED key once the site's data gateway is set up). This guide covers the desktop tool, which writes the data straight into your existing Excel model.</p></div>
   <dl class="pj-facts">
     <dt>Operating system</dt><dd>Windows 10 or 11. The tool doesn't run on macOS.</dd>
     <dt>Excel</dt><dd>Desktop Microsoft Excel for Windows. Excel on the web and Excel for Mac can't be automated this way.</dd>

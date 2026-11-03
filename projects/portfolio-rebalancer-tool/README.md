@@ -24,14 +24,19 @@ downloading anything: <https://elmatthe.github.io/projects/portfolio-rebalancer/
   key**: Alpha Vantage, Marketstack, Finnhub or Alpaca. Each holding shows the price,
   provider, price type (for example the end-of-day close), trading date and currency.
   Prices are not called real-time unless the provider says so.
-- **Identity before price:** `YNVD.TO` (as Questrade shows it) is the NVIDIA (NVDA)
-  Yield Shares Purpose ETF on **Cboe Canada**. The program keeps your text, never
-  prices it as a Toronto Stock Exchange symbol, and says that the free sources do not
-  cover it. You can then supply its price yourself; it is labelled as user-supplied.
+- **Identity before price:** `YNVD.NE` (and `YNVD.TO`, as Questrade shows the same
+  fund) is the NVIDIA (NVDA) Yield Shares Purpose ETF on **Cboe Canada**, in CAD. The
+  program keeps your text, treats both spellings as the same instrument, never prices
+  it as a Toronto Stock Exchange symbol (or from NVIDIA shares or another ETF), and
+  says that the free sources do not cover it. You can then supply its price yourself;
+  it is labelled as user-supplied.
+- **One list for every market:** Canadian, US and international holdings (Tokyo in
+  JPY, Xetra in EUR, London quoted in pence and converted to pounds, Shanghai in CNY)
+  use the same row, the same **Get prices** action, the same quota checks and the same
+  plan. Get prices names every holding it could not price and why.
 - **No plan without prices:** the plan appears only when every holding with shares or
   a target has a verified price in a confirmed currency, or a price you supplied.
-  Holdings with 0 shares and a 0% target are left out (the sample's four currency-test
-  rows, removable in one click).
+  Holdings with 0 shares and a 0% target are left out.
 - **Two modes, three invariants:** New Money (buy only, never over budget) and
   Rebalance (sells fund buys), with cross-account funding warnings. Optional whole
   shares (rounded down, then topped up with leftover cash).
@@ -137,16 +142,23 @@ The full illustrated guide, including troubleshooting, is at <https://elmatthe.g
 ## How to use it
 
 1. **Pick a mode** — New Money (you're adding cash) or Rebalance (no new cash).
-2. **Fill the table** — ticker, shares, local price, row currency, and a target
-   weight % for each holding. Weights are relative; the tool normalizes them.
-3. **Set the reporting currency** (and a budget, in New Money mode).
-4. *(Optional)* tick **Fetch live prices and FX rates**, show the **Account Type**
-   column, or enable **CSV/Excel export**.
-5. Click **Run Rebalance** and review the summary, the per-row trade plan, and any
-   warnings.
+2. **Enter each holding** — ticker exactly as your broker shows it, shares (fractions
+   allowed), target weight % and, optionally, the account type. Weights are relative;
+   the tool normalizes them. Press Enter or Tab: the ticker is identified and priced.
+3. **Add your own key** under **API keys…** (Alpha Vantage, Marketstack, Finnhub or
+   Alpaca), then press **Get prices** for every holding without a usable price. The
+   line above the holdings estimates the requests first, per provider, and names the
+   holdings outside Canada and the US and any no saved source covers.
+4. **Set the reporting currency** (and a budget, in New Money mode), choose fractional
+   or whole shares, and press **Calculate plan**. Export CSV or Excel when it is ready.
 
-A built-in **Load Sample** button fills the table with an example portfolio so you can
-see a full run immediately.
+**Load sample** fills fourteen ordinary holdings with targets totalling exactly 100%
+and no prices: VEQT.TO 305 (63%), CNQ.TO 48 (9%), XQQ.TO 27 (6.3%), HEWB.TO 14 (4.5%),
+AAPL 2 (1.8%), VFV.TO 8 (0.9%), SPCX 1 (0.9%), CBRS 4 (0.9%), YNVD.NE 4 (1.8%),
+VST 1 (0.9%), and one share each of 7203.T, SAP.DE, VOD.L and 600519.SS at 2.5%.
+CAD reporting, New Money, budget 3,000. **Remove international examples** removes the
+last four only while they are exactly as loaded; edited rows, and the same securities
+added by you, stay.
 
 ---
 
@@ -165,7 +177,7 @@ portfolio-rebalancer-tool/
     portfolio_rebalancer/   <- the program, split into focused modules
       core.py               <- buy/sell/hold math, three invariants, valuation gate, whole shares
       model.py              <- holdings, prices, readiness and the plan (no GUI)
-      sample.py             <- the 10 + 4 sample portfolio (no prices)
+      sample.py             <- the 14-holding sample portfolio (no prices)
       export.py             <- CSV / Excel export with sources
       ui.py                 <- the tkinter window
     market_data/            <- providers, identity reference, exchange rates (shared with the

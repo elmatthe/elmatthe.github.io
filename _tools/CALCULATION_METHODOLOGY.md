@@ -110,7 +110,10 @@ sum to match JavaScript bit for bit.
 - One number grammar for both apps (ASCII decimal with optional exponent; no hex, NaN,
   Infinity, underscores or non-ASCII digits); the audit's 18 parsing probes match.
 
-## 4. CPI Web Scraper (desktop, v0.4.0)
+## 4. CPI Web Scraper (desktop v0.4.0 and web app)
+
+The web app (`assets/js/cpi/`) applies the same conventions and writes the same CSV,
+byte for byte (`test_cpi_parity.py`); details in `CPI_DATA.md`.
 
 - Monthly rows dated the first of each month from 1913-01; no interpolation or
   forward-fill. Daily FRED series (DFF, SP500, T10Y2Y) → last valid observation of the

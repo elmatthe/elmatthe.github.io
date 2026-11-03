@@ -122,7 +122,7 @@ function avBody(url, mode) {
   if (unknown) return fn === "GLOBAL_QUOTE" ? JSON.stringify({ "Global Quote": {} }) : JSON.stringify({ "Error Message": `Invalid API call. Please retry or visit the documentation (https://www.alphavantage.co/documentation/) for ${fn}.` });
   const days = businessDays(Date.now() - 6 * 365 * DAY, Date.now() - DAY);
   if (fn === "GLOBAL_QUOTE") {
-    const t = days[days.length - 1];
+    const t = /\.(SHH|SHZ)$/.test(symbol) ? sessionFor(symbol) : days[days.length - 1];
     const p = avPrice(symbol, t);
     return JSON.stringify({ "Global Quote": { "01. symbol": symbol, "02. open": String(p), "03. high": String(p * 1.01), "04. low": String(p * 0.99), "05. price": String(p), "06. volume": "1234567", "07. latest trading day": iso(t), "08. previous close": String(avPrice(symbol, t - DAY)), "09. change": "0.1", "10. change percent": "0.1000%" } });
   }
@@ -143,13 +143,25 @@ function avBody(url, mode) {
 // as Marketstack reports them (London in GBX, Tokyo as XJPX). YNVD is not listed.
 const MS_VENUE = [[/\.TO$/, "XTSE", "CAD"], [/\.V$/, "XTSX", "CAD"], [/\.NE$/, "NEOE", "CAD"], [/\.L$/, "XLON", "GBX"], [/\.DE$/, "XETR", "EUR"], [/\.T$/, "XJPX", "JPY"], [/\.SS$/, "XSHG", "CNY"], [/\.SZ$/, "XSHE", "CNY"]];
 function lastSession() { const days = businessDays(Date.now() - 10 * DAY, Date.now() - DAY); return days[days.length - 1]; }
+// The weekday before "today" in the listing's own time zone: always the latest or the
+// previous session there, whatever the time of day the tests run (Shanghai and Tokyo
+// are already on the next calendar day from 15:00/16:00 UTC).
+const VENUE_TZ = [[/\.(SHH|SHZ|SS|SZ)$/, "Asia/Shanghai"], [/\.T$/, "Asia/Tokyo"], [/\.(LON|L)$/, "Europe/London"], [/\.(DEX|DE)$/, "Europe/Berlin"]];
+function sessionFor(symbol) {
+  const tz = (VENUE_TZ.find(([re]) => re.test(symbol)) || [null, null])[1];
+  if (!tz) return lastSession();
+  const today = Date.parse(`${new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())}T00:00:00Z`);
+  let t = today - DAY;
+  while ([0, 6].includes(new Date(t).getUTCDay())) t -= DAY;
+  return t;
+}
 function msBody(url, mode) {
   if (url.searchParams.get("access_key") !== MS_KEY) return { status: 401, body: JSON.stringify({ error: { code: "invalid_access_key", message: "You have not supplied a valid API Access Key." } }) };
   mode.msCalls = (mode.msCalls || 0) + 1;
   if (mode.msLimit !== undefined && mode.msCalls > mode.msLimit) return { status: 429, body: JSON.stringify({ error: { code: "usage_limit_reached", message: "Your monthly usage limit has been reached. Please upgrade your Subscription Plan." } }) };
   const symbols = String(url.searchParams.get("symbols") || "").split(",").filter(Boolean);
-  const t = lastSession();
   const data = symbols.filter(sym => !/^(YNVD|ZZZ)/.test(sym)).map(sym => {
+    const t = /\.(SS|SZ|T)$/.test(sym) ? sessionFor(sym) : lastSession();
     const venue = MS_VENUE.find(([re]) => re.test(sym)) || [null, "XNAS", "USD"];
     const p = avPrice(venue[1] === "XLON" ? `${sym}LON` : sym, t);
     return { open: p, high: p, low: p, close: venue[1] === "XLON" ? Number((p * 1).toFixed(2)) : p, volume: 1000, adj_close: p, name: `Mock ${sym}`, exchange_code: venue[1], asset_type: "Stock", price_currency: venue[2], symbol: sym, exchange: venue[1], date: `${iso(t)}T00:00:00+0000` };
@@ -216,6 +228,90 @@ async function mockMarketData(context, mode = {}) {
   return calls;
 }
 
+// CPI Web Scraper sources: Statistics Canada's Web Data Service and the data gateway
+// (any https://*.gateway.test origin, passed to the page as ?gateway=). Synthetic,
+// deterministic data in the exact response shapes; every other external host is
+// aborted and recorded. `mode` flags (mutable): statcan409 (always HTTP 409),
+// statcanHold (Promise delaying every answer), gatewayDown, keyRejected,
+// fredFail ([FRED ids] answered 502), fredDisabled ([FRED ids]), gatewayHold.
+const CPI_KEY = "cpitestkey0123456789cpitestkey01";
+const CPI_GATEWAY = "https://cpi-data-gateway.gateway.test";
+const STATCAN_FIRST = { 41690973: "1914-01", 41690914: "1992-01", 41691233: "1961-01", 41690924: "1992-01", 41692327: "1978-09" };
+const FRED_FIRST = { CPIAUCNS: "1913-01", CPIAUCSL: "1947-01", CPILFENS: "1957-01", CPILFESL: "1957-01", UNRATE: "1948-01", FEDFUNDS: "1954-07", DFF: "1954-07", SP500: null, T10Y2Y: "1976-06", GS10: "1953-04", GS2: "1976-06", PCEPI: "1959-01", PCEPILFE: "1959-01" };
+const FRED_DAILY = new Set(["DFF", "SP500", "T10Y2Y"]);
+const ymOf = ms => new Date(ms).toISOString().slice(0, 7);
+const ymAdd = (ym, n) => { const [y, m] = ym.split("-").map(Number); const t = y * 12 + m - 1 + n; return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, "0")}`; };
+function monthsIn(from, to) { const out = []; for (let ym = from; ym <= to; ym = ymAdd(ym, 1)) out.push(ym); return out; }
+const cpiValue = (seed, ym, scale, decimals) => Number((scale * (1 + 0.002 * monthsIn("1913-01", ym).length + 0.01 * Math.sin(hash(seed + ym) % 100))).toFixed(decimals));
+
+function statcanBody(url) {
+  const vectors = url.searchParams.get("vectorIds").split(",");
+  const from = url.searchParams.get("startRefPeriod").slice(0, 7);
+  const to = url.searchParams.get("endReferencePeriod").slice(0, 7);
+  const published = ymAdd(ymOf(Date.now()), -2); // CPI for month M is released in M+1
+  return JSON.stringify(vectors.map(v => ({
+    status: "SUCCESS",
+    object: { responseStatusCode: 0, productId: 18100004, coordinate: "2.2.0.0.0.0.0.0.0.0", vectorId: Number(v),
+      vectorDataPoint: monthsIn(from, to).filter(ym => ym >= STATCAN_FIRST[v] && ym <= published).map(ym => ({
+        refPer: `${ym}-01`, refPer2: "", refPerRaw: `${ym}-01`, refPerRaw2: "", value: cpiValue(v, ym, 20, 1), decimals: 1, scalarFactorCode: 0,
+        symbolCode: ym === published ? 3 : 0, statusCode: 0, securityLevelCode: 0, releaseTime: `${ymAdd(ym, 1)}-18T08:30`, frequencyCode: 6,
+      })) },
+  })));
+}
+
+function gatewayObservations(body) {
+  const { series_id: id, observation_start: start, observation_end: end } = body;
+  const published = ymAdd(ymOf(Date.now()), -1);
+  const first = FRED_FIRST[id] || ymAdd(ymOf(Date.now()), -120);
+  const obs = [];
+  if (FRED_DAILY.has(id)) {
+    for (let t = Date.parse(`${start}T00:00:00Z`); t <= Math.min(Date.parse(`${end}T00:00:00Z`), Date.now() - DAY); t += DAY) {
+      const d = new Date(t);
+      const date = d.toISOString().slice(0, 10);
+      if (date.slice(0, 7) < first || ([0, 6].includes(d.getUTCDay()) && id !== "DFF")) continue;
+      obs.push({ date, value: date.endsWith("-25") ? "." : (id === "SP500" ? 4000 + (t / DAY % 900) : id === "T10Y2Y" ? -0.4 + (t / DAY % 9) / 10 : 4 + (t / DAY % 7) / 10).toFixed(2) });
+    }
+  } else {
+    // FRED's own precision: three decimals for CPI and PCE indexes, one for UNRATE, two for rates.
+    const decimals = /^(CPI|PCE)/.test(id) ? 3 : id === "UNRATE" ? 1 : 2;
+    for (const ym of monthsIn(start.slice(0, 7), end.slice(0, 7))) if (ym >= first && ym <= published) obs.push({ date: `${ym}-01`, value: cpiValue(id, ym, /^CPI/.test(id) ? 30 : /^PCE/.test(id) ? 12 : 0.4, decimals).toFixed(decimals) });
+  }
+  return { schema: "cpi-data-gateway.observations.v1", series_id: id, observation_start: start, observation_end: end, count: obs.length, observations: obs, source: "FRED, Federal Reserve Bank of St. Louis (mock)", retrieved_at: new Date().toISOString() };
+}
+
+async function mockCpiSources(context, mode = {}) {
+  const calls = { statcan: [], gateway: [], blocked: [] };
+  await context.route(/^https:\/\/www150\.statcan\.gc\.ca\//, async route => {
+    const url = new URL(route.request().url());
+    calls.statcan.push(url.search);
+    if (mode.statcanHold) await mode.statcanHold;
+    if (mode.statcan409) return route.fulfill({ status: 409, headers: CORS, body: "Conflict" });
+    return route.fulfill({ status: 200, headers: JSON_HEADERS, body: statcanBody(url) });
+  });
+  await context.route(/^https:\/\/[a-z0-9-]+\.gateway\.test\//, async route => {
+    const req = route.request();
+    const cors = { "access-control-allow-origin": SITE_URL, vary: "Origin", "cache-control": "no-store" };
+    if (mode.gatewayDown) return route.abort("connectionrefused");
+    if (req.method() === "OPTIONS") return route.fulfill({ status: 204, headers: { ...cors, "access-control-allow-methods": "POST", "access-control-allow-headers": "Content-Type" } });
+    const url = new URL(req.url());
+    const body = req.postDataJSON();
+    calls.gateway.push({ path: url.pathname, url: req.url(), body, headers: req.headers() });
+    if (mode.gatewayHold) await mode.gatewayHold;
+    const json = (status, payload) => route.fulfill({ status, headers: { ...cors, "content-type": "application/json" }, body: JSON.stringify(payload) });
+    if (url.pathname === "/v1/health") return json(200, { status: "ok", service: "cpi-data-gateway", version: "test" });
+    if (body?.api_key !== CPI_KEY || mode.keyRejected) return json(401, { error: { code: "key_rejected", message: "FRED rejected the key.", retryable: false } });
+    if (mode.fredFail?.includes(body.series_id)) return json(502, { error: { code: "upstream_unavailable", message: "FRED is temporarily unavailable.", retryable: true } });
+    if (mode.fredDisabled?.includes(body.series_id)) return json(403, { error: { code: "series_disabled", message: "This series is disabled by the gateway operator.", retryable: false } });
+    return json(200, gatewayObservations(body));
+  });
+  await context.route(url => {
+    const u = new URL(url);
+    return u.protocol.startsWith("http") && !/^(127\.0\.0\.1|localhost)$/.test(u.hostname) && !/^www150\.statcan\.gc\.ca$/.test(u.hostname) && !/\.gateway\.test$/.test(u.hostname);
+  }, route => { calls.blocked.push(route.request().url()); return route.abort("blockedbyclient"); });
+  await context.route(/favicon\.ico/, r => r.fulfill({ status: 204 }));
+  return calls;
+}
+
 async function launch() {
   const args = (process.env.CHROMIUM_ARGS || "").split(/\s+/).filter(Boolean);
   const options = { args };
@@ -245,4 +341,4 @@ function checker() {
   return { check, done };
 }
 
-module.exports = { SITE_URL, TEST_KEY, MS_KEY, FH_KEY, launch, mockMarketData, watchNetwork, checker, disallowedRequests };
+module.exports = { SITE_URL, TEST_KEY, MS_KEY, FH_KEY, CPI_KEY, CPI_GATEWAY, launch, mockMarketData, mockCpiSources, watchNetwork, checker, disallowedRequests };

@@ -6,12 +6,17 @@ title: CPI Web Scraper
 permalink: /projects/cpi-webscraper/
 redirect_from:
   - /projects/cpi-dashboard-automation/
-summary: Windows desktop tool that downloads Canadian and US inflation, rates, PCE and S&P 500 data from Statistics Canada and FRED straight into an existing Excel model, with optional CSV export.
-lede: Refresh an inflation and rates workbook in one click. The CPI Web Scraper collects 18 Statistics Canada and FRED series for any month or date range back to 1913, validates everything, and writes it into your existing Excel model without touching its formulas.
+summary: Canadian and US inflation, rates and PCE data from Statistics Canada and FRED, in your browser (with a CSV export of the exact 19-column CPI_Downloader layout) or with the Windows desktop tool that writes straight into an existing Excel model.
+lede: Choose a month or a date range back to 1913. The web app fetches the five Statistics Canada CPI series directly, adds the thirteen FRED series with your own free FRED key, shows them twelve months at a time in four readable groups, and downloads the full range as a CSV with the same nineteen columns as the Excel model. The desktop tool writes the same data into your existing workbook without touching its formulas.
 last_updated: 2026-11-03
+page_css:
+  - /assets/css/cpi-webscraper.css
+page_js:
+  - /assets/js/cpi/app.js
 sections:
   - { id: overview, label: Overview }
-  - { id: download, label: Download }
+  - { id: web-app, label: Web app }
+  - { id: download, label: Desktop app }
   - { id: data, label: Data sources }
   - { id: workbook, label: Workbook safety }
   - { id: privacy, label: Credentials & privacy }
@@ -21,21 +26,108 @@ sections:
 <section class="pj-section" id="overview" aria-labelledby="overview-h">
   <h2 id="overview-h">Overview</h2>
   <ul class="pj-cards">
-    <li class="pj-card"><h3>One click, 18 series</h3><p>Five Statistics Canada CPI series and thirteen FRED series: US CPI, unemployment, fed funds, Treasury yields, the 10y–2y spread, PCE, and the S&amp;P 500.</p></li>
-    <li class="pj-card"><h3>Straight into Excel</h3><p>Writes to the <code>CPI_Downloader</code> sheet of your .xlsx or .xlsm model through desktop Excel, and can also save the same data as CSV.</p></li>
-    <li class="pj-card"><h3>Validated first</h3><p>All sources are collected and checked before Excel opens. If any source fails, nothing is written.</p></li>
+    <li class="pj-card"><h3>In your browser</h3><p>Five Statistics Canada CPI series with no key at all, and thirteen FRED series (US CPI, unemployment, fed funds, Treasury yields, the 10y–2y spread, PCE, the S&amp;P 500) with your own free FRED key.</p></li>
+    <li class="pj-card"><h3>The same 19 columns</h3><p>The CSV has exactly the A–S columns of the model's <code>CPI_Downloader</code> sheet, in the same order, with the same headers, dates and blank cells as the desktop tool's CSV.</p></li>
+    <li class="pj-card"><h3>Straight into Excel (desktop)</h3><p>The Windows tool writes the same data into your existing .xlsx or .xlsm model through desktop Excel, keeping its formulas, formatting and history.</p></li>
   </ul>
   <figure class="pj-figure">
     <img src="{{ '/assets/images/cpi-workflow-overview.svg' | relative_url }}" alt="Three steps: download Statistics Canada and FRED series, write them into the Excel model, recalculate in Excel" width="960" height="300" loading="lazy">
-    <figcaption>Download → write into the Excel model → recalculate in Excel.</figcaption>
+    <figcaption>Desktop: download → write into the Excel model → recalculate in Excel. Web: fetch → review → download CSV.</figcaption>
   </figure>
   <div class="pj-note">
-    <p><strong>Desktop only.</strong> The tool updates an existing model through desktop Microsoft Excel for Windows, which no browser can do (browser spreadsheet libraries neither recalculate formulas nor keep this model's charts and dynamic arrays). A browser could read the five Statistics Canada series directly (their data service allows it, with no key), but FRED does not answer requests from other websites, so FRED data could only be added from files you download yourself. A values-only browser data pack is a possible future addition; it is not offered yet.</p>
+    <p><strong>Why writing into the workbook stays on the desktop.</strong> Updating the existing model safely needs desktop Microsoft Excel for Windows: browser spreadsheet libraries neither recalculate this model's formulas nor keep its charts and dynamic arrays. The web app therefore gives you the data and a CSV; the desktop tool writes it into the workbook.</p>
   </div>
 </section>
 
+<section class="pj-section" id="web-app" aria-labelledby="web-app-h">
+  <h2 id="web-app-h">Web app</h2>
+  <p>Runs in this page. Statistics Canada is contacted directly; FRED is reached through a small gateway, because FRED's API does not answer requests from other websites. Without a FRED key you get the Canadian columns and the US columns stay blank, with the reason shown.</p>
+  <div class="pj-app cpi" id="cpi-app" data-gateway="{{ p.data_gateway }}" aria-busy="false">
+    <section class="cpi-block" aria-labelledby="cpiMonthsH">
+      <h3 id="cpiMonthsH"><span class="cpi-step">1</span> Months</h3>
+      <fieldset class="cpi-mode">
+        <legend>Mode</legend>
+        <label class="pj-choice"><input type="radio" name="cpiMode" value="single" checked> Single month</label>
+        <label class="pj-choice"><input type="radio" name="cpiMode" value="range"> Date range</label>
+      </fieldset>
+      <div class="cpi-dates">
+        <div class="pj-field"><label for="cpiYear" id="cpiYearL">Start Year (YYYY)</label><input id="cpiYear" type="text" inputmode="numeric" autocomplete="off" maxlength="4" aria-describedby="cpiDateHelp"></div>
+        <div class="pj-field"><label for="cpiMonth" id="cpiMonthL">Start Month (1–12)</label><input id="cpiMonth" type="text" inputmode="numeric" autocomplete="off" maxlength="2" aria-describedby="cpiDateHelp"></div>
+        <div class="pj-field cpi-end" hidden><label for="cpiYear2">End Year (YYYY)</label><input id="cpiYear2" type="text" inputmode="numeric" autocomplete="off" maxlength="4" aria-describedby="cpiDateHelp"></div>
+        <div class="pj-field cpi-end" hidden><label for="cpiMonth2">End Month (1–12)</label><input id="cpiMonth2" type="text" inputmode="numeric" autocomplete="off" maxlength="2" aria-describedby="cpiDateHelp"></div>
+      </div>
+      <p class="cpi-note" id="cpiDateHelp">Data begins January 1913; months after the current month are not requested. Each month is one row dated the first day of the month.</p>
+      <p class="cpi-field-error" id="cpiDateError" role="alert"></p>
+    </section>
+
+    <section class="cpi-block" aria-labelledby="cpiSourcesH">
+      <h3 id="cpiSourcesH"><span class="cpi-step">2</span> Data sources</h3>
+      <ul class="cpi-sources" id="cpiSources" aria-live="polite">
+        <li data-source="statcan"><strong>Statistics Canada</strong> <span class="cpi-badge" data-tone="ok">No key needed</span><span class="cpi-source-text">Columns B–F: five CPI series from the Web Data Service, fetched directly by your browser.</span></li>
+        <li data-source="fred"><strong>FRED</strong> <span class="cpi-badge" id="cpiFredBadge">Checking…</span><span class="cpi-source-text" id="cpiFredText">Columns G–S: thirteen US series, with your own FRED key.</span></li>
+      </ul>
+      <div class="cpi-key">
+        <div class="pj-field">
+          <label for="cpiKey">FRED API key (optional)</label>
+          <input id="cpiKey" type="password" autocomplete="off" spellcheck="false" maxlength="40" aria-describedby="cpiKeyHelp cpiKeyError">
+        </div>
+        <label class="cpi-check"><input type="checkbox" id="cpiKeepKey"> <span>Keep for this browser tab (until the tab is closed)</span></label>
+        <button type="button" class="pj-btn" id="cpiForgetKey">Remove key</button>
+      </div>
+      <p class="cpi-field-error" id="cpiKeyError" role="alert"></p>
+      <p class="cpi-note" id="cpiKeyHelp">Get a free key from <a href="https://fred.stlouisfed.org/docs/api/api_key.html" rel="noopener noreferrer">FRED</a> (an account at fred.stlouisfed.org, then <em>API Keys</em>). Your key stays in this page's memory (or this tab's session storage if you tick the box) and is sent only over HTTPS, in the body of each request, to the data gateway, which passes it to FRED and keeps nothing. It never appears in a URL, in the CSV or in a message.</p>
+    </section>
+
+    <section class="cpi-block" aria-labelledby="cpiFetchH">
+      <h3 id="cpiFetchH"><span class="cpi-step">3</span> Fetch and download</h3>
+      <div class="pj-actions">
+        <button type="button" class="pj-btn pj-btn-primary" id="cpiFetch">Fetch data</button>
+        <button type="button" class="pj-btn" id="cpiCancel" disabled>Cancel</button>
+        <button type="button" class="pj-btn" id="cpiCsv" disabled>Download CSV</button>
+        <button type="button" class="pj-btn" id="cpiClear">Clear</button>
+      </div>
+      <div class="cpi-progress" id="cpiProgress" hidden>
+        <progress id="cpiProgressBar" max="100" value="0" aria-labelledby="cpiProgressText"></progress>
+        <span id="cpiProgressText"></span>
+      </div>
+      <p class="pj-status" id="cpiStatus" role="status" aria-live="polite">Loading…</p>
+      <p class="cpi-note" id="cpiCsvNote">The CSV contains every requested month (not only the page shown), the nineteen A–S columns with the model's exact headers, <code>YYYY-MM-DD</code> dates and empty cells for unavailable data. It contains no key or other personal data.</p>
+    </section>
+
+    <section class="cpi-block" id="cpiResults" aria-labelledby="cpiResultsH" hidden>
+      <h3 id="cpiResultsH"><span class="cpi-step">4</span> Results</h3>
+      <div class="pj-tiles" id="cpiTiles"></div>
+      <ul class="cpi-source-status" id="cpiSourceStatus" aria-label="Source status"></ul>
+      <div id="cpiQuality"></div>
+      <div class="cpi-tabs" role="tablist" aria-label="Data groups" id="cpiTabs"></div>
+      <div class="cpi-pager" id="cpiPager">
+        <button type="button" class="pj-btn" id="cpiPrev" aria-describedby="cpiPageText">‹ Previous <span class="cpi-sub">(newer)</span></button>
+        <span class="cpi-page" id="cpiPageText" aria-live="polite"></span>
+        <button type="button" class="pj-btn" id="cpiNext" aria-describedby="cpiPageText">Next <span class="cpi-sub">(older)</span> ›</button>
+        <form class="cpi-jump" id="cpiJump">
+          <label for="cpiJumpTo">Go to month</label>
+          <input id="cpiJumpTo" type="text" inputmode="numeric" placeholder="YYYY-MM" maxlength="7" autocomplete="off">
+          <button type="submit" class="pj-btn">Go</button>
+        </form>
+      </div>
+      <div class="cpi-table-wrap" id="cpiPanel" role="tabpanel" tabindex="0"></div>
+      <details class="pj-details cpi-legend">
+        <summary>Columns, sources and units</summary>
+        <div class="pj-details-body" id="cpiColumns"></div>
+      </details>
+      <details class="pj-details cpi-legend">
+        <summary>What a blank cell means</summary>
+        <div class="pj-details-body"><dl class="pj-facts" id="cpiReasons"></dl></div>
+      </details>
+    </section>
+  </div>
+  <noscript><p class="pj-note warn">The web app needs JavaScript. The desktop tool works without a browser.</p></noscript>
+  <p class="pj-disclaimer">This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis. Canadian data: Statistics Canada, used under the <a href="https://www.statcan.gc.ca/en/terms-conditions/open-licence">Statistics Canada Open Licence</a>; Statistics Canada is the source of the data and this product does not imply its endorsement. S&amp;P 500 (column N): © S&amp;P Dow Jones Indices LLC; reproduction requires its prior written permission. It is retrieved only with your own FRED key, for your own use, and is not stored or published by this site.</p>
+</section>
+
 <section class="pj-section" id="download" aria-labelledby="download-h">
-  <h2 id="download-h">Download and run</h2>
+  <h2 id="download-h">Desktop app: download and run</h2>
+  <p>Use the desktop tool to write the data straight into an existing Excel model (merging it into the history already there), or when you prefer not to use a browser.</p>
   <div class="pj-download">
     <div>
       <h3>{{ p.zip_name }}</h3>
@@ -53,7 +145,8 @@ sections:
 
 <section class="pj-section" id="data" aria-labelledby="data-h">
   <h2 id="data-h">Data sources</h2>
-  <p>Monthly rows are keyed to the first day of each month from January 1913. History before a series begins stays blank: nothing is interpolated, forward-filled, or replaced by a proxy series. Daily FRED series (DFF, SP500, T10Y2Y) use the last valid observation of each month; for the current, unfinished month these three columns are left blank until the month ends, so a mid-month value is never written as a month-end value.</p>
+  <p>The web app and the desktop tool use the same columns, sources and rules, checked by automated tests against each other (their CSV files are byte-identical for the same data). Monthly rows are keyed to the first day of each month from January 1913. History before a series begins stays blank: nothing is interpolated, forward-filled, or replaced by a proxy series. Daily FRED series (DFF, SP500, T10Y2Y) use the last valid observation of each month; for the current, unfinished month these three columns are left blank until the month ends, so a mid-month value is never written as a month-end value.</p>
+  <p><strong>Where the web app gets the data:</strong> Statistics Canada's Web Data Service answers requests from any website, so your browser fetches the five Canadian series directly, with no key, in requests of up to 120 months. FRED's API does not answer requests from other websites, so the thirteen US series go through a small data gateway run for this site on Cloudflare's free tier: it accepts only these thirteen series and valid dates, forwards your own key to FRED, and stores nothing. Each source's status, request count and retrieval time is shown with the results.</p>
   <div class="pj-table-wrap">
     <table class="pj-table">
       <caption class="muted" style="caption-side:top;text-align:left;padding:.5rem .75rem;">Default columns of the supplied model (sheet <code>CPI_Downloader</code>)</caption>
@@ -74,9 +167,9 @@ sections:
       </tbody>
     </table>
   </div>
-  <p class="muted">“Core” here is Statistics Canada's all-items CPI excluding food and energy (tables 18-10-0004 and 18-10-0006), not the Bank of Canada's preferred core measures (CPI-trim, CPI-median). Statistics Canada revises the previous month's seasonally adjusted values every month and the last three years each January, and FRED series such as PCE are revised too; every download fetches the current published values, so re-running a range picks up revisions.</p>
+  <p class="muted">The web CSV has exactly these nineteen columns and headers in this order (A–S), every requested month, <code>YYYY-MM-DD</code> dates and empty cells for unavailable values; notes and attributions stay on the page so the layout stays identical to the model's raw sheet. “Core” here is Statistics Canada's all-items CPI excluding food and energy (tables 18-10-0004 and 18-10-0006), not the Bank of Canada's preferred core measures (CPI-trim, CPI-median). Statistics Canada revises the previous month's seasonally adjusted values every month and the last three years each January, and FRED series such as PCE are revised too; every download fetches the current published values, so re-running a range picks up revisions.</p>
   <h3>S&amp;P 500 history</h3>
-  <p>FRED publishes only about ten years of S&amp;P 500 history, and S&amp;P Dow Jones Indices restricts its reproduction. The bundled <code>CPI.xlsx</code> therefore contains <strong>no S&amp;P 500 values</strong> (and no saved results derived from them): column N is filled only when you download with your own FRED key. Because downloads now merge into the sheet, months you downloaded earlier are kept even after they leave FRED's window. The earlier optional Yahoo Finance backfill is no longer available.</p>
+  <p>FRED publishes only about ten years of S&amp;P 500 history, and S&amp;P Dow Jones Indices restricts its reproduction. The bundled <code>CPI.xlsx</code> therefore contains <strong>no S&amp;P 500 values</strong> (and no saved results derived from them), and neither this site nor its data gateway stores or caches any: column N is filled only when you fetch with your own FRED key, for your own use, in the web app or the desktop tool. Before keeping or sharing a file that contains it, confirm that your use is permitted. Because downloads now merge into the sheet, months you downloaded earlier are kept even after they leave FRED's window. The earlier optional Yahoo Finance backfill is no longer available.</p>
   <p class="pj-disclaimer">This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis. Statistics Canada is the source of the Canadian data; this application does not imply Statistics Canada endorsement. Statistics Canada data is used under the <a href="https://www.statcan.gc.ca/en/terms-conditions/open-licence">Statistics Canada Open Licence</a>. Confirm your organization's rights to S&amp;P 500 data before professional use or sharing a workbook that contains it.</p>
 </section>
 
@@ -96,14 +189,28 @@ sections:
 <section class="pj-section" id="privacy" aria-labelledby="privacy-h">
   <h2 id="privacy-h">Credentials &amp; privacy</h2>
   <ul>
-    <li><strong>You need your own free FRED API key</strong> (<a href="https://fred.stlouisfed.org/docs/api/api_key.html">request one here</a>). It is saved, as plain text in <code>config.toml</code> inside your copy of the tool, only if you tick <em>Remember on this computer</em>. Never share that file.</li>
-    <li>The download contains no API key or other credential; the bundled template's key field is blank, and the bundled workbook has no author names, local paths or add-in references.</li>
-    <li>During a download only series identifiers, dates and your FRED key (to FRED) are sent, to Statistics Canada and FRED. Setup and repair also contact the Python package index (PyPI) and, if you agree to install Python, winget. Your workbook stays on your PC.</li>
+    <li><strong>Your own free FRED API key</strong> is needed for the US columns (<a href="https://fred.stlouisfed.org/docs/api/api_key.html">request one here</a>: create an account at fred.stlouisfed.org, then <em>My Account → API Keys</em>). There is no shared or owner key: FRED's terms ask every user of an application to use their own. The Canadian columns need no key at all.</li>
+    <li><strong>Web app:</strong> the key stays in this page's memory, or in this tab's session storage (cleared when you close the tab) if you tick <em>Keep for this browser tab</em>; it is never saved permanently. It is sent only over HTTPS, inside the body of each request, to the data gateway, which passes it to FRED in the form FRED requires and never logs, stores or returns it. It never appears in a web address, in the CSV, or in a message. <em>Remove key</em> forgets it. Scripts on this website could read session storage, so use a key you can replace (FRED lets you revoke and re-issue keys).</li>
+    <li><strong>Web app requests:</strong> only series identifiers and dates go to Statistics Canada; series identifiers, dates and your key go to the data gateway and from there to FRED. No cookies are sent or set, and the gateway keeps no copy of any answer, so one visitor's data is never served to another.</li>
+    <li><strong>Desktop tool:</strong> the key is saved, as plain text in <code>config.toml</code> inside your copy of the tool, only if you tick <em>Remember on this computer</em>. Never share that file. The download contains no API key or other credential; the bundled template's key field is blank, and the bundled workbook has no author names, local paths or add-in references.</li>
+    <li>During a desktop download only series identifiers, dates and your FRED key (to FRED) are sent, to Statistics Canada and FRED. Setup and repair also contact the Python package index (PyPI) and, if you agree to install Python, winget. Your workbook stays on your PC.</li>
   </ul>
 </section>
 
 <section class="pj-section" id="help" aria-labelledby="help-h">
   <h2 id="help-h">Troubleshooting</h2>
+  <details class="pj-details">
+    <summary>Web app: the US columns are blank</summary>
+    <div class="pj-details-body"><p>Each blank cell says why. <em>No FRED key</em>: enter your key and fetch again. <em>No gateway yet</em>: this site's data gateway has not been set up, so the browser cannot reach FRED; the desktop tool can. <em>Gateway unavailable</em> or <em>Key rejected</em>: check the key at fred.stlouisfed.org and try again later. The Canadian columns are kept in every case.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>Web app: “Unavailable” or HTTP 409 from Statistics Canada</summary>
+    <div class="pj-details-body"><p>Statistics Canada locks its tables during its daily update, usually between midnight and 08:30 Eastern time. The page tries three times, then marks only those months unavailable. Fetch again after 08:30 ET.</p></div>
+  </details>
+  <details class="pj-details">
+    <summary>Web app: the latest months are blank</summary>
+    <div class="pj-details-body"><p><em>Not published</em> means the source has not released that month yet (Canadian CPI for a month is published in the middle of the next month). <em>Month not over</em> appears in the end-of-month columns for the current month, by design.</p></div>
+  </details>
   <details class="pj-details">
     <summary>“The workbook is open” or the write fails</summary>
     <div class="pj-details-body"><p>Close the workbook in Excel, make sure the <code>CPI_Downloader</code> sheet exists and is unprotected, and try again on a copy. Excel must be the desktop Windows version.</p></div>
