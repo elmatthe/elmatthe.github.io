@@ -1,0 +1,118 @@
+{
+ "schema": "md.provider-fixtures.v1",
+ "provider": "alphavantage",
+ "about": "Verbatim Alpha Vantage notice texts (HTTP 200 JSON bodies) as quoted in public issue reports, with the classification both the web and desktop apps must produce. Keys are replaced by placeholders. Sources: audit Appendix A.3.",
+ "notices": [
+  {
+   "name": "burst-2026",
+   "field": "Information",
+   "source": "GeneBO98/tradetally#202 (2026-02-05); williamkray/maubot-financebot#2 (2026-03-12)",
+   "text": "Thank you for using Alpha Vantage! Please consider spreading out your free API requests more sparingly (1 request per second). You may subscribe to any of the premium plans at https://www.alphavantage.co/premium/ to lift the free key rate limit (25 requests per day), raise the per-second burst limit, and instantly unlock all premium endpoints",
+   "expect": {
+    "kind": "rate_limited",
+    "quotaScope": "burst",
+    "persist": false
+   }
+  },
+  {
+   "name": "burst-2025-12",
+   "field": "Information",
+   "source": "beancount/beanprice#124 (2025-12-13)",
+   "text": "Thank you for using Alpha Vantage! Please consider spreading out your free API requests more sparingly. You may subscribe to any of the premium plans at https://www.alphavantage.co/premium/ to lift the free key rate limit (25 requests per day) and instantly unlock all premium endpoints",
+   "expect": {
+    "kind": "rate_limited",
+    "quotaScope": "burst",
+    "persist": false
+   }
+  },
+  {
+   "name": "daily",
+   "field": "Information",
+   "source": "home-assistant/core#109153 (2024-01-30); finance-quote#361 (2024-03-12)",
+   "text": "Thank you for using Alpha Vantage! Our standard API rate limit is 25 requests per day. Please subscribe to any of the premium plans at https://www.alphavantage.co/premium/ to instantly remove all daily rate limits.",
+   "expect": {
+    "kind": "rate_limited",
+    "quotaScope": "daily",
+    "persist": true
+   }
+  },
+  {
+   "name": "daily-variant",
+   "field": "Information",
+   "source": "few-letter/few-be#989 (2026-06-27)",
+   "text": "We have detected your API key as KEYPLACEHOLDER1 and our standard API rate limit is 25 requests per day. Please subscribe to any of the premium plans at https://www.alphavantage.co/premium/ to instantly remove all daily rate limits.",
+   "expect": {
+    "kind": "rate_limited",
+    "quotaScope": "daily",
+    "persist": true,
+    "redacts": "KEYPLACEHOLDER1"
+   }
+  },
+  {
+   "name": "premium-endpoint",
+   "field": "Information",
+   "source": "GeneBO98/tradetally#202",
+   "text": "Thank you for using Alpha Vantage! This is a premium endpoint. You may subscribe to any of the premium plans at https://www.alphavantage.co/premium/ to instantly unlock all premium endpoints",
+   "expect": {
+    "kind": "entitlement",
+    "quotaScope": null,
+    "persist": false
+   }
+  },
+  {
+   "name": "demo-key",
+   "field": "Information",
+   "source": "live probe 2026-11-03 (audit)",
+   "text": "The **demo** API key is for demo purposes only. Please claim your free API key at (https://www.alphavantage.co/support/#api-key) to explore our full API offerings. It takes fewer than 20 seconds.",
+   "expect": {
+    "kind": "auth",
+    "quotaScope": null,
+    "persist": false
+   }
+  },
+  {
+   "name": "missing-key",
+   "field": "Error Message",
+   "source": "live probe 2026-11-03 (audit); AlphaVantage.jl#44",
+   "text": "the parameter apikey is invalid or missing. Please claim your free API key on (https://www.alphavantage.co/support/#api-key). It should take less than 20 seconds.",
+   "expect": {
+    "kind": "auth",
+    "quotaScope": null,
+    "persist": false
+   }
+  },
+  {
+   "name": "invalid-call",
+   "field": "Error Message",
+   "source": "nisba-rates#2 (2026-10-24); RomelTorres/alpha_vantage#386",
+   "text": "Invalid API call. Please retry or visit the documentation (https://www.alphavantage.co/documentation/) for TIME_SERIES_DAILY.",
+   "expect": {
+    "kind": "not_found",
+    "quotaScope": null,
+    "persist": false
+   }
+  },
+  {
+   "name": "legacy-per-minute-note",
+   "field": "Note",
+   "source": "pre-2024 wording",
+   "text": "Thank you for using Alpha Vantage! Our standard API call frequency is 5 calls per minute and 500 calls per day. Please visit https://www.alphavantage.co/premium/ if you would like to target a higher API call frequency.",
+   "expect": {
+    "kind": "rate_limited",
+    "quotaScope": "burst",
+    "persist": false
+   }
+  },
+  {
+   "name": "unknown-information",
+   "field": "Information",
+   "source": "synthetic: any wording not recognised",
+   "text": "Thank you for using Alpha Vantage! The service is undergoing maintenance; please try again later.",
+   "expect": {
+    "kind": "provider_notice",
+    "quotaScope": null,
+    "persist": false
+   }
+  }
+ ]
+}

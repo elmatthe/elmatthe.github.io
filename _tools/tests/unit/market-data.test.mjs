@@ -10,6 +10,7 @@ import { parseEcbCsv, toCadPer, ecbUrl } from "../../../assets/js/market-data/pr
 import { createFxService } from "../../../assets/js/market-data/fx.js";
 import { toAvSymbol, parseAvBody, pickListing, parseGlobalQuote, parseSeries, createUsageCounter, redactKey, createAlphaVantageClient } from "../../../assets/js/market-data/providers/alphavantage.js";
 import { createMarketData, historyKind, loadSettings } from "../../../assets/js/market-data/index.js";
+import { createScheduler } from "../../../assets/js/market-data/scheduler.js";
 import { parsePriceCsv, detectFrequency } from "../../../assets/js/market-data/price-import.js";
 import { buildFxAligner, normalizeSeries } from "../../../assets/js/market-data/fx-align.js";
 import { parseCsv } from "../../../assets/js/market-data/csv.js";
@@ -253,7 +254,7 @@ test("Alpha Vantage HTTP-200 error bodies are mapped to DataError kinds", () => 
   assert.throws(() => parseAvBody(F.AV_RATE_LIMIT), e => e.kind === "rate_limited");
   assert.throws(() => parseAvBody(F.AV_BAD_KEY), e => e.kind === "auth");
   assert.throws(() => parseAvBody(F.AV_BAD_SYMBOL, { symbol: "ZZZZ" }), e => e.kind === "not_found" && e.definitive);
-  assert.throws(() => parseAvBody(F.AV_PREMIUM), e => e.kind === "not_found");
+  assert.throws(() => parseAvBody(F.AV_PREMIUM), e => e.kind === "entitlement" && e.definitive);
   assert.throws(() => parseAvBody(JSON.stringify({ Information: "The **demo** API key is for demo purposes only." })), e => e.kind === "auth");
   assert.throws(() => parseAvBody("<html>"), e => e.kind === "invalid");
   assert.throws(() => parseGlobalQuote({ "Global Quote": {} }, "ZZZZ"), e => e.kind === "not_found");
@@ -506,18 +507,21 @@ test("a per-second burst notice is retried, not treated as the daily limit", asy
   let n = 0;
   const BURST = JSON.stringify({ Information: "Thank you for using Alpha Vantage! Please consider spreading out your free API requests more sparingly (1 request per second)." });
   const fetchImpl = async () => { n += 1; return n === 1 ? F.response(200, BURST) : F.response(200, F.avGlobalQuote("AAPL", 230, "2026-10-30")); };
-  const client = createAlphaVantageClient({ apiKey: "TESTKEY123", fetchImpl, minSpacingMs: 0, sleep: noSleep });
+  const usage = createUsageCounter(F.memory(), { key: "u" });
+  const client = createAlphaVantageClient({ apiKey: "TESTKEY123", fetchImpl, usage, sleep: noSleep });
   const body = await client.globalQuote("AAPL");
   assert.equal(body["Global Quote"]["05. price"], "230");
   assert.equal(client.exhausted, false);
-  const limited = createAlphaVantageClient({ apiKey: "TESTKEY123", fetchImpl: async () => F.response(200, F.AV_RATE_LIMIT), minSpacingMs: 0, sleep: noSleep });
-  await assert.rejects(limited.globalQuote("AAPL"), e => e.kind === "rate_limited" && e.definitive);
+  const limitedUsage = createUsageCounter(F.memory(), { key: "u" });
+  const limited = createAlphaVantageClient({ apiKey: "TESTKEY123", fetchImpl: async () => F.response(200, F.AV_RATE_LIMIT), usage: limitedUsage, sleep: noSleep });
+  await assert.rejects(limited.globalQuote("AAPL"), e => e.kind === "rate_limited" && e.quotaScope === "daily" && e.definitive);
   assert.equal(limited.exhausted, true);
 });
 
 test("concurrent callers are serialized with the provider spacing", async () => {
   const stamps = [];
-  const client = createAlphaVantageClient({ apiKey: "TESTKEY123", minSpacingMs: 40,
+  const scheduler = createScheduler({ name: "spacing-test", minSpacingMs: 40, locks: null });
+  const client = createAlphaVantageClient({ apiKey: "TESTKEY123", scheduler,
     fetchImpl: async () => { stamps.push(Date.now()); return F.response(200, F.avGlobalQuote("AAPL", 1, "2026-10-30")); } });
   await Promise.all([client.globalQuote("AAPL"), client.globalQuote("MSFT"), client.globalQuote("NVDA")]);
   assert.equal(stamps.length, 3);

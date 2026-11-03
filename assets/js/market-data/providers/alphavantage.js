@@ -68,6 +68,32 @@ export function redactKey(message, key = "") {
   return text;
 }
 
+// Alpha Vantage reports limits and errors as HTTP-200 JSON bodies. Their wording has
+// changed several times, and the per-second "burst" notice ALSO mentions "(25 requests
+// per day)" (2025-12 and 2026 wordings), so the rules below are ordered and specific:
+//   1. burst: "spreading out", "per second", "burst" or the legacy per-minute
+//      "call frequency" Note. Transient: retried with back-off, never stored.
+//   2. daily: only the daily-limit sentence itself ("rate limit is N requests per day",
+//      "remove all daily rate limits"). Stops this key until 00:00 UTC.
+//   3. premium endpoint -> entitlement; 4. demo key -> auth.
+//   5. anything else in Information/Note -> provider_notice: shown verbatim, never
+//      treated as a definitive limit.
+// "Error Message": apikey -> auth; otherwise the symbol/function has no data.
+const AV_RULES = [
+  { test: /spreading out|per[- ]second|\bburst\b|call frequency|requests? per minute|calls? per minute/i, kind: "rate_limited", quotaScope: "burst" },
+  { test: /rate limit is \d+ (?:requests|calls) per day|remove all daily rate limits|daily (?:rate|request) limit (?:is|has been) (?:reached|exceeded)/i, kind: "rate_limited", quotaScope: "daily" },
+  { test: /premium endpoint|premium feature|premium (?:plan )?(?:only|required)/i, kind: "entitlement" },
+  { test: /\bdemo\b/i, kind: "auth" },
+];
+
+// Classifies a notice text (Information or Note field). Exported for the fixture tests.
+export function classifyAvNotice(text) {
+  const rule = AV_RULES.find(r => r.test.test(String(text || "")));
+  return rule ? { kind: rule.kind, quotaScope: rule.quotaScope || null } : { kind: "provider_notice", quotaScope: null };
+}
+
+const notice = text => redactKey(String(text || "")).replace(/\s+/g, " ").trim().slice(0, 400);
+
 // Maps Alpha Vantage's HTTP-200 error bodies to DataError; returns the parsed body otherwise.
 export function parseAvBody(text, { symbol = "" } = {}) {
   let body;
@@ -75,19 +101,22 @@ export function parseAvBody(text, { symbol = "" } = {}) {
   if (!body || typeof body !== "object") throw new DataError("Alpha Vantage response was empty", { kind: "invalid", provider: AV_PROVIDER });
   const info = String(body.Information || body.Note || "");
   if (info) {
-    // Rate-limit notices also mention "premium plans", so they are recognised first.
-    // A burst notice ("spreading out ... 1 request per second") is transient; only
-    // the daily notice means the key is done for the day.
-    if (/per day|daily/i.test(info) && /rate limit|requests/i.test(info)) throw new DataError("Alpha Vantage daily request limit reached for this API key (the free plan allows 25 requests per day).", { kind: "rate_limited", definitive: true, provider: AV_PROVIDER, scope: "daily" });
-    if (/rate limit|per second|per minute|spreading out|call frequency|burst/i.test(info)) throw Object.assign(new DataError("Alpha Vantage asked for slower requests; retrying shortly.", { kind: "rate_limited", provider: AV_PROVIDER, retryAfterMs: 1500 }), { scope: "burst" });
-    if (/demo/i.test(info)) throw new DataError("The Alpha Vantage demo key only works for the documentation examples. Add your own free key.", { kind: "auth", definitive: true, provider: AV_PROVIDER });
-    if (/premium endpoint|premium feature|premium plan/i.test(info)) throw new DataError(`${symbol ? `${symbol}: ` : ""}this data is a premium Alpha Vantage feature, not available with a free key.`, { kind: "not_found", definitive: true, provider: AV_PROVIDER });
-    throw new DataError(`Alpha Vantage: ${redactKey(info).slice(0, 160)}`, { kind: "unavailable", provider: AV_PROVIDER });
+    const { kind, quotaScope } = classifyAvNotice(info);
+    const said = notice(info);
+    if (kind === "rate_limited" && quotaScope === "burst") {
+      throw new DataError("Alpha Vantage asked for slower requests (its per-second limit). This is temporary.", { kind, quotaScope, provider: AV_PROVIDER, retryAfterMs: 2000, notice: said, hint: "Wait a few seconds and retry; requests are spaced automatically." });
+    }
+    if (kind === "rate_limited") {
+      throw new DataError("Alpha Vantage says this key has reached its daily request limit.", { kind, quotaScope, definitive: true, provider: AV_PROVIDER, notice: said, hint: "Alpha Vantage counts every use of the key (other devices and apps included). Its free plan allows 25 requests per day." });
+    }
+    if (kind === "entitlement") throw new DataError(`${symbol ? `${symbol}: ` : ""}this data is a premium Alpha Vantage feature, not available with a free key.`, { kind, definitive: true, provider: AV_PROVIDER, notice: said });
+    if (kind === "auth") throw new DataError("The Alpha Vantage demo key only works for the documentation examples. Add your own free key.", { kind, definitive: true, provider: AV_PROVIDER, notice: said });
+    throw new DataError(`Alpha Vantage sent a notice instead of data: ${said.slice(0, 160)}`, { kind: "provider_notice", provider: AV_PROVIDER, notice: said, hint: "This is not treated as a daily limit. Retry later." });
   }
   if (body["Error Message"]) {
     const message = String(body["Error Message"]);
-    if (/apikey/i.test(message)) throw new DataError("Alpha Vantage rejected the API key. Check the key in Settings.", { kind: "auth", definitive: true, provider: AV_PROVIDER });
-    throw new DataError(`${symbol || "Symbol"}: Alpha Vantage has no data for this symbol.`, { kind: "not_found", definitive: true, provider: AV_PROVIDER });
+    if (/apikey/i.test(message)) throw new DataError("Alpha Vantage rejected the API key. Check the key in Settings.", { kind: "auth", definitive: true, provider: AV_PROVIDER, notice: notice(message) });
+    throw new DataError(`${symbol || "Symbol"}: Alpha Vantage has no data for this symbol.`, { kind: "not_found", definitive: true, provider: AV_PROVIDER, notice: notice(message) });
   }
   return body;
 }
@@ -175,45 +204,64 @@ export function parseSeries(body, symbol, listing, kind) {
   }, AV_PROVIDER);
 }
 
-// Low-level client. `usage` tracks requests per UTC day in this browser so the UI
-// can warn before the free quota runs out (the count is an estimate: other devices
-// using the same key are not seen).
-export function createAlphaVantageClient({ apiKey, fetchImpl = (...a) => globalThis.fetch(...a), usage = null, minSpacingMs = 1200, now = () => Date.now(), sleep = ms => new Promise(r => setTimeout(r, ms)) } = {}) {
+// Low-level client. Requests go through `scheduler` (per key, shared across tabs):
+// at least 1.2 s between starts and 1.1 s after the previous response ends, plus a
+// little jitter. A burst notice is retried after 2, 5 and 10 seconds and never
+// stored. Only Alpha Vantage's own daily-limit wording blocks the key, and only until
+// 00:00 UTC; the visitor can "Check again" with a single request at any time.
+export const AV_BURST_BACKOFF_MS = [2000, 5000, 10000];
+
+export function avSchedulerRules() {
+  return { minSpacingMs: 1200, minGapAfterMs: 1100, jitterMs: 300 };
+}
+
+export function createAlphaVantageClient({ apiKey, fetchImpl = (...a) => globalThis.fetch(...a), usage = null, scheduler = null, now = () => Date.now(), sleep = ms => new Promise(r => setTimeout(r, ms)), backoffMs = AV_BURST_BACKOFF_MS } = {}) {
   if (!validKey(apiKey)) return null;
   const key = apiKey.trim();
-  let last = 0;
-  let exhaustedDay = null; // UTC day on which the daily limit (or a key rejection) was reported
+  let rejectedKey = false; // "apikey is invalid": kept for this page only, never stored
   let chain = Promise.resolve();
-  const today = () => new Date(now()).toISOString().slice(0, 10);
-  // The daily limit is also remembered in this key's usage record, so a reload (or
-  // switching back to this key) does not spend another request to rediscover it.
-  const exhausted = () => exhaustedDay === today() || Boolean(usage?.exhausted);
-  const limitError = () => new DataError("Alpha Vantage daily request limit reached for this API key (the free plan allows 25 requests per day).", { kind: "rate_limited", definitive: true, provider: AV_PROVIDER });
+  const schedule = scheduler ? (task, signal) => scheduler.run(task, { signal }) : task => task();
 
-  async function send(params, { signal, symbol } = {}) {
-    if (exhausted()) throw limitError();
+  const localLimitError = hit => new DataError(
+    `Alpha Vantage reported this key's daily limit at ${new Date(hit.at).toISOString().slice(11, 16)} UTC. This browser sends no more Alpha Vantage requests until 00:00 UTC unless you choose "Check again".`,
+    { kind: "rate_limited", quotaScope: "daily", definitive: true, provider: AV_PROVIDER, notice: hit.notice || null, hint: "Check again (1 request), wait for the reset, or use another configured source.", retryable: false },
+  );
+
+  async function send(params, { signal, symbol, probe = false } = {}) {
+    if (rejectedKey) throw new DataError("Alpha Vantage rejected the API key. Check the key in Settings.", { kind: "auth", definitive: true, provider: AV_PROVIDER });
+    const hit = usage?.dailyLimit;
+    if (hit && !probe) throw localLimitError(hit);
     for (let attempt = 0; ; attempt += 1) {
-      const wait = last + minSpacingMs - now();
-      if (wait > 0) await sleep(wait);
       if (signal?.aborted) throw new DataError("Request cancelled.", { kind: "aborted", provider: AV_PROVIDER });
-      last = now();
-      usage?.increment();
-      const query = new URLSearchParams({ ...params, apikey: key });
-      const res = await fetchText(`${AV_BASE}?${query}`, { fetchImpl, signal, provider: AV_PROVIDER, timeoutMs: 15000 });
-      if (!res.ok) throw httpError(res.status, { provider: AV_PROVIDER, headers: res.headers, text: res.text });
+      const res = await schedule(async () => {
+        usage?.increment();
+        const query = new URLSearchParams({ ...params, apikey: key });
+        return fetchText(`${AV_BASE}?${query}`, { fetchImpl, signal, provider: AV_PROVIDER, timeoutMs: 15000 });
+      }, signal);
+      if (!res.ok) {
+        const error = httpError(res.status, { provider: AV_PROVIDER, headers: res.headers, text: res.text });
+        error.message = redactKey(error.message, key);
+        throw error;
+      }
       try {
-        return parseAvBody(res.text, { symbol });
+        const body = parseAvBody(res.text, { symbol });
+        if (probe) usage?.clearDailyLimit?.();
+        return body;
       } catch (error) {
         error.message = redactKey(error.message, key);
-        if (error.scope === "burst" && attempt === 0) { await sleep(error.retryAfterMs || 1500); continue; }
-        if ((error.kind === "rate_limited" && error.definitive) || error.kind === "auth") exhaustedDay = today(); // stop spending requests today
-        if (error.kind === "rate_limited" && error.definitive) usage?.markExhausted?.();
+        if (error.notice) error.notice = redactKey(error.notice, key);
+        if (error.kind === "rate_limited" && error.quotaScope === "burst" && attempt < backoffMs.length) {
+          await sleep(backoffMs[attempt], signal);
+          continue;
+        }
+        if (error.kind === "auth" && /rejected/.test(error.message)) rejectedKey = true;
+        if (error.kind === "rate_limited" && error.quotaScope === "daily") usage?.markDailyLimit?.(error.notice);
         throw error;
       }
     }
   }
-  // Requests are serialized so concurrent callers (a comparison and a snapshot) keep
-  // the provider's spacing.
+  // Calls are queued in order so concurrent callers (a comparison and a snapshot)
+  // never overtake each other.
   function call(params, opts) {
     const run = chain.then(() => send(params, opts));
     chain = run.catch(() => {});
@@ -224,29 +272,59 @@ export function createAlphaVantageClient({ apiKey, fetchImpl = (...a) => globalT
     async globalQuote(avSymbol, opts) { return call({ function: "GLOBAL_QUOTE", symbol: avSymbol }, opts); },
     async daily(avSymbol, opts) { return call({ function: "TIME_SERIES_DAILY", symbol: avSymbol, outputsize: "compact" }, opts); },
     async weeklyAdjusted(avSymbol, opts) { return call({ function: "TIME_SERIES_WEEKLY_ADJUSTED", symbol: avSymbol }, opts); },
-    get exhausted() { return exhausted(); },
+    // "Check again": one GLOBAL_QUOTE for IBM (Alpha Vantage's documented example)
+    // that is sent even while the daily limit is recorded. Success clears the record.
+    async probe(opts = {}) { return call({ function: "GLOBAL_QUOTE", symbol: "IBM" }, { ...opts, probe: true, symbol: "IBM" }); },
+    get dailyLimit() { return usage?.dailyLimit || null; },
+    get exhausted() { return Boolean(usage?.dailyLimit) || rejectedKey; },
   };
 }
 
-// Per-browser daily request counter (UTC day) for ONE key: the caller gives each key
-// its own storage name, so a different key never inherits this count. The count is
-// an estimate (other devices using the same key are not seen). Unreadable or
-// unavailable storage counts as zero and never throws.
+// Per-browser request counter for ONE provider key (the caller gives each key its
+// own storage name). It counts requests THIS browser sent since 00:00 UTC and in
+// the current UTC month. It is not the provider's count: other devices, apps and
+// tabs in other browsers using the same key are not seen. It also remembers when the
+// provider itself reported its daily limit (with the redacted notice) for the rest of
+// that UTC day. Records written by earlier versions that stored only a bare
+// "exhausted" flag are ignored: that flag could have come from a misread burst notice.
+// Unreadable or unavailable storage counts as zero and never throws.
 export function createUsageCounter(storage, { now = () => Date.now(), key = "md.av.usage.v1" } = {}) {
   const today = () => new Date(now()).toISOString().slice(0, 10);
+  const blank = () => ({ day: today(), month: today().slice(0, 7), count: 0, monthCount: 0, limit: null });
   const read = () => {
     try {
       const entry = JSON.parse(storage?.getItem(key) || "null");
-      return entry && entry.day === today() && Number.isInteger(entry.count) && entry.count >= 0
-        ? { day: entry.day, count: entry.count, exhausted: entry.exhausted === true }
-        : { day: today(), count: 0, exhausted: false };
-    } catch (_) { return { day: today(), count: 0, exhausted: false }; }
+      if (!entry || typeof entry !== "object") return blank();
+      const t = today();
+      const sameDay = entry.day === t && Number.isInteger(entry.count) && entry.count >= 0;
+      const sameMonth = entry.month === t.slice(0, 7) && Number.isInteger(entry.monthCount) && entry.monthCount >= 0;
+      // A recorded limit applies for the rest of its UTC day (daily) or month (monthly).
+      const raw = entry.limit && Number.isFinite(entry.limit.at) ? entry.limit : null;
+      const at = raw ? new Date(raw.at).toISOString() : "";
+      const applies = raw && ((raw.scope === "daily" && at.slice(0, 10) === t) || (raw.scope === "monthly" && at.slice(0, 7) === t.slice(0, 7)));
+      const limit = applies ? { scope: raw.scope, at: raw.at, notice: typeof raw.notice === "string" ? raw.notice.slice(0, 400) : null } : null;
+      return { day: t, month: t.slice(0, 7), count: sameDay ? entry.count : 0, monthCount: sameMonth ? entry.monthCount : 0, limit };
+    } catch (_) { return blank(); }
   };
   const write = e => { try { storage?.setItem(key, JSON.stringify(e)); } catch (_) { /* optional */ } };
   return {
     get count() { return read().count; },
-    get exhausted() { return read().exhausted; },
-    increment() { const e = read(); e.count += 1; write(e); return e.count; },
-    markExhausted() { const e = read(); e.exhausted = true; write(e); },
+    get monthCount() { return read().monthCount; },
+    get limit() { return read().limit; },
+    get dailyLimit() { const l = read().limit; return l && l.scope === "daily" ? { at: l.at, notice: l.notice } : null; },
+    get exhausted() { return Boolean(read().limit); },
+    increment() { const e = read(); e.count += 1; e.monthCount += 1; write(e); return e.count; },
+    markLimit(scope, noticeText = null) { const e = read(); e.limit = { scope, at: now(), notice: noticeText ? String(noticeText).slice(0, 400) : null }; write(e); },
+    markDailyLimit(noticeText = null) { this.markLimit("daily", noticeText); },
+    clearLimit() { const e = read(); e.limit = null; write(e); },
+    clearDailyLimit() { this.clearLimit(); },
+    // When a recorded limit stops applying here: next 00:00 UTC (daily) or the first
+    // day of next UTC month (monthly). The provider's own reset may differ.
+    resetsAt() {
+      const l = read().limit;
+      const d = new Date(`${today()}T00:00:00Z`);
+      if (l?.scope === "monthly") return Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1);
+      return d.getTime() + 86400000;
+    },
   };
 }

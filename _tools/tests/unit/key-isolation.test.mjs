@@ -256,33 +256,40 @@ test("remember / session-only storage, switching between them, and removal", () 
   const local = F.memory();
   const session = F.memory();
   const md = make({ local, session });
+  const SLOT = "md.key.v2.alphavantage";
   assert.deepEqual(md.setApiKey(KEY_A, { remember: false }), { persistence: "session", saved: true });
-  assert.equal(local.getItem("md.settings.v1"), null, "session-only keys are not written to local storage");
+  assert.equal(local.getItem(SLOT), null, "session-only keys are not written to local storage");
+  assert.equal(session.getItem(SLOT), KEY_A);
   assert.equal(loadSettings(local, session).persistence, "session");
   assert.deepEqual(md.setApiKey(KEY_A, { remember: true }), { persistence: "local", saved: true });
-  assert.equal(session.getItem("md.settings.v1"), null, "only one copy is kept");
+  assert.equal(session.getItem(SLOT), null, "only one copy is kept");
   assert.equal(loadSettings(local, session).alphaVantageKey, KEY_A);
   // A new tab (empty session storage) still sees a remembered key...
   assert.equal(make({ local, session: F.memory() }).settings.persistence, "local");
   // ...but not a session-only one.
   md.setApiKey(KEY_B, { remember: false });
-  assert.equal(local.getItem("md.settings.v1"), null, "choosing session-only also forgets the remembered key");
+  assert.equal(local.getItem(SLOT), null, "choosing session-only also forgets the remembered key");
   assert.equal(make({ local, session: F.memory() }).liveAvailable(), false);
   md.setApiKey("");
-  assert.equal(session.getItem("md.settings.v1"), null);
+  assert.equal(session.getItem(SLOT), null);
   // A session copy wins over a remembered one in the same tab.
-  local.setItem("md.settings.v1", JSON.stringify({ alphaVantageKey: KEY_A }));
-  session.setItem("md.settings.v1", JSON.stringify({ alphaVantageKey: KEY_B }));
+  local.setItem(SLOT, KEY_A);
+  session.setItem(SLOT, KEY_B);
   assert.deepEqual(loadSettings(local, session), { alphaVantageKey: KEY_B, persistence: "session" });
 });
 
-test("a key saved by an earlier version (local storage) is kept and used", () => {
+test("a key saved by an earlier version is moved to its provider slot in the same storage", () => {
   const local = F.memory();
   local.setItem("md.settings.v1", JSON.stringify({ alphaVantageKey: KEY_A }));
   const md = make({ local });
   assert.equal(md.liveAvailable(), true);
   assert.deepEqual(md.settings, { hasKey: true, persistence: "local" });
-  assert.equal(JSON.parse(local.getItem("md.settings.v1")).alphaVantageKey, KEY_A);
+  assert.equal(local.getItem("md.key.v2.alphavantage"), KEY_A);
+  assert.equal(local.getItem("md.settings.v1"), null, "the old record is removed after the move");
+  const session = F.memory();
+  session.setItem("md.settings.v1", JSON.stringify({ alphaVantageKey: KEY_B }));
+  const tab = make({ local: F.memory(), session });
+  assert.deepEqual(tab.settings, { hasKey: true, persistence: "session" }, "a session-only key stays session-only");
 });
 
 test("the key is sent only to Alpha Vantage and appears nowhere else", async () => {
@@ -313,7 +320,7 @@ test("the key is sent only to Alpha Vantage and appears nowhere else", async () 
   for (const store of [local, session]) {
     for (const k of keysIn(store)) {
       assert.ok(!k.includes(KEY_A), `storage name ${k} contains the key`);
-      if (k !== "md.settings.v1") assert.ok(!String(store.getItem(k)).includes(KEY_A), `${k} contains the key`);
+      if (!k.startsWith("md.key.v2.")) assert.ok(!String(store.getItem(k)).includes(KEY_A), `${k} contains the key`);
     }
   }
 });
