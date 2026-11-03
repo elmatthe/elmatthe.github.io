@@ -3,7 +3,70 @@
 Maintainer reference for how the Portfolio Rebalancer and the Stock Comparison &
 Analytics web apps get prices and exchange rates, why they get them that way, and how
 to test, operate and extend that path. Not published (Jekyll ignores `_tools/`).
-Evidence in this file was gathered on 2026-11-02.
+Evidence in sections 1–13 was gathered on 2026-11-02. **Section 0 (2026-11-03) is the
+current design; where an older section disagrees, section 0 wins.** Provider eligibility
+and licensing: `PROVIDER_MATRIX.md`. Listing identity: `INSTRUMENT_IDENTITY.md`.
+
+## 0. Current design (2026-11-03)
+
+**Layers** (`assets/js/market-data/`; Python mirror `_tools/shared_py/market_data/`, copied
+into the Rebalancer and Stock desktop apps by `_tools/sync_shared_py.py`, `--check` in CI):
+
+| Module | Role |
+|---|---|
+| `instruments.js` + `assets/data/instruments.v1.json` | Ticker → `md.instrument.v1` identity (venue, currency, unit), no request. |
+| `catalog.js` | The five provider candidates, their plans, coverage, symbol mapping, request cost, known gaps and status per platform; `ROUTES` for *Automatic (route by market)*. |
+| `providers/alphavantage.js` | Alpha Vantage client and notice classifier. |
+| `providers/quote-adapters.js` | Marketstack, Finnhub (and Massive, deferred) quote adapters with venue and currency checks. |
+| `scheduler.js` | Per-provider, per-key request pacing shared across tabs. |
+| `http.js` | `DataError` (`md.data-error.v1`) with `kind`, `quotaScope`, `retryable`, redacted provider notice and hint. |
+| `index.js` | `createMarketData()`: keys, plans, routing, cache, `priceInstrument`, `estimate`, `crossCheck`, `checkAgain`, FX. |
+
+**Providers.** Alpha Vantage, Marketstack, Finnhub: browser and desktop. Alpaca: desktop
+only (its key secret is a trading credential). Massive: deferred (needs the owner's
+written confirmation of its Market Data Terms). The user picks one source or *Automatic
+(route by market)*: US → Finnhub, Alpaca, Alpha Vantage, Marketstack, Massive; TSX/TSX-V,
+London, Xetra, Shanghai/Shenzhen → Alpha Vantage, Marketstack, Finnhub; Cboe Canada →
+Marketstack, Finnhub; other venues → Marketstack, Finnhub. Only configured, available
+providers are used; falling back to another provider after a failure happens only when the
+user opted in. Free and paid plans are both described with their real allowances (no plan
+is assumed unlimited); the request estimate is shown before *Get prices*.
+
+**Alpha Vantage notices** (`classifyAvNotice`, fixtures in
+`_tools/tests/fixtures/providers/alphavantage-notices.json`), checked in order:
+1. *Burst* (spread out / per second / burst / call frequency / per minute) → retried after
+   2, 5 and 10 s; **never persisted**, even when the text also mentions "25 requests per day".
+2. *Daily*: only "…rate limit is N requests per day" or "…remove all daily rate limits" →
+   recorded until 00:00 UTC with the provider's own wording; *Check again* sends one probe.
+3. Premium endpoint → entitlement; demo key → authentication; anything else → provider notice.
+The legacy persisted `exhausted` flag is ignored. Local counters are labelled as requests
+*this browser* sent, not the provider's account-wide quota.
+
+**Scheduler.** Start spacing, gap after each response, a per-minute cap and jitter, per
+provider and key fingerprint, coordinated across tabs with Web Locks (timing in
+`localStorage` `md.sched.v1.<provider>.<fp>`). Limits are re-checked inside each scheduled
+task, so queued requests are not sent after a limit is reached.
+
+**Quote contract `md.quote.v1`.** `canonicalId`, `provider`, `providerSymbol`,
+`nativePriceMajorUnits`, `nativeCurrency`, `quoteUnit`, `rawPrice`, `rawCurrency`,
+`priceType` (`latest_trading_day`, `eod_close`, `last_trade`, `previous_close`),
+`tradingDate`, `asOf`, `retrievedAt`, `cacheStatus`, `entitlement`, `feed`,
+`currencyVerified`, `currencyEvidence`, `notes`. Rows show provider, trading date,
+currency, unit and price basis. A late answer for a row whose ticker or provider changed is
+ignored (revision tokens), and a ticker edit clears its price immediately.
+
+**Keys and storage.** `md.key.v2.<provider>` in `sessionStorage` (cleared with the tab)
+unless the user ticks *Remember*, then `localStorage`; *Forget all keys* removes every key
+and cache. The old `md.settings.v1` key is migrated once. Caches are namespaced by
+provider and key fingerprint (`md.av.v2.<fp>.`, `md.<id>.v2.<fp>.`). Desktop: keys in
+memory unless remembered (`files/runtime/keys.json`, mode 600).
+
+**Price comparison** (`compareQuotes`): Consistent ≤ 0.10%, Minor ≤ 1%, otherwise
+Investigate with likely causes (different session, venue, currency or adjustment).
+
+**Chart.js** is self-hosted (`assets/vendor/chart.js/4.4.2/`, SRI-pinned, `defer`); no page
+contacts a CDN. The browser test harness mocks the Bank of Canada, ECB, Alpha Vantage,
+Marketstack and Finnhub, and fails on any other host.
 
 ## 1. Summary
 

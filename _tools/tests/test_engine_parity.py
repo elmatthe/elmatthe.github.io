@@ -59,15 +59,23 @@ def mc_desktop_inputs(raw: dict) -> SimulationInputs:
         years_in_retirement=int(raw["yearsInRetirement"]), expected_return=float(raw["expectedReturn"]),
         volatility=float(raw["volatility"]), inflation_rate=float(raw["inflation"]), annual_spending=float(raw["annualSpending"]),
         pension_income=float(raw["pensionIncome"]), simulations=int(raw["simulations"]), workbook_path=Path("unused.xlsx"),
+        spending_basis=raw.get("spendingBasis", "retirement"),
     )
 
 
 def mc_scenarios():
     rng = random.Random(20260928)
     yield dict(MC_BASE)
+    yield dict(MC_BASE, spendingBasis="today")                                           # today's-dollar spending
     yield dict(MC_BASE, volatility=0, simulations=3)                                      # deterministic path
     yield dict(MC_BASE, currentPortfolio=20000, annualSpending=90000, pensionIncome=0)   # frequent ruin
     yield dict(MC_BASE, annualContribution=0, contributionGrowth=-5, inflation=-1)       # negative rates
+    # Extreme but valid inputs (audit D.5): very high volatility, total loss, -100% inflation, huge values, N=1.
+    yield dict(MC_BASE, volatility=300, simulations=50)
+    yield dict(MC_BASE, expectedReturn=-100, volatility=0, simulations=4)
+    yield dict(MC_BASE, inflation=-100, simulations=20, spendingBasis="today")
+    yield dict(MC_BASE, currentPortfolio=1e15, annualContribution=1e15, annualSpending=1e15, pensionIncome=0, simulations=5)
+    yield dict(MC_BASE, simulations=1, yearsToRetirement=120, yearsInRetirement=120)
     for _ in range(4):
         yield dict(
             currentPortfolio=rng.choice([25000, 150000, 750000]), annualContribution=rng.choice([0, 5000, 40000]),
@@ -79,12 +87,7 @@ def mc_scenarios():
 
 def run_mc_desktop(raw: dict, z: list[float]):
     draws = iter(z)
-    original = np.random.normal
-    np.random.normal = lambda loc, scale: loc + scale * next(draws)  # noqa: E731 - identical draws for both engines
-    try:
-        return mc_core.run_monte_carlo(mc_desktop_inputs(raw))
-    finally:
-        np.random.normal = original
+    return mc_core.run_monte_carlo(mc_desktop_inputs(raw), normal=lambda: next(draws))  # identical draws for both engines
 
 
 def test_monte_carlo_browser_matches_desktop():
@@ -106,6 +109,10 @@ def test_monte_carlo_browser_matches_desktop():
         assert close(s["finalP90"]["nominal"], desktop.p90_final_value)
         assert close(s["swr"], desktop.safe_withdrawal_rate)
         assert close(s["netWithdrawal"], desktop.net_withdrawal)
+        assert s["netWithdrawalEntered"] == desktop.net_withdrawal_entered and s["spendingBasis"] == desktop.spending_basis
+        assert browser["used"] == desktop.draws == s["draws"], "both engines consume the same number of draws"
+        assert browser["warnings"] == desktop.warnings
+        assert browser["engineVersion"] == desktop.engine_version
         if desktop.median_ruin_year is None:
             assert s["medianRuinYear"] is None
         else:
@@ -116,6 +123,7 @@ def test_monte_carlo_browser_matches_desktop():
 
 
 INVALID = [
+    dict(MC_BASE, spendingBasis="nominal"),
     dict(MC_BASE, currentPortfolio=0),
     dict(MC_BASE, annualContribution=-1),
     dict(MC_BASE, annualSpending=0),
@@ -148,6 +156,71 @@ def test_monte_carlo_valid_limits_accepted_by_both():
         needed = raw["simulations"] * 2 if raw["simulations"] > 1 else 60
         (browser,) = run_js("monte-carlo", [{"raw": raw, "z": [0.0] * needed}])
         assert "error" not in browser, browser
+
+
+
+# The audit's 18 UI parsing probes (appendix D.7): both apps now parse text the same way.
+MC_PROBES = [("annualContribution", ""), ("currentPortfolio", ""), ("currentPortfolio", "abc"), ("currentPortfolio", "nan"),
+             ("currentPortfolio", "inf"), ("currentPortfolio", "1_000"), ("yearsToRetirement", "30.0"), ("yearsToRetirement", "0"),
+             ("yearsToRetirement", "-3"), ("simulations", "1e3"), ("simulations", "1000.0"), ("volatility", "-1"),
+             ("expectedReturn", "abc"), ("pensionIncome", ""), ("inflation", ""), ("annualSpending", "0"),
+             ("currentPortfolio", "0x10"), ("currentPortfolio", "\u0661\u0660\u0660\u0660")]
+
+
+def test_monte_carlo_text_parsing_matches_desktop_on_all_18_probes():
+    base = {k: str(v) for k, v in MC_BASE.items()}
+    cases = [{"raw": dict(base, **{field: value}), "validateOnly": True} for field, value in MC_PROBES]
+    browser = run_js("monte-carlo", cases)
+    same = 0
+    for (field, value), case, b in zip(MC_PROBES, cases, browser):
+        try:
+            desktop = mc_core.parse_raw_inputs(case["raw"], error_type=ValidationError, workbook_path=Path("unused.xlsx"))
+            d = ("ACCEPTED", None, desktop.simulations, desktop.years_to_retirement)
+        except ValidationError as error:
+            d = (str(error), error.field, None, None)
+        js = ("ACCEPTED", None, b["inputs"]["simulations"], b["inputs"]["yearsToRetirement"]) if b.get("ok") else (b["error"], b["field"], None, None)
+        assert d == js, (field, value, d, js)
+        same += 1
+    assert same == 18
+
+
+def test_monte_carlo_warnings_conversion_and_growth_match_desktop():
+    variants = [{}, {"expectedReturn": 0.07}, {"volatility": 0.12}, {"volatility": 31}, {"volatility": 50}, {"volatility": 300},
+                {"expectedReturn": -100, "volatility": 0}, {"inflation": -100}, {"spendingBasis": "today"},
+                {"spendingBasis": "today", "inflation": -3.5, "yearsToRetirement": 120}, {"expectedReturn": -60, "volatility": 25}]
+    raws = [dict(MC_BASE, **v) for v in variants]
+    browser = run_js("monte-carlo", [{"raw": r, "validateOnly": True} for r in raws])
+    for raw, b in zip(raws, browser):
+        inputs = mc_desktop_inputs(raw)
+        assert b["warnings"] == mc_core.assumption_warnings(inputs), raw
+        first = mc_core.first_year_withdrawal(inputs)
+        assert b["first"] == first, raw  # bit-identical: repeated multiplication in both engines
+        growth = mc_core.typical_growth(inputs.expected_return, inputs.volatility)
+        assert (b["growth"] is None and growth is None) or close(b["growth"], growth), raw
+
+
+def test_monte_carlo_same_seed_gives_same_results_in_both_apps():
+    """Seed-matched runs: the desktop's port of mulberry32 + Box-Muller (monte_carlo/rng.py)
+    reproduces the web run. Integer streams are identical; log/cos can differ by ~1e-16."""
+    from monte_carlo.rng import SeededNormal
+
+    scenarios = [(dict(MC_BASE, simulations=2000), 42), (dict(MC_BASE, simulations=2000, spendingBasis="today"), 7),
+                 (dict(MC_BASE, simulations=500, volatility=25, yearsToRetirement=10), 4294967295),
+                 (dict(MC_BASE, simulations=300, currentPortfolio=20000, annualSpending=90000, pensionIncome=0), 0)]
+    browser = run_js("monte-carlo", [{"raw": raw, "seed": seed} for raw, seed in scenarios])
+    for (raw, seed), b in zip(scenarios, browser):
+        assert "error" not in b, b
+        desktop = mc_core.run_monte_carlo(mc_desktop_inputs(raw), normal=SeededNormal(seed))
+        s = b["summary"]
+        assert s["failedRuns"] == desktop.failed_simulations, (raw, seed)
+        assert s["draws"] == desktop.draws
+        assert math.isclose(s["medianFinal"]["nominal"], desktop.median_final_value, rel_tol=1e-9)
+        for year, band in enumerate(b["bands"]):
+            for key, series in (("p10", desktop.p10), ("p50", desktop.p50), ("p90", desktop.p90)):
+                assert math.isclose(band[key], float(series[year]), rel_tol=1e-9, abs_tol=1e-6), (seed, year, key)
+        for year, band in enumerate(b["real"]):
+            real = desktop.real(float(desktop.p50[year]), year)
+            assert math.isclose(band["p50"], real, rel_tol=1e-9, abs_tol=1e-6)
 
 
 # ---------------------------------------------------------------- Rebalancer

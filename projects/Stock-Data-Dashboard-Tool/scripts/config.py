@@ -9,14 +9,13 @@ SUPPORTED_CURRENCIES = ["USD", "CAD", "EUR", "GBP", "JPY", "AUD"]
 COMMON_BASE_CURRENCY = None
 FX_CONVERSION_ENABLED = False
 DEFAULT_CURRENCY = "USD"
-DEFAULT_RISK_FREE_RATE = 0.0
+DEFAULT_RISK_FREE_RATE = 0.0  # fraction per year; the window shows it in percent
 MAX_TICKERS = 20
 
 # FX normalization. The selector lets the user convert every security's price
 # series into one common currency before any metrics or charts are computed.
 NORMALIZATION_OFF_LABEL = "Off (native listing currency)"
-# Currencies offered for normalization. USD/CAD are the priority; EUR/GBP are
-# supported because Yahoo Finance exposes those FX pairs cleanly as `<from><to>=X`.
+# Currencies offered for normalization (official Bank of Canada daily rates).
 NORMALIZE_CURRENCY_OPTIONS = [NORMALIZATION_OFF_LABEL, "USD", "CAD", "EUR", "GBP"]
 
 

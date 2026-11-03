@@ -15,7 +15,9 @@ import pytest
 from cpi_config import ROOT, load_config
 from workbook_io import write_to_workbook
 
-CANONICAL_SHA256 = '7df41a06452c854b3a4f5536b7b648b64d936513a999a3c2eaa12cddc250f8c1'
+# Public copy: S&P 500 values, cached results and local metadata removed by
+# _tools/cpi_public_workbook.py (the private original is unchanged).
+CANONICAL_SHA256 = 'b7ac4aa590928c0fcd72bcf6f2009caec050355d456fb7b62b334c612ce1d040'
 
 def test_reference_schema_matches_default():
     config=load_config(ROOT/'scripts/config-default.toml')
@@ -121,6 +123,9 @@ def test_canonical_copy_preserves_model(tmp_path):
     target=tmp_path/'CPI-regression.xlsx'
     shutil.copy2(canonical,target)
     before=snapshot(target)
+    probe=openpyxl.load_workbook(target,read_only=True)
+    before_rows=probe['CPI_Downloader'].max_row
+    probe.close()
     config=load_config(ROOT/'scripts/config-default.toml')
     rows=[{'date':date(2024,m,1), **{c.id:float(i+m) for i,c in enumerate(config.columns) if c.id!='date'}} for m in (1,2)]
     try:
@@ -140,13 +145,16 @@ def test_canonical_copy_preserves_model(tmp_path):
         wb=openpyxl.load_workbook(target,data_only=False)
         ws=wb[config.sheet_name]
         assert tuple(ws.cell(1,c).value for c in range(1,20))==config.headers
-        for index,row in enumerate(rows,2):
+        dates=[ws.cell(r,1).value for r in range(2,ws.max_row+1)]
+        for row in rows:
+            index=2+[d.date() if hasattr(d,'date') else d for d in dates].index(row['date'])
             for col,value in enumerate(config.values(row),1):
                 actual=ws.cell(index,col).value
                 if isinstance(value,date):
                     actual=actual.date() if hasattr(actual,'date') else actual
                 assert actual==value
-        assert all(ws.cell(r,c).value is None for r in range(4,ws.max_row+1) for c in range(1,20))
+        # Merge: the two downloaded months are replaced, every other month is kept.
+        assert ws.max_row == before_rows
         assert tuple(c.id for c in config.columns[15:])==('us_treasury_10y_avg','us_treasury_2y_avg','us_pce_sa','us_core_pce_sa')
         wb.close()
     finally:

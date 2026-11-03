@@ -10,7 +10,7 @@
     <dt>Operating system</dt><dd>Windows 10 or 11, or macOS 12 or later.</dd>
     <dt>Python</dt><dd>You don't need to install it yourself. The launcher uses an existing Python {{ p.python }} (with tkinter) or offers to install one for your user account only.</dd>
     <dt>Administrator rights</dt><dd>Not needed. Nothing is installed for all users.</dd>
-    <dt>Internet</dt><dd>Needed for the first setup (to download Python packages){% if include.live %} and for live Yahoo Finance data{% endif %}.</dd>
+    <dt>Internet</dt><dd>Needed for the first setup (to download Python packages){% if include.live %} and for prices from the provider you choose with your own key{% endif %}.</dd>
     <dt>Disk space</dt><dd>About {{ include.disk | default: "400 MB" }} for the private Python environment inside the folder.</dd>
   </dl>
   <p class="muted">Only want to try it? The <a href="{{ p.page | relative_url }}#web-app">web version</a> runs in your browser with nothing to install.</p>

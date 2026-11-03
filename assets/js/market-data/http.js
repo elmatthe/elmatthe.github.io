@@ -9,9 +9,14 @@ export const DEFAULT_TIMEOUT_MS = 10000;
 export const DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
 
 // kind: network | timeout | http | rate_limited | invalid | not_found | aborted | auth |
-//       unavailable | not_configured | too_large
+//       unavailable | not_configured | too_large | key_changed | entitlement |
+//       not_covered | ambiguous | currency_mismatch | provider_notice | superseded |
+//       budget_withheld | stale
+// rate_limited carries quotaScope: "burst" | "minute" | "daily" | "monthly" | "unknown".
+// A burst or per-minute throttle is transient; only a daily or monthly limit stops a
+// provider until its reset, and only when the provider's own wording says so.
 export class DataError extends Error {
-  constructor(message, { kind = "network", status = null, definitive = false, provider = null, retryAfterMs = null, attempts = [] } = {}) {
+  constructor(message, { kind = "network", status = null, definitive = false, provider = null, retryAfterMs = null, attempts = [], quotaScope = null, notice = null, hint = null, instrument = null, retryable = null } = {}) {
     super(message);
     this.name = "DataError";
     this.kind = kind;
@@ -20,12 +25,37 @@ export class DataError extends Error {
     this.provider = provider;
     this.retryAfterMs = retryAfterMs;
     this.attempts = attempts;
+    this.quotaScope = quotaScope;
+    this.notice = notice; // the provider's own wording, key redacted, at most 400 characters
+    this.hint = hint; // what the user can do about it
+    this.instrument = instrument;
+    this.explicitRetryable = retryable;
+  }
+
+  get retryable() { return this.explicitRetryable ?? isRetryable(this); }
+
+  // The shared DataError contract (md.data-error.v1), the same shape the desktop apps produce.
+  toContract() {
+    const kind = this.kind === "rate_limited" ? `quota_${this.quotaScope || "unknown"}` : this.kind === "aborted" ? "cancelled" : this.kind;
+    return {
+      schema: "md.data-error.v1",
+      kind,
+      provider: this.provider,
+      affectedInstrument: this.instrument,
+      retryable: this.retryable,
+      retryAfterMs: Number.isFinite(this.retryAfterMs) ? this.retryAfterMs : null,
+      redactedNotice: this.notice,
+      resolutionHint: this.hint,
+      quotaScope: this.quotaScope,
+      message: this.message,
+    };
   }
 }
 
 export function isRetryable(error) {
   if (!(error instanceof DataError) || error.definitive) return false;
-  return ["network", "timeout", "rate_limited", "unavailable"].includes(error.kind);
+  if (error.kind === "rate_limited") return error.quotaScope !== "daily" && error.quotaScope !== "monthly";
+  return ["network", "timeout", "unavailable", "provider_notice"].includes(error.kind);
 }
 
 export function parseRetryAfter(value, now = Date.now()) {
@@ -109,7 +139,7 @@ export async function fetchText(url, { fetchImpl = globalThis.fetch, signal, tim
 export function httpError(status, { provider = null, headers = null, text = "" } = {}) {
   const lower = String(text).slice(0, 300).toLowerCase();
   if (status === 429 || lower.includes("too many requests") || lower.includes("rate limit")) {
-    return new DataError("rate limited by the data provider", { kind: "rate_limited", status, provider, retryAfterMs: parseRetryAfter(headers?.get?.("retry-after")) });
+    return new DataError("rate limited by the data provider", { kind: "rate_limited", quotaScope: "unknown", status, provider, retryAfterMs: parseRetryAfter(headers?.get?.("retry-after")) });
   }
   if (status === 404) return new DataError("not found", { kind: "not_found", status, provider });
   if (status === 401 || status === 403) return new DataError(`access refused (HTTP ${status})`, { kind: "http", status, provider });

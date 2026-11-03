@@ -10,9 +10,9 @@ last_updated: 2026-11-02
 page_css:
   - /assets/css/stock-dashboard.css
 vendor_js:
-  # Chart.js 4.4.2 as published to npm (dist/chart.umd.js is its minified build);
-  # the hash was checked against the npm tarball. Update both together.
-  - src: https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.js
+  # Chart.js 4.4.2 (MIT), self-hosted: dist/chart.umd.js copied unmodified from the npm
+  # tarball (tarball sha512 matched the registry). Update the file and hash together.
+  - src: /assets/vendor/chart.js/4.4.2/chart.umd.js
     integrity: sha384-zuFoHkJ6+XzUchVtS39qBWxb+LvdA7aQ/ze8jYdufBf/A1jeuKGDBg4crfxvZAr8
 page_js:
   - /assets/js/stock-dashboard/app.js
@@ -116,6 +116,7 @@ sections:
             <button id="sddCancelCompare" type="button" class="secondary" disabled>Cancel</button>
           </div>
         </form>
+        <p id="sddEstimate" class="muted"></p>
         <p id="sddCompareStatus" class="sdd-status" role="status" aria-live="polite">Ready. Enter 2–10 tickers and run the comparison.</p>
         <progress id="sddCompareProgress" max="100" value="0" aria-label="Comparison progress"></progress>
         <ul id="sddTickerProgress" class="sdd-progress-list" aria-label="Per-ticker fetch status"></ul>
@@ -228,7 +229,7 @@ sections:
       <div class="sdd-panel">
         <h3>Where the data comes from</h3>
         <ul class="sdd-list">
-          <li><strong>Live:</strong> Alpha Vantage with your key. Requests run one at a time, about a second apart. Each new ticker costs two requests: one to look up its listing currency and one for prices.</li>
+          <li><strong>Live:</strong> Alpha Vantage with your key. Requests run one at a time, at least 1.2 seconds apart, across every open tab of this site. A new ticker costs two or three requests (a listing search to confirm its currency, occasionally a second search, then its prices); data saved in this browser costs none. Alpha Vantage's free plan allows 25 requests per day.</li>
           <li><strong>CSV:</strong> files you open are read in this browser and never uploaded.</li>
           <li><strong>Exchange rates</strong> for normalization: Bank of Canada daily averages; if those cannot be reached, the European Central Bank's reference rates. Both are official and need no key.</li>
           <li><strong>Demo:</strong> synthetic prices generated from a fixed seed; not market data.</li>
@@ -267,14 +268,14 @@ sections:
   <p>The two versions share a purpose, not code. Their numbers can differ slightly because they use different return conventions.</p>
   <div class="pj-table-wrap">
     <table class="pj-table">
-      <caption class="muted" style="caption-side:bottom;text-align:left;padding:.5rem .75rem;">The desktop app uses Yahoo Finance through <code>yfinance</code> on your own computer, for personal use under Yahoo's terms.</caption>
+      <caption class="muted" style="caption-side:bottom;text-align:left;padding:.5rem .75rem;">Both use only sources you choose with your own key, or your own files. The desktop app no longer uses Yahoo Finance (<code>yfinance</code>): Yahoo's terms do not permit automated collection.</caption>
       <thead><tr><th scope="col">Capability</th><th scope="col">Web app</th><th scope="col">Desktop app</th></tr></thead>
       <tbody>
         <tr><th scope="row">Install needed</th><td>None</td><td>ZIP + one launcher (sets itself up)</td></tr>
-        <tr><th scope="row">Price data</th><td>Your CSV files, or Alpha Vantage with your own key (daily or weekly adjusted)</td><td>Yahoo Finance via <code>yfinance</code>, or your own CSV files offline</td></tr>
+        <tr><th scope="row">Price data</th><td>Your CSV files, or Alpha Vantage with your own key (daily or weekly adjusted)</td><td>Alpha Vantage, Marketstack or Alpaca with your own key (daily, close and adjusted close where the provider has it), or your own CSV files offline</td></tr>
         <tr><th scope="row">Returns</th><td>Log returns on exact shared intervals; daily, weekly or monthly</td><td>Simple or log returns; daily, weekly or monthly frequency</td></tr>
         <tr><th scope="row">Annualization</th><td>exp(mean × P) − 1; stdev × √P (P = 252, 52 or 12)</td><td>Geometric compounding of total return; stdev × √periods</td></tr>
-        <tr><th scope="row">Currency normalization</th><td>Bank of Canada daily rates (ECB fallback)</td><td>Yahoo <code>=X</code> FX pairs, or <code>fx_rates.csv</code> offline</td></tr>
+        <tr><th scope="row">Currency normalization</th><td>Bank of Canada daily rates (ECB fallback)</td><td>Bank of Canada daily rates (latest fixing on or before each date, at most 7 days old), or <code>fx_rates.csv</code> offline</td></tr>
         <tr><th scope="row">Charts</th><td>Indexed price, drawdown, cumulative return, risk/return</td><td>Adds rolling volatility and rolling correlation</td></tr>
         <tr><th scope="row">Exports</th><td>XLSX, CSV, JSON</td><td>Excel, CSV, and JPG chart images</td></tr>
         <tr><th scope="row">Offline use</th><td>Your CSV files, or the synthetic demo</td><td>Real data from your own CSV files</td></tr>

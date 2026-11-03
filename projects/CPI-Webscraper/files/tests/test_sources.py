@@ -101,3 +101,84 @@ def test_csv_failure_reports_excel_success(monkeypatch):
     monkeypatch.setattr(app,'write_to_csv',Mock(side_effect=OSError()))
     with pytest.raises(ValueError,match='Excel was saved successfully'):
         app.download('2024-01','2024-02','placeholder','model.xlsx','output.csv')
+
+
+def test_end_month_is_clamped_to_the_current_month():
+    today = date(2026, 11, 3)
+    assert ds.normalize_range('2026-01', '9998-12', today=today) == ('2026-01', '2026-11')
+    assert ds.normalize_range('2026-11', '2026-11', True, today=today) == ('2026-11', '2026-11')
+    with pytest.raises(ValueError, match='in the future'):
+        ds.normalize_range('2027-01', '2027-02', today=today)
+    with pytest.raises(ValueError, match='YYYY-MM'):
+        ds.normalize_range('2026-13', '2026-12', today=today)
+    start, end, note = app.parse_months('range', '2026', '1', '9999', '12', today=today)
+    assert (start, end) == ('2026-01', '2026-11') and 'current month' in note and 'left blank' in note
+
+
+@pytest.mark.parametrize('status,retried,message', [
+    (400, False, 'FRED rejected the request (HTTP 400). Check that your FRED API key is correct'),
+    (403, False, 'FRED rejected the request (HTTP 403)'),
+    (404, False, 'series was not found'),
+    (429, True, 'too many requests (HTTP 429)'),
+    (500, True, 'request failed after bounded retries (HTTP 500)'),
+])
+def test_client_errors_are_not_retried_and_are_explained(monkeypatch, status, retried, message):
+    response = Mock(status_code=status)
+    response.raise_for_status.side_effect = requests.HTTPError('https://example.invalid/?api_key=sensitive-placeholder')
+    get = Mock(return_value=response)
+    monkeypatch.setattr(ds.requests, 'get', get)
+    monkeypatch.setattr(ds.time, 'sleep', lambda _: None)
+    with pytest.raises(ds.SourceError) as error:
+        ds.fetch_fred_monthly('GS10', '2024-01', '2024-01', 'sensitive-placeholder')
+    assert message in str(error.value) and 'sensitive-placeholder' not in str(error.value)
+    assert get.call_count == (3 if retried else 1)
+
+
+def test_statcan_lock_window_message(monkeypatch):
+    response = Mock(status_code=409)
+    response.raise_for_status.side_effect = requests.HTTPError('locked')
+    monkeypatch.setattr(ds.requests, 'get', Mock(return_value=response))
+    monkeypatch.setattr(ds.time, 'sleep', lambda _: None)
+    with pytest.raises(ds.SourceError, match='Statistics Canada is updating its tables'):
+        ds.fetch_statcan_vector_range(41690973, '2024-01', '2024-01')
+
+
+def _fake_sources(monkeypatch, calls):
+    def statcan(vector, start, end, max_retries=3):
+        ds._before_request('Statistics Canada')
+        return {m: 100.0 for m in ds.month_range(start, end)}
+    def fred(series, start, end, key, daily=False, max_retries=3):
+        ds._before_request('FRED ' + series)
+        calls.append(series)
+        return {m: 1.0 for m in ds.month_range(start, end)}
+    monkeypatch.setattr(ds, 'fetch_statcan_vector_range', statcan)
+    monkeypatch.setattr(ds, 'fetch_fred', fred)
+
+
+def test_current_month_end_of_month_values_are_left_blank(monkeypatch):
+    _fake_sources(monkeypatch, [])
+    rows = ds.build_rows('2026-10', '2026-11', 'placeholder', today=date(2026, 11, 3))
+    october, november = rows
+    assert october['us_sp500_eom'] == 1.0 and october['us_10y2y_eom'] == 1.0
+    assert november['us_sp500_eom'] is None and november['us_fed_funds_eom'] is None and november['us_10y2y_eom'] is None
+    assert november['us_cpi_headline_nsa'] == 1.0 and november['ca_cpi_headline_nsa'] == 100.0
+
+
+def test_progress_and_cancel(monkeypatch):
+    calls = []
+    _fake_sources(monkeypatch, calls)
+    seen = []
+    ds.build_rows('2024-01', '2024-02', 'placeholder', progress=lambda done, total, source: seen.append((done, total)), today=date(2026, 11, 3))
+    assert seen[-1] == (18, 18) and ds.request_count('2024-01', '2024-02') == 18
+    with pytest.raises(ds.Cancelled):
+        ds.build_rows('2024-01', '2024-02', 'placeholder', cancel=lambda: len(calls) >= 3, today=date(2026, 11, 3))
+
+
+def test_yahoo_backfill_is_disabled_before_any_request(monkeypatch):
+    config = load_config(ROOT/'scripts/config-default.toml')
+    monkeypatch.setattr(app, 'load_config', lambda: Config(config.sheet_name, '', config.columns, True))
+    build = Mock()
+    monkeypatch.setattr(app, 'build_rows', build)
+    with pytest.raises(ValueError, match='Yahoo Finance S&P 500 backfill'):
+        app.download('2024-01', '2024-02', 'placeholder', 'model.xlsx')
+    build.assert_not_called()

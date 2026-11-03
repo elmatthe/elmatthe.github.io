@@ -37,11 +37,14 @@ def align_price_series(price_frames: dict[str, pd.DataFrame], price_column: str)
     return pd.concat(series_by_ticker, axis=1).sort_index().dropna(how="all")
 
 
-def align_fx_rate(fx_series: pd.Series, target_index: pd.Index) -> pd.Series:
-    """Align an FX-rate series to price dates, forward-filling missing days.
+FX_MAX_AGE_DAYS = 7
 
-    Leading gaps are back-filled so an early price date that predates the first
-    available FX quote still receives the nearest known rate instead of NaN.
+
+def align_fx_rate(fx_series: pd.Series, target_index: pd.Index, max_age_days: int = FX_MAX_AGE_DAYS) -> pd.Series:
+    """Align an FX-rate series to price dates using the latest fixing ON OR BEFORE each date.
+
+    A fixing older than `max_age_days` is not used, and nothing is back-filled: a price
+    dated before the first available fixing gets no rate (no look-ahead, D6).
     """
     rate = pd.to_numeric(pd.Series(fx_series), errors="coerce")
     rate.index = pd.to_datetime(rate.index)
@@ -49,16 +52,20 @@ def align_fx_rate(fx_series: pd.Series, target_index: pd.Index) -> pd.Series:
     target_index = pd.to_datetime(pd.Index(target_index))
     if rate.empty:
         return pd.Series([float("nan")] * len(target_index), index=target_index)
-    union_index = rate.index.union(target_index)
-    aligned = rate.reindex(union_index).sort_index().ffill().bfill()
-    return aligned.reindex(target_index)
+    fixings = pd.DataFrame({"fix_date": rate.index, "rate": rate.to_numpy()})
+    targets = pd.DataFrame({"date": target_index}).reset_index()
+    merged = pd.merge_asof(targets.sort_values("date"), fixings, left_on="date", right_on="fix_date", direction="backward")
+    stale = (merged["date"] - merged["fix_date"]).dt.days > max_age_days
+    merged.loc[stale, "rate"] = float("nan")
+    merged = merged.sort_values("index")
+    return pd.Series(merged["rate"].to_numpy(), index=target_index)
 
 
 def convert_price_frame(frame: pd.DataFrame, fx_rate: pd.Series) -> pd.DataFrame:
     """Multiply a price frame's price columns by an aligned FX rate.
 
     `fx_rate` is expressed as target-currency units per one unit of the security's
-    native currency (Yahoo `<native><target>=X`), so multiplying converts prices
+    native currency (from Bank of Canada fixings), so multiplying converts prices
     into the target currency before any returns are derived.
     """
     converted = frame.copy()
@@ -66,7 +73,9 @@ def convert_price_frame(frame: pd.DataFrame, fx_rate: pd.Series) -> pd.DataFrame
     for column in ("Close", "Adj Close"):
         if column in converted.columns:
             converted[column] = pd.to_numeric(converted[column], errors="coerce") * rate.to_numpy()
-    return converted
+    # Prices without a usable fixing are dropped, never kept unconverted.
+    converted.attrs["fx_dropped"] = int(rate.isna().sum())
+    return converted.loc[rate.notna().to_numpy()]
 
 
 def normalize_price_frames_to_currency(
@@ -93,9 +102,7 @@ def normalize_price_frames_to_currency(
     for ticker, frame in price_frames.items():
         native = str(currencies.get(ticker) or "").strip().upper()
         if not native:
-            converted[ticker] = frame
-            result_currencies[ticker] = ""
-            warnings.append(f"{ticker}: listing currency unknown; left unconverted for {target} normalization.")
+            warnings.append(f"{ticker}: listing currency unknown, so it cannot be converted to {target}; left out of the normalized comparison.")
             continue
         if native == target:
             converted[ticker] = frame
@@ -103,23 +110,37 @@ def normalize_price_frames_to_currency(
             continue
         rate = fx_rate_provider(native, target)
         if rate is None or pd.Series(rate).dropna().empty:
-            converted[ticker] = frame
-            result_currencies[ticker] = native
-            warnings.append(f"FX rates unavailable for {native}->{target}; {ticker} shown in {native}.")
+            warnings.append(f"Official exchange rates are unavailable for {native}->{target}; {ticker} is left out of the normalized comparison (never mixed in unconverted).")
             continue
-        converted[ticker] = convert_price_frame(frame, pd.Series(rate))
+        result = convert_price_frame(frame, pd.Series(rate))
+        if result.attrs.get("fx_dropped"):
+            warnings.append(f"{ticker}: {result.attrs['fx_dropped']} price(s) had no {native}->{target} fixing within {FX_MAX_AGE_DAYS} days before them and were dropped.")
+        if len(result) < 2:
+            warnings.append(f"{ticker}: too few prices remain after conversion; left out.")
+            continue
+        converted[ticker] = result
         result_currencies[ticker] = target
     return converted, warnings, result_currencies
 
 
 def compute_returns(prices: pd.DataFrame, return_type: str = "simple") -> pd.DataFrame:
-    """Compute simple or log returns."""
-    cleaned = prices.astype(float).replace([np.inf, -np.inf], np.nan)
-    if return_type.strip().lower().startswith("log"):
-        returns = np.log(cleaned / cleaned.shift(1))
-    else:
-        returns = cleaned.pct_change(fill_method=None)
-    return returns.replace([np.inf, -np.inf], np.nan).dropna(how="all")
+    """Simple or log returns, computed on EACH ticker's own price series (D1).
+
+    Tickers on different exchange calendars are not forced onto one union of dates:
+    a holiday on one exchange no longer removes the other tickers' returns.
+    """
+    columns = {}
+    for ticker in prices.columns:
+        series = pd.to_numeric(prices[ticker], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+        series = series[series > 0]
+        if return_type.strip().lower().startswith("log"):
+            r = np.log(series / series.shift(1))
+        else:
+            r = series / series.shift(1) - 1
+        columns[ticker] = r.dropna()
+    if not columns:
+        return pd.DataFrame()
+    return pd.concat(columns, axis=1).sort_index().dropna(how="all")
 
 
 def compute_max_drawdown(price_series: pd.Series) -> float:
@@ -146,7 +167,9 @@ def compute_dashboard_metrics(
     """Return per-ticker performance and risk metrics."""
     rows = []
     risk_free_rate_per_period = risk_free_rate / periods_per_year if periods_per_year else 0.0
-    full_observations = max(len(prices.index), 1)
+    window_start = prices.index.min() if len(prices.index) else None
+    window_end = prices.index.max() if len(prices.index) else None
+    slack = pd.Timedelta(days={252: 7, 52: 10, 12: 35}.get(periods_per_year, 7))
 
     for ticker in prices.columns:
         price_series = pd.to_numeric(prices[ticker], errors="coerce").dropna()
@@ -160,7 +183,15 @@ def compute_dashboard_metrics(
         volatility = float(return_series.std(ddof=1) * math.sqrt(periods_per_year)) if observations > 1 else float("nan")
         excess_mean = return_series.mean() - risk_free_rate_per_period if observations else float("nan")
         sharpe = float(excess_mean / return_series.std(ddof=1) * math.sqrt(periods_per_year)) if observations > 1 and return_series.std(ddof=1) != 0 else float("nan")
-        completeness = len(price_series) / full_observations
+        # Coverage of the comparison window, judged on this ticker's own calendar.
+        if price_series.empty:
+            coverage = "No data"
+        elif price_series.index.min() > window_start + slack:
+            coverage = f"Partial: from {price_series.index.min().date()}"
+        elif price_series.index.max() < window_end - slack:
+            coverage = f"Partial: to {price_series.index.max().date()}"
+        else:
+            coverage = "Complete"
 
         rows.append(
             {
@@ -171,7 +202,7 @@ def compute_dashboard_metrics(
                 "Sharpe Ratio": sharpe,
                 "Max Drawdown": compute_max_drawdown(price_series),
                 "Observations": observations,
-                "Data Completeness": "Complete" if completeness >= 0.98 else f"{completeness:.1%}",
+                "Data Completeness": coverage,
                 "Currency": prices.attrs.get("currencies", {}).get(ticker, ""),
             }
         )
@@ -179,8 +210,20 @@ def compute_dashboard_metrics(
     return pd.DataFrame(rows, columns=REQUIRED_METRIC_COLUMNS)
 
 
+MIN_CORRELATION_OBSERVATIONS = 3
+MIN_RETURN_STDEV = 1e-9
+
+
 def compute_correlation_matrix(returns: pd.DataFrame) -> pd.DataFrame:
-    return returns.corr()
+    """Pairwise correlation over shared return dates; at least 3 shared returns (D8),
+    and none for a series without variance."""
+    corr = returns.corr(min_periods=MIN_CORRELATION_OBSERVATIONS)
+    for ticker in returns.columns:
+        values = returns[ticker].dropna()
+        if len(values) < 2 or values.std(ddof=1) <= MIN_RETURN_STDEV:
+            corr.loc[ticker, :] = float("nan")
+            corr.loc[:, ticker] = float("nan")
+    return corr
 
 
 def run_pairwise_regression(
@@ -203,8 +246,11 @@ def run_pairwise_regression(
     y = df.iloc[:, 0].astype(float) - risk_free_rate_per_period
     x = df.iloc[:, 1].astype(float) - risk_free_rate_per_period
     x_var = ((x - x.mean()) ** 2).sum()
-    if x_var == 0:
-        raise ValueError("Regression x-series has no variance.")
+    if not x.std(ddof=1) > MIN_RETURN_STDEV:
+        # A constant benchmark has no beta; report it instead of aborting the run (D4).
+        return {"alpha": float("nan"), "beta": float("nan"), "r_squared": float("nan"), "beta_standard_error": float("nan"),
+                "beta_t_stat": float("nan"), "beta_p_value": float("nan"), "observations": int(len(df)),
+                "note": "The benchmark's returns have no variance, so beta and alpha are not defined."}
 
     beta = float(((x - x.mean()) * (y - y.mean())).sum() / x_var)
     alpha = float(y.mean() - beta * x.mean())

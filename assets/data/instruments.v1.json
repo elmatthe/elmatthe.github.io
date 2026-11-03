@@ -1,0 +1,153 @@
+{
+  "schema": "md.instrument-reference.v1",
+  "version": "2026-11-03.1",
+  "purpose": "Identity facts only (listing venue, symbol, name, quote currency and unit) for the Portfolio Rebalancer's sample holdings, with the source that supports each fact. This file contains NO prices or other market data. Quotes always come from a market-data provider at the time of use.",
+  "evidenceLevels": {
+    "confirmed": "Stated by the issuer or the listing exchange.",
+    "secondary": "Stated by a regulator filing summary, an aggregator or news source; not yet checked against the issuer or exchange.",
+    "audit": "Checked in the 2026-11-03 engineering audit (Appendix B, ticker identity) against the sources listed there."
+  },
+  "venues": {
+    "US":   { "name": "US exchange (NYSE, Nasdaq, NYSE Arca or Cboe BZX)", "country": "US", "currency": "USD", "quoteUnit": "major", "timeZone": "America/New_York", "suffixes": [""], "currencyRule": "Securities listed on US national exchanges are quoted in US dollars." },
+    "XNYS": { "name": "New York Stock Exchange", "country": "US", "currency": "USD", "quoteUnit": "major", "timeZone": "America/New_York", "suffixes": [], "parent": "US" },
+    "XNAS": { "name": "Nasdaq", "country": "US", "currency": "USD", "quoteUnit": "major", "timeZone": "America/New_York", "suffixes": [], "parent": "US" },
+    "XTSE": { "name": "Toronto Stock Exchange", "country": "CA", "currency": "CAD", "quoteUnit": "major", "timeZone": "America/Toronto", "suffixes": [".TO"], "currencyRule": "Most TSX listings trade in CAD, but some units trade in USD (for example '.U' lines), so the currency must be confirmed per listing." },
+    "XTSX": { "name": "TSX Venture Exchange", "country": "CA", "currency": "CAD", "quoteUnit": "major", "timeZone": "America/Toronto", "suffixes": [".V"] },
+    "NEOE": { "name": "Cboe Canada (formerly NEO Exchange)", "country": "CA", "currency": "CAD", "quoteUnit": "major", "timeZone": "America/Toronto", "suffixes": [".NE", ".NEO"], "note": "Some brokers display Cboe Canada listings with a '.TO' suffix. That does not make them TSX listings." },
+    "XCNQ": { "name": "Canadian Securities Exchange", "country": "CA", "currency": "CAD", "quoteUnit": "major", "timeZone": "America/Toronto", "suffixes": [".CN"] },
+    "XLON": { "name": "London Stock Exchange", "country": "GB", "currency": "GBP", "quoteUnit": "minor", "timeZone": "Europe/London", "suffixes": [".L"], "currencyRule": "LSE equities are normally quoted in pence (GBX / GBp = 1/100 GBP); some ETFs and international lines quote in GBP, USD or EUR." },
+    "XETR": { "name": "Xetra (Deutsche Börse)", "country": "DE", "currency": "EUR", "quoteUnit": "major", "timeZone": "Europe/Berlin", "suffixes": [".DE"] },
+    "XFRA": { "name": "Frankfurt Stock Exchange", "country": "DE", "currency": "EUR", "quoteUnit": "major", "timeZone": "Europe/Berlin", "suffixes": [".F"] },
+    "XPAR": { "name": "Euronext Paris", "country": "FR", "currency": "EUR", "quoteUnit": "major", "timeZone": "Europe/Paris", "suffixes": [".PA"] },
+    "XAMS": { "name": "Euronext Amsterdam", "country": "NL", "currency": "EUR", "quoteUnit": "major", "timeZone": "Europe/Amsterdam", "suffixes": [".AS"] },
+    "XMIL": { "name": "Borsa Italiana", "country": "IT", "currency": "EUR", "quoteUnit": "major", "timeZone": "Europe/Rome", "suffixes": [".MI"] },
+    "XSWX": { "name": "SIX Swiss Exchange", "country": "CH", "currency": "CHF", "quoteUnit": "major", "timeZone": "Europe/Zurich", "suffixes": [".SW"] },
+    "XTKS": { "name": "Tokyo Stock Exchange", "country": "JP", "currency": "JPY", "quoteUnit": "major", "timeZone": "Asia/Tokyo", "suffixes": [".T"] },
+    "XSHG": { "name": "Shanghai Stock Exchange", "country": "CN", "currency": "CNY", "quoteUnit": "major", "timeZone": "Asia/Shanghai", "suffixes": [".SS"], "currencyRule": "A-shares trade in CNY (onshore renminbi), not CNH." },
+    "XSHE": { "name": "Shenzhen Stock Exchange", "country": "CN", "currency": "CNY", "quoteUnit": "major", "timeZone": "Asia/Shanghai", "suffixes": [".SZ"] },
+    "XHKG": { "name": "Hong Kong Stock Exchange", "country": "HK", "currency": "HKD", "quoteUnit": "major", "timeZone": "Asia/Hong_Kong", "suffixes": [".HK"], "currencyRule": "Most counters trade in HKD; dual-counter RMB lines exist." },
+    "XASX": { "name": "Australian Securities Exchange", "country": "AU", "currency": "AUD", "quoteUnit": "major", "timeZone": "Australia/Sydney", "suffixes": [".AX"] },
+    "XBOM": { "name": "BSE (Bombay Stock Exchange)", "country": "IN", "currency": "INR", "quoteUnit": "major", "timeZone": "Asia/Kolkata", "suffixes": [".BO"] }
+  },
+  "instruments": [
+    {
+      "id": "XTSE:VEQT", "localSymbol": "VEQT", "mic": "XTSE",
+      "name": "Vanguard All-Equity ETF Portfolio", "issuer": "Vanguard Investments Canada Inc.", "type": "etf",
+      "currency": "CAD", "quoteUnit": "major", "aliases": ["VEQT.TO"],
+      "evidence": [{ "level": "audit", "source": "Vanguard Canada product page (VEQT)", "url": "https://www.vanguard.ca/" }],
+      "verifiedAt": "2026-11-03"
+    },
+    {
+      "id": "XTSE:CNQ", "localSymbol": "CNQ", "mic": "XTSE",
+      "name": "Canadian Natural Resources Limited", "issuer": "Canadian Natural Resources Limited", "type": "equity",
+      "currency": "CAD", "quoteUnit": "major", "aliases": ["CNQ.TO"],
+      "notes": ["The NYSE line 'CNQ' is the same company in USD. It is a different listing and is never substituted."],
+      "evidence": [{ "level": "audit", "source": "Issuer investor relations; TSX listing", "url": "https://www.cnrl.com/investor-information/" }],
+      "verifiedAt": "2026-11-03"
+    },
+    {
+      "id": "XTSE:XQQ", "localSymbol": "XQQ", "mic": "XTSE",
+      "name": "iShares NASDAQ 100 Index ETF (CAD-Hedged)", "issuer": "BlackRock Asset Management Canada Limited", "type": "etf",
+      "currency": "CAD", "quoteUnit": "major", "aliases": ["XQQ.TO"],
+      "notes": ["CAD-hedged. A 3-for-1 unit split in 2024 is reported by secondary sources; price history must be split-adjusted."],
+      "evidence": [{ "level": "audit", "source": "BlackRock Canada ETF Facts (XQQ)", "url": "https://www.blackrock.com/ca/investors/en" }],
+      "verifiedAt": "2026-11-03"
+    },
+    {
+      "id": "XTSE:HEWB", "localSymbol": "HEWB", "mic": "XTSE",
+      "name": "Global X Equal Weight Canadian Banks Index Corporate Class ETF", "issuer": "Global X Investments Canada Inc.", "type": "etf",
+      "currency": "CAD", "quoteUnit": "major", "aliases": ["HEWB.TO"],
+      "notes": ["Corporate-class ETF using a total-return swap; it pays no regular distributions."],
+      "evidence": [{ "level": "audit", "source": "Global X product sheet (HEWB)", "url": "https://assets.globalx.ca/product_sheet/en/hewb.pdf" }],
+      "verifiedAt": "2026-11-03"
+    },
+    {
+      "id": "XNAS:AAPL", "localSymbol": "AAPL", "mic": "XNAS",
+      "name": "Apple Inc.", "issuer": "Apple Inc.", "type": "equity",
+      "currency": "USD", "quoteUnit": "major", "aliases": ["AAPL"],
+      "notes": ["The TSX symbol 'AAPL' is an Apple Canadian Depositary Receipt (CAD-hedged). It is a different instrument and is never substituted."],
+      "evidence": [{ "level": "audit", "source": "Apple investor relations (Nasdaq: AAPL)", "url": "https://investor.apple.com/" }],
+      "verifiedAt": "2026-11-03"
+    },
+    {
+      "id": "XTSE:VFV", "localSymbol": "VFV", "mic": "XTSE",
+      "name": "Vanguard S&P 500 Index ETF", "issuer": "Vanguard Investments Canada Inc.", "type": "etf",
+      "currency": "CAD", "quoteUnit": "major", "aliases": ["VFV.TO"],
+      "evidence": [{ "level": "audit", "source": "Vanguard Canada product page (VFV)", "url": "https://www.vanguard.ca/" }],
+      "verifiedAt": "2026-11-03"
+    },
+    {
+      "id": "XNAS:SPCX", "localSymbol": "SPCX", "mic": "XNAS",
+      "name": "Space Exploration Technologies Corp. Class A", "issuer": "Space Exploration Technologies Corp.", "type": "equity",
+      "currency": "USD", "quoteUnit": "major", "aliases": ["SPCX"], "listedFrom": "2026-06-12",
+      "notes": [
+        "Reused ticker: a different security (Tuttle Capital's SPAC ETF) used 'SPCX' until 2026-04-06. Price history before 2026-06-12 belongs to that other security.",
+        "The TSX symbol 'SPCX' is a CIBC Canadian Depositary Receipt, a different instrument that is never substituted."
+      ],
+      "evidence": [{ "level": "secondary", "source": "IPO pricing announcement and Nasdaq debut reports (audit Appendix B); re-verify against the issuer's SEC filings", "url": "https://irei.com/news/space-exploration-technologies-corp-announces-pricing-of-initial-public-offering/" }],
+      "verifiedAt": "2026-11-03"
+    },
+    {
+      "id": "XNAS:CBRS", "localSymbol": "CBRS", "mic": "XNAS",
+      "name": "Cerebras Systems Inc. Class A", "issuer": "Cerebras Systems Inc.", "type": "equity",
+      "currency": "USD", "quoteUnit": "major", "aliases": ["CBRS"], "listedFrom": "2026-05-14",
+      "notes": [
+        "Recent IPO: no price history before 2026-05-14.",
+        "The TSX symbol 'CBRS' is a Canadian Depositary Receipt and the Xetra symbol 'CBRS' is an unrelated ETF; neither is substituted."
+      ],
+      "evidence": [{ "level": "secondary", "source": "IPO pricing reports (StorageNewsletter, 2026-05-18; audit Appendix B); re-verify against the issuer's SEC filings", "url": null }],
+      "verifiedAt": "2026-11-03"
+    },
+    {
+      "id": "NEOE:YNVD", "localSymbol": "YNVD", "mic": "NEOE",
+      "name": "NVIDIA (NVDA) Yield Shares Purpose ETF", "issuer": "Purpose Investments Inc.", "type": "etf",
+      "currency": "CAD", "quoteUnit": "major", "aliases": ["YNVD.TO", "YNVD.NE", "YNVD.NEO"],
+      "aliasNotes": { "YNVD.TO": "Symbol as displayed by Questrade. The ETF is listed on Cboe Canada, not on the Toronto Stock Exchange; the display symbol is kept exactly as entered." },
+      "notes": ["Covered-call ETF on NVIDIA with up to 25% leverage, CAD-hedged. Listed on Cboe Canada since 2024-01-18."],
+      "evidence": [
+        { "level": "confirmed", "source": "Purpose Investments fund page", "url": "https://www.purposeinvest.com/funds/nvidia-yield-shares-purpose-etf" },
+        { "level": "confirmed", "source": "Cboe Canada security page", "url": "https://www.cboe.com/markets/ca/equities/securities/YNVD/" }
+      ],
+      "verifiedAt": "2026-11-03"
+    },
+    {
+      "id": "XNYS:VST", "localSymbol": "VST", "mic": "XNYS",
+      "name": "Vistra Corp.", "issuer": "Vistra Corp.", "type": "equity",
+      "currency": "USD", "quoteUnit": "major", "aliases": ["VST"],
+      "evidence": [{ "level": "audit", "source": "Issuer investor relations (NYSE: VST)", "url": "https://investor.vistracorp.com/" }],
+      "verifiedAt": "2026-11-03"
+    },
+    {
+      "id": "XTKS:7203", "localSymbol": "7203", "mic": "XTKS",
+      "name": "Toyota Motor Corporation", "issuer": "Toyota Motor Corporation", "type": "equity",
+      "currency": "JPY", "quoteUnit": "major", "aliases": ["7203.T"],
+      "notes": ["The NYSE ADR 'TM' (1 ADS = 10 shares, USD) is a different instrument and is not a JPY test."],
+      "evidence": [{ "level": "audit", "source": "Toyota investor relations (TSE: 7203)", "url": "https://global.toyota/en/ir/" }],
+      "verifiedAt": "2026-11-03"
+    },
+    {
+      "id": "XETR:SAP", "localSymbol": "SAP", "mic": "XETR",
+      "name": "SAP SE", "issuer": "SAP SE", "type": "equity",
+      "currency": "EUR", "quoteUnit": "major", "aliases": ["SAP.DE"],
+      "notes": ["The TSX symbol 'SAP' is Saputo Inc., an unrelated company. The NYSE 'SAP' line is an ADR in USD."],
+      "evidence": [{ "level": "audit", "source": "SAP investor relations (Xetra: SAP)", "url": "https://www.sap.com/investors/en.html" }],
+      "verifiedAt": "2026-11-03"
+    },
+    {
+      "id": "XLON:VOD", "localSymbol": "VOD", "mic": "XLON",
+      "name": "Vodafone Group Plc", "issuer": "Vodafone Group Plc", "type": "equity",
+      "currency": "GBP", "quoteUnit": "minor", "aliases": ["VOD.L"],
+      "notes": ["Quoted in pence (GBX / GBp). Prices are divided by 100 to give pounds. The Nasdaq ADR 'VOD' (1 ADS = 10 shares, USD) is a different instrument."],
+      "evidence": [{ "level": "audit", "source": "Vodafone investor relations (LSE: VOD)", "url": "https://investors.vodafone.com/" }],
+      "verifiedAt": "2026-11-03"
+    },
+    {
+      "id": "XSHG:600519", "localSymbol": "600519", "mic": "XSHG",
+      "name": "Kweichow Moutai Co., Ltd. (A-share)", "issuer": "Kweichow Moutai Co., Ltd.", "type": "equity",
+      "currency": "CNY", "quoteUnit": "major", "aliases": ["600519.SS"],
+      "notes": ["A-share quoted in CNY (onshore renminbi), not CNH."],
+      "evidence": [{ "level": "audit", "source": "Shanghai Stock Exchange listing (600519)", "url": "https://english.sse.com.cn/" }],
+      "verifiedAt": "2026-11-03"
+    }
+  ]
+}

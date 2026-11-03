@@ -11,15 +11,23 @@ Portfolio Rebalancer, and Stock Comparison & Analytics Tool.
 | `bootstrap/` | Shared launcher/bootstrap templates and `projects.toml` (one small declarative block per Python desktop tool). |
 | `bootstrap/render.py` | Renders `scripts/bootstrap.py`, `Setup_and_Run-<tool>.bat` (CRLF), `.command` (LF, executable) and `config.toml` into each tool folder. |
 | `build_project_zips.py` | Builds the four user ZIPs in `projects/` deterministically, with an include list per tool and a secret scan. |
+| `shared_py/market_data/` | Canonical Python mirror of `assets/js/market-data/` (stdlib only). `sync_shared_py.py` copies it into the Rebalancer and Stock desktop tools; `--check` fails on drift. |
+| `cpi_public_workbook.py` | Scrubs and checks the public `CPI.xlsx` (no S&P 500 values, cached results or local metadata); `--write` / `--check`. |
 | `tests/test_engine_parity.py` | Browser engines (`assets/js/monte-carlo`, `assets/js/portfolio-rebalancer`) vs the desktop `core.py` files. Uses Node through `tests/js_engines.mjs`. |
 | `tests/test_financial_reference.py` | Hand-calculated rebalancer cases and closed-form Monte Carlo paths, checked in both browser and desktop engines. |
 | `tests/test_analytics_reference.py` | Browser Stock analytics vs an independent numpy/scipy reference (returns, annualization, Sharpe, drawdown, correlation, OLS). |
 | `tests/test_bootstrap.py` | Bootstrap contract tests (mocked) and opt-in end-to-end runs (`-m e2e`). |
+| `tests/test_market_data_parity.py` | JS vs Python market-data layer: identity, routing, catalog, notice classification, quote adapters, freshness, valuation, whole shares, sample portfolio. Fixtures in `tests/fixtures/providers/`. |
+| `tests/test_cpi_public_workbook.py` | The shipped CPI workbook stays clean and structurally intact. |
 | `tests/unit/*.test.mjs` | Node unit tests for `assets/js/market-data/` (including per-key isolation and key storage, CSV calendar dates), Stock analytics consistency and currency safeguards, and the Monte Carlo engine (no network). |
 | `tests/browser/*.test.js` | Playwright tests against a locally served build, with every market-data host mocked. |
 | `tests/live_fx_matrix.mjs` | Optional live check of the official FX sources (two requests). |
-| `MARKET_DATA.md` | Where prices and exchange rates come from, why, licensing, caching, testing and troubleshooting. |
-| `RELEASE_NOTES.md` | User-visible changes to the web tools. |
+| `MARKET_DATA.md` | Where prices and exchange rates come from, why, licensing, caching, testing and troubleshooting (section 0 = current design). |
+| `PROVIDER_MATRIX.md` | Dated eligibility, plans, request accounting and licensing for the five provider candidates. |
+| `INSTRUMENT_IDENTITY.md` | Ticker → listing identity, YNVD.TO alias, ambiguity policy, the sample portfolio. |
+| `CALCULATION_METHODOLOGY.md` | Units, conventions, changed formulas and limitations of all four engines. |
+| `BROWSER_DESKTOP_PARITY.md` | Capability matrix web vs desktop, with the test behind each equivalence. |
+| `RELEASE_NOTES.md` | User-visible changes to the tools. |
 
 CPI Web Scraper is not rendered from these templates. Its folder
 `projects/CPI-Webscraper/` is a copy of `elmatthe/CPI-Webscraper` `main` without the
@@ -31,6 +39,12 @@ private root `config.toml`. The CPI launcher and bootstrap are that repository's
 # After editing a template or projects.toml
 python3 _tools/bootstrap/render.py            # write
 python3 _tools/bootstrap/render.py --check    # verify (no writes)
+
+# After changing _tools/shared_py/market_data or assets/data/instruments.v1.json
+python3 _tools/sync_shared_py.py              # copy into both desktop tools (--check verifies)
+
+# After refreshing projects/CPI-Webscraper/files/CPI.xlsx from the canonical repository
+python3 _tools/cpi_public_workbook.py --write # remove S&P values, caches and local metadata
 
 # After changing any tool folder
 python3 _tools/build_project_zips.py          # rebuild all four ZIPs
@@ -76,7 +90,9 @@ tests are excluded there by name; run them on Windows with
 server. `CHROMIUM_ARGS` passes extra Chromium flags, split on whitespace.
 
 The deterministic suites never contact a market-data provider. `harness.js` answers the
-Bank of Canada, ECB and Alpha Vantage with synthetic data in their exact response
-shapes, and blocks (and the suites fail on) any other host. `live.test.js` and
+Bank of Canada, ECB, Alpha Vantage, Marketstack and Finnhub with synthetic data in their
+exact response shapes, and blocks (and the suites fail on) any other host, including CDNs
+(Chart.js is self-hosted). Desktop Tk smoke tests need a display: on Linux run them with
+`xvfb-run -a -s "-screen 0 1366x768x24" python -m pytest files/tests`. `live.test.js` and
 `live_fx_matrix.mjs` make a handful of real requests and are informational. Never
 commit an API key; pass it through the environment.

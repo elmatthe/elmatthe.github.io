@@ -23,10 +23,14 @@ const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "mc-test-"));
 
   await page.goto(PAGE, { waitUntil: "networkidle" });
   await page.waitForSelector('#mc-app[data-ready="true"]');
-  check(await page.evaluate(() => typeof window.Chart === "function"), "Chart.js loaded");
+  check(await page.evaluate(() => typeof window.Chart === "function"), "Chart.js loaded (self-hosted)");
+  check(/^Ready\./.test(await status()), "ready without any third-party host");
+  check(/First-year net withdrawal: \$42,000 in first-retirement-year dollars/.test(await page.locator("#mc-spendingNote").innerText()), "default spending basis is retirement-year dollars (unchanged)");
+  check(/arithmetic mean; with this volatility, typical \(median\) compound growth is about 6\.33% a year/.test(await page.locator("#mc-growthNote").innerText()), "typical compound growth shown next to the arithmetic mean");
 
   await runAndWait();
-  check(/Done\. 1,000 simulations complete/.test(await status()), "default run completes");
+  check(/Done\. 1,000 simulations complete\.$/.test(await status()), "default run completes with no warnings");
+  check(await page.locator("#mcWarnings").isHidden(), "no warning list for ordinary assumptions");
   const tiles = await page.locator("#mcTiles .pj-tile").allInnerTexts();
   check(tiles.length === 8 && /Probability of success\s*\n?\s*\d+\.\d%/.test(tiles[0]), `summary tiles rendered (${tiles[0].replace(/\s+/g, " ")})`);
   check(await page.locator("#mcTable tbody tr").count() >= 7, "checkpoint table rendered");
@@ -50,6 +54,30 @@ const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "mc-test-"));
   await page.fill("#mc-seed", "12.5");
   await runAndWait();
   check(/Seed must be a whole number/.test(await status()) && await page.getAttribute("#mc-seed", "aria-invalid") === "true", "invalid seed rejected");
+  await page.fill("#mc-seed", "");
+
+  // Spending basis: today's dollars are converted with inflation; same seed, lower success.
+  await page.fill("#mc-seed", "42");
+  await runAndWait();
+  const legacySuccess = parseFloat(await page.locator("#mcTiles .pj-tile:nth-child(1) strong").innerText());
+  await page.selectOption("#mc-spendingBasis", "today");
+  check(/\$42,000 in today's dollars = \$88,098 in the first year of retirement/.test(await page.locator("#mc-spendingNote").innerText()), "today's-dollar conversion shown before running");
+  check(await page.locator("#mcStale").isVisible(), "results marked stale after an input changes");
+  await runAndWait();
+  const todaySuccess = parseFloat(await page.locator("#mcTiles .pj-tile:nth-child(1) strong").innerText());
+  check(todaySuccess < legacySuccess && /\(\$42,000 in today's dollars\)/.test(await page.locator("#mcMeta").innerText()) && await page.locator("#mcStale").isHidden(),
+    `today's dollars lower success (${legacySuccess}% -> ${todaySuccess}%) and the run records the basis`);
+  await page.selectOption("#mc-spendingBasis", "retirement");
+
+  // Warnings stay visible after "Done".
+  await page.fill("#mc-volatility", "50");
+  await runAndWait();
+  const warnText = await page.locator("#mcWarnings").innerText();
+  check(/2 warnings below\./.test(await status()) && /Volatility above 30%/.test(warnText) && /about 1\.6% of simulated years/.test(warnText), "extreme-volatility warnings stay listed after Done");
+  await page.fill("#mc-volatility", "0.12");
+  await runAndWait();
+  check(/Volatility is entered in percent/.test(await page.locator("#mcWarnings").innerText()), "0.12 volatility flagged as a likely percent mix-up");
+  await page.fill("#mc-volatility", "12");
   await page.fill("#mc-seed", "");
 
   // Validation parity with the desktop app.
@@ -83,13 +111,23 @@ const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "mc-test-"));
   await csv.saveAs(csvPath);
   const lines = fs.readFileSync(csvPath, "utf8").trim().split(/\r?\n/);
   const years = Number(await page.inputValue("#mc-yearsToRetirement")) + Number(await page.inputValue("#mc-yearsInRetirement"));
-  check(lines.length === 9 + years + 1 && lines.some(l => l.startsWith("Random seed,")), `CSV has the seed, model notes and one row per year (${lines.length} lines for ${years} years)`);
+  const raw = fs.readFileSync(csvPath);
+  check(raw[0] === 0xEF && raw[1] === 0xBB && raw[2] === 0xBF, "CSV starts with a UTF-8 byte-order mark");
+  check(lines.length === 14 + years + 1 && ["Random seed,", "Random generator,", "Engine version,", "Spending basis,", "Warnings,"].every(p => lines.some(l => l.replace(/^\uFEFF/, "").startsWith(p))),
+    `CSV has the seed, generator, engine version, basis, warnings, model and one row per year (${lines.length} lines for ${years} years)`);
 
-  await page.setViewportSize({ width: 390, height: 844 });
-  check(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth) <= 1, "no horizontal scroll at 390px");
+  // No sideways scrolling anywhere, including the checkpoint table (stacked when narrow).
+  for (const width of [360, 390, 768, 853, 911, 1024, 1093, 1280, 1366, 1440, 1920]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.waitForTimeout(150);
+    const overflow = await page.evaluate(() => {
+      const box = document.querySelector("#mcTable");
+      return { page: document.documentElement.scrollWidth - window.innerWidth, table: box.scrollWidth - box.clientWidth, tableEl: document.querySelector("#mcTable table").getBoundingClientRect().width - box.clientWidth };
+    });
+    check(overflow.page <= 1 && overflow.table <= 1 && overflow.tableEl <= 1, `no horizontal scroll or clipped table at ${width}px (${JSON.stringify(overflow)})`);
+  }
 
-  const nonCdn = net.external.filter(url => new URL(url).hostname !== "cdn.jsdelivr.net");
-  check(nonCdn.length === 0, `no network requests besides the Chart.js CDN${nonCdn.length ? ": " + nonCdn.join(" ") : ""}`);
+  check(net.external.length === 0, `no requests to any other host${net.external.length ? ": " + net.external.join(" ") : ""}`);
   check(net.errors.length === 0, `no JavaScript errors${net.errors.length ? ": " + net.errors.join(" | ") : ""}`);
   await browser.close();
   process.exit(done() ? 1 : 0);

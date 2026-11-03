@@ -18,15 +18,24 @@ it before downloading anything:
 - **Two-phase model:** an accumulation phase (saving before retirement) followed by a
   decumulation phase (spending in retirement), simulated year by year.
 - **Random annual returns** drawn from a normal distribution using your expected return
-  and volatility, so the order-of-returns risk shows up in the results.
+  (an arithmetic mean) and volatility, so the order-of-returns risk shows up in the results.
+  The window also shows the typical (median) compound growth those inputs imply.
+- **Spending basis:** enter spending and pension in first-retirement-year dollars (the
+  default, as in earlier versions) or in today's dollars, converted with
+  `(spending - pension) x (1 + inflation)^years to retirement`; the converted amount is shown.
+- **Reproducible runs:** a random seed (blank = new run) with the same generator as the web
+  version (mulberry32 + Box-Muller), so the same seed and inputs give the same results in both.
 - **Planner-focused outputs:** probability of success, median portfolio at retirement and
-  at the end, 10th/25th/75th/90th percentile bands, median ruin year, and an implied safe
-  withdrawal rate.
+  at the end, 10th/25th/75th/90th percentile bands in nominal and today's dollars, median
+  ruin year, and the initial withdrawal rate.
 - **Excel report** with three sheets — `MC_Summary`, `MC_Percentiles`, and `MC_Chart`
-  (an embedded fan chart) — written to a workbook you choose.
-- **Optional CSV export** of the percentile table for your own charting.
-- **Input validation and overflow checks** so unstable assumptions fail fast with a clear
-  message instead of returning misleading numbers.
+  (an embedded fan chart) — written to a workbook you choose. If that workbook has
+  pictures, shapes, charts or pivot tables that could not be kept, the program offers to
+  save a new workbook instead.
+- **Optional CSV export** in the same layout as the web version (inputs, seed, model,
+  warnings, then every year's percentiles).
+- **The same parsing rules, validation messages and warnings as the web version**, so
+  unstable or mistyped assumptions (for example 0.07 for 7%) are caught or flagged.
 
 ---
 
@@ -105,14 +114,18 @@ The full illustrated guide, including troubleshooting, is at <https://elmatthe.g
 
 1. **Enter your assumptions** — current portfolio, annual contribution (and optional
    growth), years to and in retirement, expected return, volatility, inflation, annual
-   spending, and any pension/CPP/OAS income.
-2. **Set the number of simulations** (more = steadier estimates, slower runs).
-3. **Choose a target `.xlsx` workbook** (and optionally a CSV path).
-4. Click **Run Simulation**. The run happens on a background thread with a live status
+   spending, and any pension/CPP/OAS income. Rates are in percent (7 means 7%).
+2. **Choose whether spending is in retirement-year or today's dollars.**
+3. **Set the number of simulations** (more = steadier estimates, slower runs) and,
+   optionally, a seed to reproduce an earlier run.
+4. **Choose a target `.xlsx` workbook** (and optionally a CSV path).
+5. Click **Run Simulation**. The run happens on a background thread with a live status
    bar, then the workbook is written/updated with the summary, percentiles, and chart.
+   The seed, headline results and any warnings stay shown in the window.
 
 Open the workbook to review: probability of success, the percentile table, and the
-fan chart with a retirement marker.
+fan chart with a retirement marker. Returns are drawn at year-end; a path fails when it
+reaches $0 or less in retirement.
 
 ---
 
@@ -131,8 +144,10 @@ monte-carlo-retirement-simulator/
     monte_carlo/            <- the program, split into focused modules
       models.py             <- input/result data models + constants
       deps.py               <- dependency import checks (numpy/openpyxl/matplotlib)
-      core.py               <- the simulation engine + input validation
-      export.py             <- Excel report + chart + CSV export
+      core.py               <- the simulation engine, input parsing, validation and warnings
+      rng.py                <- seeded generator (same draws as the web version)
+      sample.py             <- random sample scenarios
+      export.py             <- Excel report + chart + CSV export + workbook safety check
       ui.py                 <- the tkinter window
   files/                    <- created on first run: setup logs, temp files, state
 ```

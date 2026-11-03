@@ -1,18 +1,19 @@
-# CPI-Webscraper 0.3.0
+# CPI-Webscraper 0.4.0
 
-Windows desktop GUI tool for downloading Canadian and US economic data into an existing Excel model, with optional CSV export. The v0.3.0 checkpoint passed the independent release audit on 2026-09-15; usage and platform notes are below.
+Windows desktop GUI tool for downloading Canadian and US economic data into an existing Excel model, with optional CSV export. Version 0.4.0 (2026-11-03) merges downloads into the existing history, removes S&P 500 values and local metadata from the bundled workbook, and runs downloads in the background with progress and Cancel; see `md-instructions/Changelog.md`.
 
 ## Setup and use
 
 1. Keep the project folder together and double-click `Setup_and_Run-cpi-webscraper.bat`.
 2. Setup finds stable Python 3.11–3.14, or offers a user-scope Python installation if needed. It repairs the private `.venv`, reconciles exact dependencies, validates configuration, and launches the GUI. Healthy repeat launches do not run pip.
 3. Use **desktop Microsoft Excel for Windows**. Close the target workbook before downloading. Both `.xlsx` and `.xlsm` are supported.
-4. Choose a single month or a date range, choose your workbook, optionally select a `.csv` destination, and enter your [FRED API key](https://fred.stlouisfed.org/docs/api/api_key.html).
-5. Click **Download & Write to Excel**. All required data is collected and validated before Excel opens. A source failure stops the write.
+4. Choose a single month or a date range, choose your workbook, optionally select a `.csv` destination, and enter your [FRED API key](https://fred.stlouisfed.org/docs/api/api_key.html). Tick **Remember on this computer** to save the key in `config.toml` (plain text); untick it to remove a saved key.
+5. Click **Download & Write to Excel**. All required data is collected and validated before Excel opens; progress is shown and **Cancel** stops before the next request. A source failure stops the write. A rejected FRED key (HTTP 400/401/403) is not retried and is reported as such; Statistics Canada's overnight update window (HTTP 409) and rate limits (429) are retried briefly, then explained.
+6. **Recalculate in Excel:** open the workbook, press Ctrl+Alt+F9 and save. The tool does not recalculate the model sheets (see Workbook safety).
 
-Full history starts at January 1913. Earlier starts are clamped; a single month before 1913 becomes January 1913. A range ending before January 1913 is rejected. Dates stay on the **first day of each month**, including series reduced to a last-valid daily observation. Current months may be incomplete or unreleased.
+Full history starts at January 1913. Earlier starts are clamped; a single month before 1913 becomes January 1913. A range ending before January 1913 is rejected. Dates stay on the **first day of each month**, including series reduced to a last-valid daily observation. Current months may be incomplete or unreleased. An end after the current month is moved back to the current month (no requests for months that cannot exist yet). For the current, unfinished month the end-of-month columns M/N/O (DFF, SP500, T10Y2Y) are left blank until the month ends.
 
-The supplied `files/CPI.xlsx` is the canonical reference. Use a disposable copy for development and acceptance testing.
+The supplied `files/CPI.xlsx` is the **public copy** of the reference model: S&P 500 values (column N), every saved formula/spill/chart result that could be derived from them, the local file path, the Office add-in reference, printer settings and author names were removed with `_tools/cpi_public_workbook.py` in the website repository; formulas, charts, styles and sheets are unchanged and Excel recalculates everything when the file is first opened. Use a disposable copy for development and acceptance testing.
 
 ## Configuration
 
@@ -21,7 +22,7 @@ The launcher creates root `config.toml` from `scripts/config-default.toml`. It h
 - `[workbook]`: `sheet_name`, which must already exist in your workbook.
 - `[fred]`: `api_key`, blank until entered or migrated.
 - `[output]`: `columns`, an ordered list of `{ id, header }` entries.
-- `[sp500_history]`: `add_missing_data`, a strict boolean with default `false`; an absent section also means `false`.
+- `[sp500_history]`: `add_missing_data`, a strict boolean; it must be `false` (the default; an absent section also means `false`). The earlier Yahoo Finance backfill is no longer offered and `true` stops with an explanation.
 
 **Root config.toml contains your private key and is gitignored. Do not share it.** The committed default always has a blank key. On first creation, a usable legacy `files/config.json` key is migrated silently; the legacy file is retained. Existing root config always takes precedence. Invalid config is preserved and blocks downloads.
 
@@ -31,9 +32,11 @@ You may rename headers and reorder columns. Keep every supported ID exactly once
 
 ## Workbook safety
 
-Production writing uses a private Excel COM instance through pywin32. It checks for an existing, writable target sheet, clears **contents only** within the owned A:S rectangle (including stale rows), assigns all headers/data in bulk, saves and closes. It never deletes/inserts rows, recreates sheets, or changes column widths, row heights, formulas, named ranges, VBA, charts or tables.
+Production writing uses a private Excel COM instance through pywin32. It checks for an existing, writable target sheet, replaces **contents only** within the owned A:S rectangle, assigns all headers/data in bulk, saves and closes. It never deletes/inserts rows, recreates sheets, or changes column widths, row heights, formulas, named ranges, VBA, charts or tables.
 
-Worksheet calculation is temporarily suppressed in the private Excel session so dynamic-array spills cannot modify model cells or formatting during the save. Workbook calculation mode is preserved; Excel can recalculate normally when the user subsequently opens the workbook. Macros, events and external-link updates are disabled during automation. Read-only/locked/protected targets, raw-area formulas and merged cells fail clearly. OneDrive pause/resume remains best effort, bounded and optional; it is never killed or globally reconfigured.
+**Downloads are merged by default:** the downloaded months replace those months in the raw sheet and every other month already there is kept, so a single-month update no longer clears the history (FRED's S&P 500 window rolls forward, so cleared months could not be downloaded again). Rows with values but no valid date in column A, or a repeated month, stop the write with a message. **Replace all rows** (with a confirmation) makes the sheet hold exactly the downloaded months, as before 0.4.0. The undocumented OneDrive `/pause` and `/resume` calls were removed.
+
+Worksheet calculation is temporarily suppressed in the private Excel session so dynamic-array spills cannot modify model cells or formatting during the save (Decision 004). Workbook calculation mode is preserved. **As a result the saved model sheets still show results computed from the previous data until Excel recalculates:** press Ctrl+Alt+F9 in desktop Excel and save after a download. Whether Excel recalculates by itself on reopening has not been verified (it needs Windows and Excel). Macros, events and external-link updates are disabled during automation. Read-only/locked/protected targets, raw-area formulas and merged cells fail clearly.
 
 CSV uses the very same configured columns and dataset, with `YYYY-MM-DD` dates. CSV failure is reported separately from an already completed Excel write; source collection is transactional, but Excel and CSV are separate files.
 
@@ -63,27 +66,15 @@ CSV uses the very same configured columns and dataset, with `YYYY-MM-DD` dates. 
 
 FRED monthly series are used as published. DFF, SP500 and T10Y2Y use the latest valid daily observation in each calendar month. **Column M is the effective federal funds rate at EOP**, not a target-range bound. No interpolation, invented history or proxy substitution is used. Optional Yahoo backfill is described below. Pre-series history remains blank.
 
-## Optional S&P 500 historical backfill
+## S&P 500 history
 
-```toml
-[sp500_history]
-add_missing_data = false
-```
-
-- **false (normal/default):** FRED SP500 only, its moving historical window unchanged, with zero Yahoo requests. Older unavailable months remain blank.
-- **true (optional unofficial analysis):** fetch FRED first, then Yahoo Finance `^GSPC` daily chart JSON. Fill only months missing from FRED; **FRED always wins every overlap**. Use raw daily Close, never adjusted close, reduced to the last valid trading-day observation in each month in America/New_York time.
-
-Yahoo requires no key. The implemented request uses the [Yahoo chart endpoint](https://query1.finance.yahoo.com/v8/finance/chart/%5EGSPC), `interval=1d`, explicit `period1`/`period2`, and `User-Agent: CPI-Webscraper/0.3.0`. TRUE mode checks up to six completed overlap months, requiring at least three. Historical-only or short requests obtain additional FRED reference observations solely for overlap validation. The boundary is derived from observations returned on that run. Absolute differences must be at most **0.005 index points**; there is no percentage tolerance. A missing/malformed/limited source response or material mismatch stops before Excel, without silently falling back to FRED-only.
-
-Live validation on 2026-09-15 found the earliest usable Yahoo date **1927-12-30**. With the requested 1913 grid, months through November 1927 remain blank; no prices are interpolated, forward-filled or invented. Earlier values are optional Yahoo Finance historical index data, not FRED observations or professionally licensed history. Data preceding the modern index may describe source-provided predecessor history. Availability, depth and endpoint behavior may change. The date is observed evidence, not hardcoded.
-
-Across 120 completed overlap months (2016-09–2026-08), maximum absolute difference was **0.000234375 points** and maximum relative difference **5.33245e-8**. FRED publishes to 0.01 points; the 0.005 rule allows only half that unit. Full evidence and representative pairs are recorded in Decisions. The tested transition was Yahoo August 2016 at 2170.949951171875, then authoritative FRED September 2016 at 2168.27.
+Column N is FRED SP500, downloaded with your own key; FRED publishes only about the last ten years, and S&P Dow Jones Indices restricts reproduction of the data, so the bundled workbook contains none. The optional Yahoo Finance `^GSPC` backfill of earlier versions is no longer available in the app: Yahoo does not permit automated collection, and S&P 500 history may not be redistributed without permission. Its isolated, tested code remains in `data_sources.py` pending an owner decision.
 
 ## Sources and usage rights
 
 **This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis.** See [FRED API documentation](https://fred.stlouisfed.org/docs/api/fred/series_observations.html).
 
-Canadian series are sourced from Statistics Canada through its supported [Web Data Service](https://www.statcan.gc.ca/en/developers/wds/user-guide); Statistics Canada is the source of the original data. This application does not imply Statistics Canada endorsement.
+Canadian series are sourced from Statistics Canada through its supported [Web Data Service](https://www.statcan.gc.ca/en/developers/wds/user-guide); Statistics Canada is the source of the original data. This application does not imply Statistics Canada endorsement. Statistics Canada data is used under the [Statistics Canada Open Licence](https://www.statcan.gc.ca/en/terms-conditions/open-licence).
 
 Column N retains the exact **S&P 500 price index, last trading-day close** meaning, using FRED SP500. It has only approximately ten years of history and third-party restrictions. [FRED's SP500 series notice](https://fred.stlouisfed.org/series/SP500) identifies permission requirements. **Confirm organizational rights before production business use.** FRED remains authoritative. Optional Yahoo history extends coverage for unofficial analysis only; it does not confer professional historical-data usage rights. No yfinance, adjusted-close substitution, CSV/crumb authentication or alternate benchmark is used.
 

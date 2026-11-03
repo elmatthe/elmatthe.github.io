@@ -8,7 +8,7 @@ redirect_from:
   - /projects/portfolio-rebalancer-tool/
 eyebrow: Setup & user guide
 summary: How to install, run, repair and use the Portfolio Rebalancer desktop program on Windows or macOS.
-lede: Install the desktop rebalancer with one launcher, then turn holdings and target weights into a buy / sell / hold plan with optional live Yahoo Finance prices.
+lede: Install the desktop rebalancer with one launcher, then turn holdings and target weights into a buy / sell / hold plan with prices from the provider you choose with your own key.
 last_updated: 2026-09-28
 sections:
   - { id: before, label: Before you start }
@@ -27,7 +27,7 @@ sections:
   <ol class="pj-steps">
     <li><strong>Choose a mode.</strong> <em>New Money</em> gives buy-only trades that never spend more than your budget. <em>Rebalance</em> adds no cash: sells fund the buys, so the plan never spends more than the sales raise.</li>
     <li><strong>Choose the reporting currency</strong> and the number of rows (<em>Apply Rows</em>, <em>Add Row</em>, <em>Remove Last</em>).</li>
-    <li><strong>Fill each row:</strong> ticker, shares/units, local price, row currency and target weight %. Weights are relative; they're normalised to 100%. As you type a ticker it's checked against Yahoo Finance. You'll see either <em>Verified: VTI (USD)</em> or a hint such as “found as <code>ISF.L</code> (GBP)”.</li>
+    <li><strong>Fill each row:</strong> ticker exactly as your broker shows it, shares (fractions allowed), target weight % and, optionally, the account type. Weights are relative; they're normalised to 100%. When you press Enter or Tab, the ticker is identified (exchange, currency) without any request and its price is fetched from your chosen source. Add your own key under <em>API keys…</em> first (Alpha Vantage, Marketstack, Finnhub or Alpaca).</li>
     <li><strong>Optional run options:</strong> <em>Fetch live prices and FX rates</em> (internet required), <em>Show Account Type column</em> (warns when a plan would need money moved between TFSA, RRSP, margin and so on), and <em>Export CSV</em> / <em>Export Excel</em> with a file path.</li>
     <li><strong>Click <em>Run Rebalance</em></strong> and review the summary, the per-row plan and any warnings. <em>Load Sample</em> fills a demonstration portfolio.</li>
   </ol>
@@ -47,11 +47,11 @@ sections:
   <h2 id="troubleshooting-h">Troubleshooting</h2>
   <details class="pj-details">
     <summary>A ticker isn't found, or is found in another currency</summary>
-    <div class="pj-details-body"><p>Use Yahoo Finance symbols: Canadian listings end in <code>.TO</code> (TSX) or <code>.V</code> (TSX-V), London listings in <code>.L</code> (priced in pence, which the tool converts to pounds). Set the row currency to the currency the listing trades in.</p></div>
+    <div class="pj-details-body"><p>Use Yahoo-style suffixes: <code>.TO</code> (TSX), <code>.V</code> (TSX-V), <code>.NE</code> (Cboe Canada), <code>.L</code> (London, priced in pence and converted to pounds), <code>.DE</code> (Xetra). The currency is identified for you. <code>YNVD.TO</code> as Questrade shows it is recognised as the Cboe Canada ETF; the free sources do not cover Cboe Canada, so use <em>My price</em> for it.</p></div>
   </details>
   <details class="pj-details">
     <summary>Live prices didn't load</summary>
-    <div class="pj-details-body"><p>Yahoo Finance may be rate-limiting or unreachable from your network. The plan still runs using your entered prices and warns you. Try again in a few minutes, or untick live fetch.</p></div>
+    <div class="pj-details-body"><p>Open <em>API keys…</em>: it shows how many requests this computer sent and, if the provider reported a daily or monthly limit, its own wording and when it resets. A "slow down" notice is retried automatically. No plan is shown until every holding has a verified price or one you supplied.</p></div>
   </details>
   <details class="pj-details">
     <summary>The Excel file can't be saved</summary>
