@@ -122,7 +122,7 @@ def main():
     try:
         python, _ = reconcile()
         if '--check-only' not in sys.argv:
-            print('[bootstrap] Launch: CPI-Webscraper 0.3.0')
+            print('[bootstrap] Launch: CPI-Webscraper 0.4.0')
             return subprocess.call([str(python),str(ROOT/'scripts/cpi_webscraper.py')],cwd=ROOT)
         return 0
     except ValueError as error:

@@ -41,11 +41,13 @@ def test_convert_price_frame_with_known_rate():
     assert np.allclose(converted["Close"].to_numpy(), [22.5, 22.875, 22.6875])
 
 
-def test_align_fx_rate_forward_and_back_fills():
-    # Rate only known for the middle date; edges should fill from nearest known value.
+def test_align_fx_rate_forward_fills_but_never_back_fills():
+    # Rate only known for the middle date: later dates use it, the earlier date gets
+    # no rate (back-filling would use a future fixing: look-ahead, audit D6).
     sparse = pd.Series([0.752], index=pd.to_datetime(["2024-01-03"]))
     aligned = align_fx_rate(sparse, DATES)
-    assert list(aligned.to_numpy()) == [0.752, 0.752, 0.752]
+    assert np.isnan(aligned.iloc[0])
+    assert list(aligned.to_numpy()[1:]) == [0.752, 0.752]
 
 
 def test_normalize_to_target_is_noop_when_already_target():
@@ -87,10 +89,10 @@ def test_normalize_fails_soft_when_rate_unavailable():
     converted, warnings, result_currencies = normalize_price_frames_to_currency(
         frames, {"XIU.TO": "CAD"}, "USD", lambda n, t: None
     )
-    # Native values preserved, native currency retained, clear warning surfaced.
-    assert np.allclose(converted["XIU.TO"]["Close"].to_numpy(), cad_frame()["Close"].to_numpy())
-    assert result_currencies["XIU.TO"] == "CAD"
-    assert any("FX rates unavailable" in w for w in warnings)
+    # An unconvertible series is left out of a normalized comparison, with a clear
+    # warning; it is never mixed in unconverted (audit D6).
+    assert "XIU.TO" not in converted and "XIU.TO" not in result_currencies
+    assert any("left out of the normalized comparison" in w for w in warnings)
 
 
 def test_bundled_offline_fx_rates_load_and_invert():

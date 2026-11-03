@@ -24,6 +24,16 @@ export const MIN_CORRELATION_OBSERVATIONS = 3;
 // |log return| above ln(1.8) in one period is flagged as a possible unadjusted
 // split or data error (a 2:1 split shows as ln(0.5) = -0.69).
 export const LARGE_MOVE_LOG = Math.log(1.8);
+// Common split and reverse-split ratios (new shares per old share). On UNADJUSTED
+// closes a split shows as a one-period price ratio of 1/ratio (3-for-2: 0.667).
+export const SPLIT_RATIOS = [1.25, 4 / 3, 1.5, 2, 2.5, 3, 4, 5, 8, 10, 20];
+export const SPLIT_TOLERANCE = 0.025;
+// Below these spans annualized figures are statistically unstable (a 3-month Sharpe
+// ratio's 5-95% range is roughly -2 to 4.5 when the true value is 1).
+export const SHORT_SAMPLE_DAYS = 182;
+// A return series whose standard deviation is below this is treated as constant
+// (no variance): correlations and betas against it are not defined.
+export const MIN_RETURN_STDEV = 1e-9;
 
 const DAY_MS = 86400000;
 
@@ -129,6 +139,29 @@ export function largeMoves(returnRows, threshold = LARGE_MOVE_LOG) {
   return returnRows.filter(r => Math.abs(r.value) > threshold).map(r => ({ date: r.currentDate, change: Math.exp(r.value) - 1 }));
 }
 
+// One-period moves on unadjusted closes that match a split or reverse-split ratio
+// within SPLIT_TOLERANCE, e.g. a 3-for-2 split (-33.3%) or 5-for-4 (-20%).
+export function splitLikeMoves(returnRows) {
+  const out = [];
+  for (const r of returnRows) {
+    const ratio = Math.exp(r.value);
+    for (const s of SPLIT_RATIOS) {
+      const [n, d] = splitFraction(s);
+      if (Math.abs(ratio * s - 1) <= SPLIT_TOLERANCE) { out.push({ date: r.currentDate, change: ratio - 1, split: `${n}-for-${d} split` }); break; }
+      if (Math.abs(ratio / s - 1) <= SPLIT_TOLERANCE) { out.push({ date: r.currentDate, change: ratio - 1, split: `${d}-for-${n} reverse split` }); break; }
+    }
+  }
+  return out;
+}
+const splitFraction = s => ({ 1.25: [5, 4], 1.5: [3, 2], 2.5: [5, 2] }[s] || (Math.abs(s - 4 / 3) < 1e-9 ? [4, 3] : [s, 1]));
+
+const stdev = values => {
+  if (values.length < 2) return null;
+  const m = values.reduce((a, v) => a + v, 0) / values.length;
+  return Math.sqrt(values.reduce((a, v) => a + (v - m) ** 2, 0) / (values.length - 1));
+};
+export const hasVariance = values => { const sd = stdev(values); return sd !== null && sd > MIN_RETURN_STDEV; };
+
 export function pairReturns(left, right) {
   const b = new Map(right.map(row => [row.interval, row.value]));
   const x = [];
@@ -143,6 +176,7 @@ const mean = values => values.reduce((sum, v) => sum + v, 0) / values.length;
 
 export function pearson(x, y) {
   if (x.length < MIN_CORRELATION_OBSERVATIONS) return null;
+  if (!hasVariance(x) || !hasVariance(y)) return null; // a constant series has no correlation
   const mx = mean(x);
   const my = mean(y);
   let sxy = 0;
@@ -189,7 +223,12 @@ export function comparisonMetrics(histories, returns, riskFreeAnnual = 0, period
       maxDrawdown = Math.min(maxDrawdown, price / peak - 1);
     }
     // Continuous-compounding Sharpe on the same log-return basis.
-    const sharpe = m !== null && volatility ? (m * periodsPerYear - Math.log(1 + riskFreeAnnual)) / volatility : null;
+    let sharpe = m !== null && volatility ? (m * periodsPerYear - Math.log(1 + riskFreeAnnual)) / volatility : null;
+    const first = history.observations[0]?.date;
+    const last = history.observations[history.observations.length - 1]?.date;
+    const spanDays = first && last ? (last - first) / DAY_MS : 0;
+    // One return cannot be annualized meaningfully (a -2% day is not "-99.6% a year").
+    const onePeriod = values.length < 2;
     return {
       ticker,
       currency: history.currency || null,
@@ -201,10 +240,13 @@ export function comparisonMetrics(histories, returns, riskFreeAnnual = 0, period
       actualStart: history.observations.length ? isoDate(history.observations[0].date) : null,
       actualEnd: history.observations.length ? isoDate(history.observations[history.observations.length - 1].date) : null,
       totalReturn: finite(total),
-      annualizedReturn: finite(annual),
+      annualizedReturn: onePeriod ? null : finite(annual),
       annualizedVolatility: finite(volatility),
-      sharpe: finite(sharpe),
+      sharpe: onePeriod ? null : finite(sharpe),
       maxDrawdown: finite(maxDrawdown),
+      spanDays: Math.round(spanDays),
+      // Annualized figures from under six months of data are shown with a caveat.
+      shortSample: spanDays < SHORT_SAMPLE_DAYS,
     };
   });
 }
@@ -272,6 +314,7 @@ export function regression(yReturns, xReturns, riskFreeAnnual = 0, periodsPerYea
   let sxx = 0;
   let sxy = 0;
   for (let i = 0; i < n; i += 1) { sxx += (xs[i] - mx) ** 2; sxy += (xs[i] - mx) * (ys[i] - my); }
+  if (!hasVariance(xs)) return { ...empty, note: "The benchmark's returns have no variance, so beta and alpha are not defined." };
   if (!sxx) return empty;
   const beta = sxy / sxx;
   const alpha = my - beta * mx;
@@ -315,7 +358,7 @@ export function drawdownSeries(observations) {
 }
 
 // Full comparison run over already-prepared histories. Mirrors ComparisonService._execute.
-export function runComparison(histories, { riskFreeAnnual = 0 } = {}) {
+export function runComparison(histories, { riskFreeAnnual = 0, excludeSplitLike = true } = {}) {
   const list = Object.values(histories);
   const frequencies = [...new Set(list.map(h => h.frequency || "daily"))];
   if (frequencies.length > 1) throw new Error(`Every series must have the same frequency; got ${frequencies.join(" and ")}.`);
@@ -333,12 +376,30 @@ export function runComparison(histories, { riskFreeAnnual = 0 } = {}) {
   if (bases.length > 1) {
     warnings.push("Some series use adjusted closes (dividends included) and others plain closes (price only), so their returns are not directly comparable.");
   }
-  const returns = alignLogReturns(histories);
+  let returns = alignLogReturns(histories);
+  // A series of UNADJUSTED closes with a split-like move is left out: its return,
+  // volatility and drawdown would be wrong by the split ratio. (Adjusted closes
+  // already account for splits.)
+  const excluded = [];
+  if (excludeSplitLike) {
+    for (const [ticker, rows] of Object.entries(returns)) {
+      if ((histories[ticker].priceBasis || "close") !== "close") continue;
+      const splits = splitLikeMoves(rows);
+      if (splits.length) excluded.push({ ticker, reason: `its unadjusted closes move by a split-like ratio (${splits.slice(0, 2).map(m => `${(m.change * 100).toFixed(1)}% on ${m.date}, like a ${m.split}`).join("; ")}); its return, volatility and drawdown would be misstated. Use a longer horizon (weekly adjusted closes) or a CSV of adjusted prices.` });
+    }
+    if (excluded.length) {
+      histories = Object.fromEntries(Object.entries(histories).filter(([t]) => !excluded.some(e => e.ticker === t)));
+      returns = Object.fromEntries(Object.entries(returns).filter(([t]) => !excluded.some(e => e.ticker === t)));
+      excluded.forEach(e => warnings.push(`${e.ticker} was left out: ${e.reason}`));
+    }
+  }
   for (const [ticker, rows] of Object.entries(returns)) {
     const moves = largeMoves(rows);
     if (moves.length) warnings.push(`${ticker}: ${moves.length} unusually large one-period move${moves.length === 1 ? "" : "s"} (${moves.slice(0, 3).map(m => `${m.date} ${(m.change * 100).toFixed(0)}%`).join(", ")}): possibly an unadjusted split or a data error. Check before relying on the results.`);
+    if (rows.length >= 2 && !hasVariance(rows.map(r => r.value))) warnings.push(`${ticker}: its price did not change in this window, so correlations and betas against it are not defined.`);
   }
   const { matrix, counts } = correlationMatrix(returns);
   const metrics = comparisonMetrics(histories, returns, riskFreeAnnual, periodsPerYear);
-  return { returns, matrix, counts, metrics, currencies, mixedCurrencies: currencyLabels.length > 1, mixedBases: bases.length > 1, warnings, frequency, periodsPerYear };
+  if (metrics.some(m => m.shortSample && m.returnObservations >= 2)) warnings.push("Annualized return, volatility and Sharpe ratio from less than six months of data are statistically unstable; they are marked ≈ and should not be compared with longer windows.");
+  return { returns, matrix, counts, metrics, currencies, mixedCurrencies: currencyLabels.length > 1, mixedBases: bases.length > 1, warnings, frequency, periodsPerYear, excluded };
 }

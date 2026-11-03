@@ -47,10 +47,30 @@ class SourceError(ValueError):
     """Sanitized error: HTTP exception strings can contain an API key."""
 
 
+class Cancelled(SourceError):
+    """The user cancelled the download; nothing was written."""
+
+
+# Optional hooks set by build_rows for the GUI: progress(done, total, source) before
+# each request, and cancel() -> True to stop before the next request.
+_HOOKS = {'progress': None, 'cancel': None, 'done': 0, 'total': 0}
+# Daily series reduced to one end-of-month value (DFF, SP500, T10Y2Y): the current,
+# unfinished month is left blank instead of showing a mid-month value as month-end.
+INCOMPLETE_MONTH_NOTE = ('End-of-month columns (DFF, S&P 500, 10Y-2Y) are left blank for the current month '
+                         'until it ends, so a mid-month value is never written as a month-end value.')
+
+
 def ym_to_date(ym):
     if not isinstance(ym, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}", ym):
         raise ValueError('Use a valid YYYY-MM date.')
-    return date.fromisoformat(ym + '-01')
+    try:
+        return date.fromisoformat(ym + '-01')
+    except ValueError:
+        raise ValueError('Use a valid YYYY-MM date (month 01 to 12).') from None
+
+
+def current_month(today=None):
+    return (today or date.today()).isoformat()[:7]
 
 
 def month_range(start_ym, end_ym):
@@ -62,7 +82,8 @@ def month_range(start_ym, end_ym):
         cur += relativedelta(months=1)
 
 
-def normalize_range(start, end, single=False):
+def normalize_range(start, end, single=False, today=None):
+    """Clamp to January 1913 .. the current month (no requests for months that cannot exist yet)."""
     ym_to_date(start); ym_to_date(end)
     if end < start:
         raise ValueError('End date must not precede start date.')
@@ -71,7 +92,10 @@ def normalize_range(start, end, single=False):
         end = start
     if end < start:
         raise ValueError('The range ends before January 1913.')
-    return start, end
+    latest = current_month(today)
+    if start > latest:
+        raise ValueError(f'The start month {start} is in the future; the latest possible month is {latest}.')
+    return start, min(end, latest)
 
 
 def last_day_of_month(d):
@@ -82,9 +106,21 @@ def request_json(url, params, source, max_retries=3, headers=None):
     if not 1 <= max_retries <= 5:
         raise ValueError('Retry count must be between 1 and 5.')
     for attempt in range(max_retries):
+        _before_request(source)
+        response = None
         try:
             response = requests.get(url, params=params, timeout=60, headers=headers)
             response.raise_for_status()
+        except requests.HTTPError:
+            status = getattr(response, 'status_code', None)
+            status = status if isinstance(status, int) else None
+            # A rejected request (bad key, unknown series) will not succeed on retry.
+            if status is not None and 400 <= status < 500 and status not in (409, 429):
+                raise SourceError(client_error_message(source, status)) from None
+            if attempt + 1 == max_retries:
+                raise SourceError(retry_error_message(source, status)) from None
+            time.sleep(2 ** attempt)
+            continue
         except requests.RequestException:
             if attempt + 1 == max_retries:
                 raise SourceError(f'{source}: request failed after bounded retries. Check connection and credentials; workbook was not touched.') from None
@@ -94,6 +130,38 @@ def request_json(url, params, source, max_retries=3, headers=None):
             return response.json()
         except ValueError:
             raise SourceError(f'{source}: invalid JSON response; workbook was not touched.') from None
+
+
+def _before_request(source):
+    cancel, progress = _HOOKS['cancel'], _HOOKS['progress']
+    if cancel is not None and cancel():
+        raise Cancelled('Download cancelled; workbook was not touched.')
+    if progress is not None:
+        _HOOKS['done'] += 1
+        progress(_HOOKS['done'], max(_HOOKS['total'], _HOOKS['done']), source)
+
+
+def client_error_message(source, status):
+    if source.startswith('FRED') and status in (400, 401, 403):
+        return f'{source}: FRED rejected the request (HTTP {status}). Check that your FRED API key is correct; workbook was not touched.'
+    if status == 404:
+        return f'{source}: the series was not found (HTTP 404); workbook was not touched.'
+    return f'{source}: the request was rejected (HTTP {status}); workbook was not touched.'
+
+
+def retry_error_message(source, status):
+    if status == 409 and source.startswith('Statistics Canada'):
+        return ('Statistics Canada is updating its tables (HTTP 409; this usually happens between 00:00 and 08:30 Eastern time). '
+                'Try again later; workbook was not touched.')
+    if status == 429:
+        return f'{source}: too many requests (HTTP 429). Wait a few minutes and try again; workbook was not touched.'
+    return f'{source}: request failed after bounded retries (HTTP {status}). Check connection and credentials; workbook was not touched.'
+
+
+def request_count(start_ym, end_ym):
+    """Requests build_rows makes: 5 StatCan vectors in 120-month chunks, plus 13 FRED series."""
+    months = len(list(month_range(start_ym, end_ym)))
+    return 5 * math.ceil(months / 120) + len(FRED_MONTHLY_SERIES) + len(FRED_DAILY_EOM_SERIES)
 
 
 def numeric(value):
@@ -300,13 +368,20 @@ def validate_sources(data, start, end):
             raise SourceError('A required source returned no observations in an established historical interval; workbook was not touched.')
 
 
-def build_rows(start_ym, end_ym, api_key, add_missing_data=False):
-    start_ym, end_ym = normalize_range(start_ym,end_ym)
+def build_rows(start_ym, end_ym, api_key, add_missing_data=False, progress=None, cancel=None, today=None):
+    start_ym, end_ym = normalize_range(start_ym,end_ym,today=today)
     if not api_key.strip():
         raise ValueError('Please enter your FRED API key.')
-    data = fetch_all_statcan(start_ym,end_ym)
-    data.update({key:fetch_fred_monthly(sid,start_ym,end_ym,api_key) for key,sid in FRED_MONTHLY_SERIES.items()})
-    data.update({key:fetch_fred_daily_eom(sid,start_ym,end_ym,api_key) for key,sid in FRED_DAILY_EOM_SERIES.items() if key != 'us_sp500_eom'})
-    data['us_sp500_eom'] = fetch_sp500(start_ym, end_ym, api_key, add_missing_data)
+    _HOOKS.update(progress=progress, cancel=cancel, done=0, total=request_count(start_ym, end_ym))
+    try:
+        data = fetch_all_statcan(start_ym,end_ym)
+        data.update({key:fetch_fred_monthly(sid,start_ym,end_ym,api_key) for key,sid in FRED_MONTHLY_SERIES.items()})
+        data.update({key:fetch_fred_daily_eom(sid,start_ym,end_ym,api_key) for key,sid in FRED_DAILY_EOM_SERIES.items() if key != 'us_sp500_eom'})
+        data['us_sp500_eom'] = fetch_sp500(start_ym, end_ym, api_key, add_missing_data)
+    finally:
+        _HOOKS.update(progress=None, cancel=None)
+    unfinished = current_month(today)
+    for key in FRED_DAILY_EOM_SERIES:
+        data[key].pop(unfinished, None)
     validate_sources(data,start_ym,end_ym)
     return [{'date':ym_to_date(ym), **{key:data[key].get(ym) for key in SUPPORTED_IDS[1:]}} for ym in month_range(start_ym,end_ym)]

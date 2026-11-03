@@ -156,8 +156,10 @@ def test_failures_before_writer_and_no_key_disclosure(monkeypatch,capsys,fault):
     get=Mock(return_value=response)
     if fault=='network':get.side_effect=requests.ConnectionError(secret)
     monkeypatch.setattr(ds.requests,'get',get);monkeypatch.setattr(ds.time,'sleep',lambda _:None)
+    # The app no longer offers the Yahoo backfill (see test_yahoo_backfill_is_disabled_before_any_request);
+    # the isolated data-source code is still checked for safe failure and no key disclosure.
     with pytest.raises(ds.SourceError,match='Optional Yahoo') as error:
-        app.download('2024-01','2024-03',secret,'unused.xlsx')
+        ds.build_rows('2024-01','2024-03',secret,add_missing_data=True)
     writer.assert_not_called()
     assert secret not in str(error.value)
     output=capsys.readouterr();assert secret not in output.out+output.err

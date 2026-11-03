@@ -1,0 +1,237 @@
+{
+ "schema": "md.provider-fixtures.v1",
+ "about": "Synthetic provider responses in the documented response shapes (values invented, not market data). Each case gives the instrument as typed, the provider symbol, the HTTP status and body, and what both the web and desktop adapters must produce. Times: 1793653200 = 2026-11-02 21:00 UTC (16:00 New York).",
+ "cases": [
+  {
+   "name": "marketstack-aapl-ok",
+   "provider": "marketstack",
+   "ticker": "AAPL",
+   "symbol": "AAPL",
+   "status": 200,
+   "body": "{\"pagination\":{\"limit\":100,\"offset\":0,\"count\":1,\"total\":1},\"data\":[{\"open\":101.0,\"high\":102.0,\"low\":100.0,\"close\":101.5,\"volume\":1000.0,\"adj_close\":101.5,\"name\":\"Apple Inc\",\"exchange_code\":\"NASDAQ\",\"asset_type\":\"Stock\",\"price_currency\":\"USD\",\"symbol\":\"AAPL\",\"exchange\":\"XNAS\",\"date\":\"2026-11-02T00:00:00+0000\"}]}",
+   "expect": {
+    "price": 101.5,
+    "currency": "USD",
+    "tradingDate": "2026-11-02",
+    "priceType": "eod_close",
+    "currencyEvidence": "provider_quote"
+   }
+  },
+  {
+   "name": "marketstack-vod-pence",
+   "provider": "marketstack",
+   "ticker": "VOD.L",
+   "symbol": "VOD.L",
+   "status": 200,
+   "body": "{\"data\":[{\"close\":7215.0,\"price_currency\":\"GBX\",\"symbol\":\"VOD.L\",\"exchange\":\"XLON\",\"date\":\"2026-11-02T00:00:00+0000\"}]}",
+   "expect": {
+    "price": 72.15,
+    "currency": "GBP",
+    "tradingDate": "2026-11-02",
+    "priceType": "eod_close",
+    "quoteUnit": "minor"
+   }
+  },
+  {
+   "name": "marketstack-tokyo-xjpx",
+   "provider": "marketstack",
+   "ticker": "7203.T",
+   "symbol": "7203.T",
+   "status": 200,
+   "body": "{\"data\":[{\"close\":2800.0,\"price_currency\":\"JPY\",\"symbol\":\"7203.T\",\"exchange\":\"XJPX\",\"date\":\"2026-11-02T00:00:00+0000\"}]}",
+   "expect": {
+    "price": 2800.0,
+    "currency": "JPY",
+    "tradingDate": "2026-11-02"
+   }
+  },
+  {
+   "name": "marketstack-wrong-exchange",
+   "provider": "marketstack",
+   "ticker": "CNQ.TO",
+   "symbol": "CNQ.TO",
+   "status": 200,
+   "body": "{\"data\":[{\"close\":31.0,\"price_currency\":\"USD\",\"symbol\":\"CNQ.TO\",\"exchange\":\"XNYS\",\"date\":\"2026-11-02T00:00:00+0000\"}]}",
+   "expect": {
+    "kind": "ambiguous"
+   }
+  },
+  {
+   "name": "marketstack-currency-mismatch",
+   "provider": "marketstack",
+   "ticker": "VEQT.TO",
+   "symbol": "VEQT.TO",
+   "status": 200,
+   "body": "{\"data\":[{\"close\":44.0,\"price_currency\":\"USD\",\"symbol\":\"VEQT.TO\",\"exchange\":\"XTSE\",\"date\":\"2026-11-02T00:00:00+0000\"}]}",
+   "expect": {
+    "kind": "currency_mismatch"
+   }
+  },
+  {
+   "name": "marketstack-empty",
+   "provider": "marketstack",
+   "ticker": "VST",
+   "symbol": "VST",
+   "status": 200,
+   "body": "{\"pagination\":{\"count\":0},\"data\":[]}",
+   "expect": {
+    "kind": "not_found"
+   }
+  },
+  {
+   "name": "marketstack-usage-limit",
+   "provider": "marketstack",
+   "ticker": "AAPL",
+   "symbol": "AAPL",
+   "status": 429,
+   "body": "{\"error\":{\"code\":\"usage_limit_reached\",\"message\":\"Your monthly usage limit has been reached. Please upgrade your Subscription Plan.\"}}",
+   "expect": {
+    "kind": "rate_limited",
+    "quotaScope": "monthly",
+    "persist": true
+   }
+  },
+  {
+   "name": "marketstack-rate-limit",
+   "provider": "marketstack",
+   "ticker": "AAPL",
+   "symbol": "AAPL",
+   "status": 429,
+   "body": "{\"error\":{\"code\":\"rate_limit_reached\",\"message\":\"You have exceeded the maximum rate limitation allowed on your subscription plan.\"}}",
+   "expect": {
+    "kind": "rate_limited",
+    "quotaScope": "burst"
+   }
+  },
+  {
+   "name": "marketstack-bad-key",
+   "provider": "marketstack",
+   "ticker": "AAPL",
+   "symbol": "AAPL",
+   "status": 401,
+   "body": "{\"error\":{\"code\":\"invalid_access_key\",\"message\":\"You have not supplied a valid API Access Key.\"}}",
+   "expect": {
+    "kind": "auth"
+   }
+  },
+  {
+   "name": "marketstack-restricted",
+   "provider": "marketstack",
+   "ticker": "AAPL",
+   "symbol": "AAPL",
+   "status": 403,
+   "body": "{\"error\":{\"code\":\"function_access_restricted\",\"message\":\"The current subscription plan does not support this API endpoint.\"}}",
+   "expect": {
+    "kind": "entitlement"
+   }
+  },
+  {
+   "name": "finnhub-uncurated-us-ok",
+   "provider": "finnhub",
+   "ticker": "MSFT",
+   "symbol": "MSFT",
+   "status": 200,
+   "body": "{\"c\":261.74,\"d\":2.29,\"dp\":0.8826,\"h\":263.31,\"l\":260.68,\"o\":261.07,\"pc\":259.45,\"t\":1793653200}",
+   "expect": {
+    "price": 261.74,
+    "currency": "USD",
+    "tradingDate": "2026-11-02",
+    "priceType": "last_trade",
+    "currencyEvidence": "provider_market"
+   }
+  },
+  {
+   "name": "finnhub-unknown-zeros",
+   "provider": "finnhub",
+   "ticker": "VST",
+   "symbol": "VST",
+   "status": 200,
+   "body": "{\"c\":0,\"d\":null,\"dp\":null,\"h\":0,\"l\":0,\"o\":0,\"pc\":0,\"t\":0}",
+   "expect": {
+    "kind": "not_found"
+   }
+  },
+  {
+   "name": "finnhub-bad-key",
+   "provider": "finnhub",
+   "ticker": "AAPL",
+   "symbol": "AAPL",
+   "status": 401,
+   "body": "{\"error\":\"Invalid API key.\"}",
+   "expect": {
+    "kind": "auth"
+   }
+  },
+  {
+   "name": "finnhub-no-access",
+   "provider": "finnhub",
+   "ticker": "AAPL",
+   "symbol": "AAPL",
+   "status": 403,
+   "body": "{\"error\":\"You don't have access to this resource.\"}",
+   "expect": {
+    "kind": "entitlement"
+   }
+  },
+  {
+   "name": "finnhub-429",
+   "provider": "finnhub",
+   "ticker": "AAPL",
+   "symbol": "AAPL",
+   "status": 429,
+   "body": "{\"error\":\"API limit reached. Please try again later. Remaining Limit: 0\"}",
+   "expect": {
+    "kind": "rate_limited",
+    "quotaScope": "minute"
+   }
+  },
+  {
+   "name": "massive-prev-ok",
+   "provider": "massive",
+   "ticker": "AAPL",
+   "symbol": "AAPL",
+   "status": 200,
+   "body": "{\"adjusted\":false,\"queryCount\":1,\"request_id\":\"x\",\"results\":[{\"T\":\"AAPL\",\"c\":115.97,\"h\":117.59,\"l\":114.13,\"o\":115.55,\"t\":1793653200000,\"v\":131704427,\"vw\":116.3058}],\"resultsCount\":1,\"status\":\"OK\",\"ticker\":\"AAPL\"}",
+   "expect": {
+    "price": 115.97,
+    "currency": "USD",
+    "tradingDate": "2026-11-02",
+    "priceType": "previous_close"
+   }
+  },
+  {
+   "name": "massive-empty",
+   "provider": "massive",
+   "ticker": "AAPL",
+   "symbol": "AAPL",
+   "status": 200,
+   "body": "{\"queryCount\":0,\"resultsCount\":0,\"status\":\"OK\",\"ticker\":\"AAPL\"}",
+   "expect": {
+    "kind": "not_found"
+   }
+  },
+  {
+   "name": "massive-bad-key",
+   "provider": "massive",
+   "ticker": "AAPL",
+   "symbol": "AAPL",
+   "status": 401,
+   "body": "{\"status\":\"ERROR\",\"request_id\":\"x\",\"error\":\"Unknown API Key\"}",
+   "expect": {
+    "kind": "auth"
+   }
+  },
+  {
+   "name": "massive-429",
+   "provider": "massive",
+   "ticker": "AAPL",
+   "symbol": "AAPL",
+   "status": 429,
+   "body": "{\"status\":\"ERROR\",\"error\":\"You've exceeded the maximum requests per minute, please wait or upgrade your subscription to continue.\"}",
+   "expect": {
+    "kind": "rate_limited",
+    "quotaScope": "minute"
+   }
+  }
+ ]
+}

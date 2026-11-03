@@ -1,19 +1,22 @@
-"""Market data provider implementations."""
+"""Market data sources: your own provider key (Alpha Vantage, Marketstack, Alpaca)
+through the shared market_data package, or your own CSV files.
+
+Yahoo Finance (yfinance) is no longer used: Yahoo's terms do not permit automated
+collection. Every price series records its provider, symbol and price basis.
+"""
 
 from __future__ import annotations
 
+import datetime as dt
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
 
-try:
-    import yfinance as yf
-except ImportError:  # pragma: no cover - exercised when dependencies are absent.
-    yf = None
-
 from config import get_files_dir
+from market_data.errors import DataError
+from market_data.history import boc_history, fetch_history
 
 
 class DataSourceError(Exception):
@@ -219,6 +222,14 @@ def load_offline_csv_folder(folder_path: str) -> dict[str, pd.DataFrame]:
     result = {}
     for ticker, parts in frames_by_ticker.items():
         combined = pd.concat(parts).sort_index()[["Close", "Adj Close", "Currency"]]
+        duplicated = combined.index[combined.index.duplicated()]
+        if len(duplicated):
+            raise DataSourceError(f"{ticker}: the CSV files contain more than one row for {', '.join(sorted({d.date().isoformat() for d in duplicated})[:5])}. "
+                                  "Keep one price per date (a duplicate row creates a false return).")
+        for column in ("Close", "Adj Close"):
+            bad = combined.index[pd.to_numeric(combined[column], errors="coerce") <= 0]
+            if len(bad):
+                raise DataSourceError(f"{ticker}: {column} is zero or negative on {', '.join(d.date().isoformat() for d in bad[:5])}. Prices must be greater than 0.")
         warnings = []
         for part in parts:
             warnings.extend(part.attrs.get("warnings", []))
@@ -280,13 +291,22 @@ def get_offline_fx_rate(rates: dict[str, pd.Series], from_currency: str, to_curr
     return None
 
 
-def _resample_prices(frame: pd.DataFrame, frequency: str) -> pd.DataFrame:
+def _resample_prices(frame: pd.DataFrame, frequency: str, today: dt.date | None = None) -> pd.DataFrame:
+    """Weekly or monthly bars: the LAST trading day of each completed period.
+
+    Each bar is dated by its actual last trading date (not a future Friday or month
+    end), and the current week or month is dropped while it may still be trading (D3).
+    """
     normalized = frequency.strip().lower()
-    if normalized == "weekly":
-        return frame.resample("W-FRI").last().dropna(how="all")
-    if normalized == "monthly":
-        return frame.resample("ME").last().dropna(how="all")
-    return frame
+    if normalized not in ("weekly", "monthly") or frame.empty:
+        return frame
+    today = today or dt.date.today()
+    data = frame.sort_index()
+    period_end = data.index.to_series().dt.to_period("W-FRI" if normalized == "weekly" else "M").dt.end_time.dt.normalize()
+    last_rows = data.groupby(period_end.values).tail(1)
+    ends = period_end.loc[last_rows.index]
+    complete = ends.dt.date < today
+    return last_rows[complete.values].dropna(how="all")
 
 
 class OfflineCsvSource(BaseDataSource):
@@ -378,115 +398,75 @@ class OfflineCsvSource(BaseDataSource):
         return get_offline_fx_rate(rates, from_currency, to_currency)
 
 
-class YahooFinanceSource(BaseDataSource):
-    name = "Yahoo Finance"
+class ProviderHistorySource(BaseDataSource):
+    """Daily history from a provider with the user's own key, via market_data."""
 
-    def __init__(self) -> None:
-        if yf is not None:
-            cache_dir = get_files_dir() / "cache" / "yfinance"
-            cache_dir.mkdir(parents=True, exist_ok=True)
-            yf.set_tz_cache_location(str(cache_dir))
+    def __init__(self, market, provider_id: str) -> None:
+        self.md = market
+        self.pid = provider_id
+        from market_data.catalog import PROVIDERS
+        self.name = f"{PROVIDERS[provider_id]['name']} (your key)"
 
     def is_configured(self) -> bool:
-        return yf is not None
+        return self.pid in self.md.configured()
 
     def validate_ticker(self, ticker: str) -> TickerValidationResult:
-        ticker_key = ticker.strip().upper()
-        return TickerValidationResult(ticker=ticker_key, is_valid=bool(ticker_key))
+        identity = self.md.resolve(ticker)
+        ok = identity["status"] == "resolved"
+        return TickerValidationResult(identity["displayTicker"], ok, identity.get("currency") if ok else None, None if ok else identity.get("reason"))
 
-    def fetch_prices(
-        self,
-        ticker: str,
-        start_date: str,
-        end_date: str,
-        price_type: str,
-        frequency: str,
-    ) -> PriceDataResult:
-        if yf is None:
-            raise DataSourceError("yfinance is not installed.")
-        ticker_key = ticker.strip().upper()
+    def fetch_prices(self, ticker: str, start_date: str, end_date: str, price_type: str, frequency: str) -> PriceDataResult:
+        identity = self.md.resolve(ticker)
+        if identity["status"] != "resolved":
+            raise DataSourceError(f"{identity['displayTicker']}: {identity.get('reason')}")
         try:
-            ticker_obj = yf.Ticker(ticker_key)
-            history = ticker_obj.history(start=start_date, end=end_date, auto_adjust=False, actions=False)
-        except Exception as exc:
-            raise DataSourceError(f"No usable data was returned for {ticker_key}. {exc}") from exc
-
-        if history.empty:
-            raise DataSourceError(f"No usable data was returned for {ticker_key}.")
-
-        frame = history.rename(columns={"Adj Close": "Adj Close"})[["Close", "Adj Close"]].copy()
-        frame.index = pd.to_datetime(frame.index).tz_localize(None)
+            h = fetch_history(self.md, self.pid, identity, start_date, end_date)
+        except DataError as exc:
+            raise DataSourceError(f"{identity['displayTicker']}: {exc.message}") from exc
+        if not h["observations"]:
+            raise DataSourceError(f"{identity['displayTicker']}: no prices in the selected window.")
+        frame = pd.DataFrame(h["observations"], columns=["Date", "Close", "Adj Close"]).set_index("Date")
+        frame.index = pd.to_datetime(frame.index)
+        warnings = [f"{identity['displayTicker']}: {h['basisNote']}"]
+        if _canonical_price_column(price_type) == "Adj Close" and not h["hasAdjusted"]:
+            frame["Adj Close"] = frame["Close"]
+            warnings.append(f"{identity['displayTicker']}: adjusted closes are not available from {h['provider']} for this window; plain closes (price return) are used.")
+        if h["frequency"] == "weekly" and frequency.strip().lower() == "daily":
+            warnings.append(f"{identity['displayTicker']}: {h['provider']} supplied weekly data for this window; choose Weekly or Monthly frequency for a consistent comparison.")
+        frame = frame.dropna(how="all")
         frame = _resample_prices(frame, frequency)
-        currency = None
-        try:
-            fast_info = ticker_obj.fast_info
-            if hasattr(fast_info, "get"):
-                currency = fast_info.get("currency")
-            if not currency:
-                currency = getattr(fast_info, "currency", None)
-        except Exception:
-            currency = None
-
-        info = {}
-        try:
-            info = ticker_obj.get_info()
-        except Exception:
-            info = {}
-        currency = currency or info.get("currency")
-        inferred_warnings: list[str] = []
-        if not currency:
-            for suffix, suffix_currency in TICKER_SUFFIX_CURRENCY_MAP.items():
-                if ticker_key.endswith(suffix):
-                    currency = suffix_currency
-                    inferred_warnings.append(f"{ticker_key}: Yahoo Finance reported no currency; assumed {suffix_currency} from the {suffix} suffix.")
-                    break
-            else:
-                inferred_warnings.append(f"{ticker_key}: Yahoo Finance reported no currency; it is treated as unknown and is not FX-normalized.")
-        frame, currency, unit_warnings = convert_minor_units(frame, currency, ticker_key)
-        unit_warnings = inferred_warnings + unit_warnings
-        currency = normalize_currency(currency) if currency else None
-        display_name = info.get("shortName") or info.get("longName") or ticker_key
+        if identity.get("listedFrom") and start_date < identity["listedFrom"]:
+            warnings.append(f"{identity['displayTicker']}: listed only since {identity['listedFrom']}; earlier history under this symbol belongs to a different security and is not used.")
+            frame = frame.loc[pd.to_datetime(identity["listedFrom"]):]
+        currency = h["currency"] if h["currencyVerified"] else None
         if currency:
             frame["Currency"] = currency
-        if _canonical_price_column(price_type) not in frame.columns or frame[_canonical_price_column(price_type)].dropna().empty:
-            raise DataSourceError(f"No usable data was returned for {ticker_key}.")
-        return PriceDataResult(ticker_key, display_name, currency, frame, unit_warnings)
+        return PriceDataResult(identity["displayTicker"], identity.get("name") or identity["displayTicker"], currency, frame, warnings)
 
-    def fetch_fx_rate(
-        self,
-        from_currency: str,
-        to_currency: str,
-        start_date: str,
-        end_date: str,
-        frequency: str,
-    ) -> Optional[pd.Series]:
-        if yf is None:
-            return None
-        from_code = normalize_currency(from_currency)
-        to_code = normalize_currency(to_currency)
+    def fetch_fx_rate(self, from_currency: str, to_currency: str, start_date: str, end_date: str, frequency: str) -> Optional[pd.Series]:
+        """`to` units per one `from` unit, from Bank of Canada daily averages (derived through CAD)."""
+        from_code, to_code = normalize_currency(from_currency), normalize_currency(to_currency)
         if not from_code or not to_code or from_code == to_code:
             return None
-        # Yahoo exposes FX as `<FROM><TO>=X`, quoting TO units per one FROM unit.
-        symbol = f"{from_code}{to_code}=X"
         try:
-            history = yf.Ticker(symbol).history(start=start_date, end=end_date, auto_adjust=False, actions=False)
-        except Exception:
+            hist = boc_history(self.md, [from_code, to_code], start_date, end_date)
+        except DataError:
             return None
-        if history is None or history.empty or "Close" not in history.columns:
-            return None
-        rate = pd.to_numeric(history["Close"], errors="coerce").dropna()
-        if rate.empty:
-            return None
-        rate.index = pd.to_datetime(rate.index).tz_localize(None)
-        rate = _resample_prices(rate.to_frame("Close"), frequency)["Close"]
-        return rate.dropna()
+        def cad_per(code: str) -> pd.Series:
+            if code == "CAD":
+                return pd.Series(1.0, index=pd.to_datetime(sorted({d for v in hist.values() for d, _ in v})))
+            return pd.Series({pd.Timestamp(d): v for d, v in hist.get(code, [])}).sort_index()
+        a, b = cad_per(from_code), cad_per(to_code)
+        rate = (a / b).dropna()
+        return rate if not rate.empty else None
 
 
-def get_data_source(name: str, offline_folder: str | None = None) -> BaseDataSource:
-    # Yahoo Finance is the only external market-data provider; Offline CSV reads the
-    # user's own files and makes no network request.
-    sources = {
-        YahooFinanceSource.name: YahooFinanceSource(),
-        OfflineCsvSource.name: OfflineCsvSource(offline_folder),
-    }
-    return sources[name]
+def get_data_source(name: str, offline_folder: str | None = None, market=None) -> BaseDataSource:
+    """Offline CSV, or a provider with the user's own key (by display name)."""
+    if name == OfflineCsvSource.name:
+        return OfflineCsvSource(offline_folder)
+    from market_data.catalog import PROVIDERS
+    for pid in ("alphavantage", "marketstack", "alpaca"):
+        if name.startswith(PROVIDERS[pid]["name"]):
+            return ProviderHistorySource(market, pid)
+    raise DataSourceError(f"Unknown data source: {name}")

@@ -1,5 +1,23 @@
 # Monte Carlo Retirement Simulator — Changelog
 
+## v1.2.0 — 2026-11-03
+- Spending basis: spending and pension can be entered in first-retirement-year dollars (the
+  default, unchanged) or in today's dollars, converted with (spending - pension) x
+  (1 + inflation)^years to retirement. The converted first-year withdrawal is shown and exported.
+- Reproducible runs: a random-seed field and a port of the web app's generator (mulberry32 +
+  Box-Muller, `monte_carlo/rng.py`); the same seed and inputs give the same failed-path count and
+  percentiles as the web app (within about 1e-15). The seed, generator, engine version and model
+  are written to the Excel report and the CSV. Replaces NumPy's unseeded legacy generator.
+- Same text parsing, validation messages and assumption warnings as the web app (extreme or
+  impossible volatility, 0.07 typed for 7%, inflation of -100%); warnings stay shown after a run.
+- "Safe Withdrawal Rate" renamed "Initial withdrawal rate"; the report adds today's-dollar
+  percentiles; the CSV now uses the web app's layout (inputs, seed, model, warnings, nominal
+  and real percentiles).
+- Existing workbooks: if a workbook has pictures, shapes, charts, pivot tables or form controls
+  that openpyxl cannot keep, the program offers to save a new workbook instead of changing it.
+- Load Sample Scenario can no longer produce pension income >= spending.
+- Resizable two-column window with sharp text at Windows display scaling.
+
 ## v1.1.0 — 2026-09-28
 - Replaced `setup_and_run.bat/.command` with the standard one-click launchers
   `Setup_and_Run-monte-carlo-retirement-simulator.bat/.command` and `scripts/bootstrap.py`: a repo-root `.venv` is

@@ -75,12 +75,15 @@ function init() {
     rows.forEach(cells => {
       const tr = el("tr");
       cells.forEach((cell, i) => {
-        if (cell instanceof Node) { const td = el("td"); td.append(cell); tr.append(td); }
-        else tr.append(el("td", cell ?? "—", numeric.includes(i) ? "num" : ""));
+        const td = cell instanceof Node ? el("td") : el("td", cell ?? "—", numeric.includes(i) ? "num" : "");
+        if (cell instanceof Node) td.append(cell);
+        td.dataset.label = headers[i]; // shown as the field name when rows become cards
+        tr.append(td);
       });
       body.append(tr);
     });
     t.append(head, body);
+    t.className = "sdd-cards-table";
     return t;
   }
   function showNotice(node, { tone = "error", title, items = [], actions = [] }) {
@@ -160,9 +163,12 @@ function init() {
     const detail = $("sddPipelineDetail");
     if (md.liveAvailable()) {
       const usage = md.usage();
-      pill.textContent = "Your key";
-      pill.className = `sdd-pill ${usage.count >= usage.limit ? "warn" : "ok"}`;
-      detail.textContent = `Alpha Vantage · about ${usage.count} of ${usage.limit} free requests used today in this browser.`;
+      pill.textContent = usage.dailyLimit ? "Limit reached" : "Your key";
+      pill.className = `sdd-pill ${usage.dailyLimit ? "warn" : "ok"}`;
+      // This browser's own count, never presented as the provider's quota usage.
+      detail.textContent = usage.dailyLimit
+        ? `Alpha Vantage reported this key's daily limit at ${new Date(usage.dailyLimit.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. No more Alpha Vantage requests are sent from this browser until 00:00 UTC (${new Date(usage.resetsAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} your time), unless you check again in Settings.`
+        : `Alpha Vantage · requests sent from this browser today (UTC): ${usage.count}. The free plan allows 25 per day; Alpha Vantage counts every use of the key.`;
     } else {
       pill.textContent = "Off";
       pill.className = "sdd-pill idle";
@@ -173,10 +179,11 @@ function init() {
     $("sddCacheCount").textContent = `${cached} saved response${cached === 1 ? "" : "s"}`;
     const where = md.settings.persistence;
     $("sddKeyState").textContent = md.liveAvailable()
-      ? `Your key is ${KEY_STORAGE_TEXT[where] || "saved in this browser"}. About ${md.usage().count} of ${md.usage().limit} free requests used today here.`
+      ? `Your key is ${KEY_STORAGE_TEXT[where] || "saved in this browser"}. Requests sent from this browser today (UTC): ${md.usage().count}.${md.usage().dailyLimit ? ` Alpha Vantage reported the daily limit${md.usage().dailyLimit.notice ? `: “${md.usage().dailyLimit.notice}”` : "."}` : ""}`
       : "No key saved. Live data is off.";
     if (md.liveAvailable()) $("sddKeyRemember").checked = where === "local";
     $("sddKeyRemove").disabled = !md.liveAvailable();
+    if (typeof tickerList !== "undefined" && tickerList) renderEstimate();
   }
   const openSettings = () => { selectTab($("sddTab-settings")); app.scrollIntoView({ behavior: "smooth", block: "start" }); };
   $("sddOpenSettings").addEventListener("click", openSettings);
@@ -264,7 +271,23 @@ function init() {
       setStatus($("sddCompareStatus"), md.liveAvailable() ? "Ready. Enter 2–10 tickers and run the comparison." : "Live data needs your own free Alpha Vantage key (Settings). Or choose CSV files or the offline demo.", md.liveAvailable() ? null : "warn");
     }
     syncTickerButtons();
+    renderEstimate();
   }
+  // Request estimate shown before a live run (the free plan allows 25 per day).
+  function renderEstimate() {
+    const box = $("sddEstimate");
+    if (sourceValue() !== "live" || !md.liveAvailable()) { box.textContent = ""; return; }
+    const symbols = [...new Set([...tickerList.querySelectorAll("input")].map(i => i.value.trim().toUpperCase()).filter(Boolean))];
+    let range;
+    try { range = A.resolveHorizon($("sddHorizon").value, new Date()); } catch (_) { box.textContent = ""; return; }
+    const cost = md.historyCost(symbols, range);
+    const usage = md.usage();
+    box.textContent = symbols.length
+      ? `This run needs ${cost.min === cost.max ? `about ${cost.min}` : `${cost.min}–${cost.max}`} Alpha Vantage request${cost.max === 1 ? "" : "s"}${cost.cached ? ` (${cost.cached} ticker${cost.cached === 1 ? "" : "s"} saved in this browser cost none)` : ""}. This browser sent ${usage.count} today (UTC); the free plan allows 25 per day.${usage.dailyLimit ? " Alpha Vantage reported the daily limit today." : ""}`
+      : "";
+  }
+  tickerList.addEventListener("input", renderEstimate);
+  $("sddHorizon").addEventListener("change", renderEstimate);
   let previousSource = sourceValue();
   compareForm.querySelectorAll('input[name="source"]').forEach(radio => radio.addEventListener("change", () => {
     if (previousSource === "live") state.liveTickers = [...tickerList.querySelectorAll("input")].map(i => i.value.trim()).filter(Boolean);
@@ -378,7 +401,8 @@ function init() {
           if (demo) {
             const series = demoSeries(symbol, now);
             if (!series) throw new SymbolError(`${symbol} is not part of the offline demo.`, symbol);
-            seriesByTicker[symbol] = { ...series, frequency: "daily" };
+            // The demo defines each synthetic series' currency, so it is known, not unverified.
+            seriesByTicker[symbol] = { ...series, frequency: "daily", currencyVerified: true };
             provenance.push({ ticker: symbol, source: "Synthetic demo", via: "generated in your browser", retrievedAt: now.toISOString(), cached: false, basis: "Synthetic" });
             chip(symbol, "ok", "synthetic");
             continue;
@@ -571,10 +595,15 @@ function init() {
       const th = el("th", m.ticker);
       th.scope = "row";
       const converted = m.nativeCurrency && m.currency && m.nativeCurrency !== m.currency;
-      tr.append(th, el("td", converted ? `${m.currency} (from ${m.nativeCurrency})` : m.currency ?? "Unknown"), el("td", BASIS_LABEL[m.priceBasis] || "—"));
-      [pct(m.totalReturn), pct(m.annualizedReturn), pct(m.annualizedVolatility), num(m.sharpe), pct(m.maxDrawdown), String(m.returnObservations)]
-        .forEach(v => tr.append(el("td", v, "num")));
-      tr.append(el("td", `${m.actualStart ?? "—"} → ${m.actualEnd ?? "—"}`));
+      const labels = [...$("sddMetricsTable").querySelectorAll("thead th")].map(h => h.textContent);
+      const cell = (text, cls, i) => { const td = el("td", text, cls); td.dataset.label = labels[i]; return td; };
+      // Annualized figures from under six months of data are marked ≈ (unstable);
+      // a single return is not annualized at all.
+      const approx = v => (v === "—" || !m.shortSample ? v : `≈ ${v}`);
+      tr.append(th, cell(converted ? `${m.currency} (from ${m.nativeCurrency})` : m.currency ?? "Unknown", "", 1), cell(BASIS_LABEL[m.priceBasis] || "—", "", 2));
+      [pct(m.totalReturn), approx(pct(m.annualizedReturn)), approx(pct(m.annualizedVolatility)), approx(num(m.sharpe)), pct(m.maxDrawdown), String(m.returnObservations)]
+        .forEach((v, i) => tr.append(cell(v, "num", i + 3)));
+      tr.append(cell(`${m.actualStart ?? "—"} → ${m.actualEnd ?? "—"}`, "", 9));
       body.append(tr);
     });
     const warn = $("sddCompareWarnings");
@@ -588,7 +617,8 @@ function init() {
     renderCorrelation(c);
     const benchmark = $("sddBenchmark");
     benchmark.replaceChildren(...c.tickers.map(t => { const o = el("option", t); o.value = t; return o; }));
-    benchmark.value = ["SPY", "^GSPC", "VOO", "IVV", "XIU.TO", "^GSPTSE"].find(t => c.tickers.includes(t)) || c.tickers[c.tickers.length - 1];
+    const varied = c.tickers.filter(t => A.hasVariance(c.returns[t].map(r => r.value)));
+    benchmark.value = ["SPY", "^GSPC", "VOO", "IVV", "XIU.TO", "^GSPTSE"].find(t => varied.includes(t)) || varied[varied.length - 1] || c.tickers[c.tickers.length - 1];
     renderRegression();
     renderCompareCharts(c);
     const sources = $("sddCompareSources");
@@ -631,7 +661,13 @@ function init() {
       body.append(tr);
     });
     t.append(head, body);
-    host.replaceChildren(t);
+    // The matrix needs width; narrow screens get the same values as a list of pairs.
+    const list = el("ul", null, "sdd-corr-list");
+    c.tickers.forEach((left, i) => c.tickers.slice(i + 1).forEach(right => {
+      const value = c.matrix[left][right];
+      list.append(el("li", `${left} / ${right}: ${isNum(value) ? value.toFixed(2) : "n/a"} (n=${c.counts[left][right]})`));
+    }));
+    host.replaceChildren(t, list);
     const flags = A.diversificationFlags(c.tickers, c.matrix);
     const div = $("sddDiversification");
     div.replaceChildren();
@@ -653,6 +689,7 @@ function init() {
       rows.map(r => [r.ticker, pct(r.alphaAnnualized), `${num(r.beta, 3)}${stars(r.p)}`, num(r.r2, 3), num(r.p, 4), String(r.n)]),
       { numeric: [1, 2, 3, 4, 5] },
     ));
+    rows.filter(r => r.note).slice(0, 1).forEach(r => host.append(el("p", r.note, "sdd-different")));
     host.append(el("p", `Excess ${c.frequency} log returns over identical intervals; alpha annualized × ${c.periodsPerYear}. Beta significance: * p<0.10, ** p<0.05, *** p<0.01.${c.mixedCurrencies ? " The series are in different currencies, so betas include exchange-rate moves." : ""}`, "muted"));
   }
   $("sddBenchmark").addEventListener("change", renderRegression);
@@ -707,7 +744,7 @@ function init() {
   }
   function renderCompareCharts(c) {
     if (!CHART_AVAILABLE) {
-      $("sddCompareWarnings").append(el("p", "Charts could not load (the Chart.js CDN is blocked or offline). Tables and metrics still work.", "sdd-different"));
+      $("sddCompareWarnings").append(el("p", "The chart library did not load (it is part of this site; reload the page). Tables and metrics still work.", "sdd-different"));
       return;
     }
     const indexed = datasetsFor(c, A.indexedSeries);
@@ -926,6 +963,6 @@ function init() {
   renderDataStatus();
   syncSource();
   updateExportState();
-  if (!CHART_AVAILABLE) setStatus($("sddCompareStatus"), "Charts could not load (Chart.js CDN blocked or offline); tables and metrics still work.", "warn");
+  if (!CHART_AVAILABLE) setStatus($("sddCompareStatus"), "The chart library did not load; reload the page. Tables and metrics still work.", "warn");
   app.dataset.ready = "true";
 }

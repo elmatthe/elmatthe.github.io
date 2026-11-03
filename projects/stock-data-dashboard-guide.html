@@ -8,7 +8,7 @@ redirect_from:
   - /projects/Stock-Data-Dashboard-Tool/
 eyebrow: Setup & user guide
 summary: How to install, run, repair and use the Stock Comparison & Analytics Tool desktop program on Windows or macOS.
-lede: Install the desktop analytics tool with one launcher, compare securities with Yahoo Finance or offline CSV data, and export charts and tables.
+lede: Install the desktop analytics tool with one launcher, compare securities with your own provider key or offline CSV data, and export charts and tables.
 last_updated: 2026-09-28
 sections:
   - { id: before, label: Before you start }
@@ -26,9 +26,9 @@ sections:
 <section class="pj-section" id="use" aria-labelledby="use-h">
   <h2 id="use-h">Using the tool</h2>
   <ol class="pj-steps">
-    <li><strong>Enter the securities:</strong> set how many, click <em>Apply</em>, and type each Yahoo Finance symbol (for example <code>AAPL</code>, <code>XIU.TO</code>, <code>^GSPC</code>) with its listing currency.</li>
-    <li><strong>Choose the settings:</strong> <em>Data source</em> (Yahoo Finance or Offline CSV), <em>Frequency</em> (daily, weekly, monthly), <em>Price type</em>, <em>Return type</em>, <em>Regression</em> mode, start/end dates, risk-free rate and benchmark.</li>
-    <li><strong>Optional: <em>Normalize to currency</em></strong> converts every price to USD, CAD, EUR or GBP before any maths, using Yahoo Finance FX pairs such as <code>CADUSD=X</code>. If a pair is unavailable, that security stays in its own currency and a warning says so.</li>
+    <li><strong>Enter the securities:</strong> set how many, click <em>Apply</em>, and type each symbol (for example <code>AAPL</code>, <code>XIU.TO</code>, <code>VOD.L</code>) with its listing currency.</li>
+    <li><strong>Choose the settings:</strong> <em>Data source</em> (Alpha Vantage, Marketstack or Alpaca with your own key, added under <em>API keys…</em>; or Offline CSV), <em>Frequency</em> (daily, weekly, monthly), <em>Price type</em>, <em>Return type</em>, <em>Regression</em> mode, start/end dates, risk-free rate and benchmark.</li>
+    <li><strong>Optional: <em>Normalize to currency</em></strong> converts every price to USD, CAD, EUR or GBP before any maths, using official Bank of Canada daily rates (the latest fixing on or before each price date). A security that cannot be converted is left out with a warning.</li>
     <li><strong>Click <em>Fetch &amp; Analyze</em>.</strong> Results fill the tabs: metrics, correlation, diversification, regression, plots and warnings. Use <em>Export Results</em> to save them and <em>Clear</em> to start over.</li>
   </ol>
 </section>
@@ -54,11 +54,11 @@ sections:
   <h2 id="troubleshooting-h">Troubleshooting</h2>
   <details class="pj-details">
     <summary>“No data” for a ticker</summary>
-    <div class="pj-details-body"><p>Check the symbol on finance.yahoo.com. Canadian listings need <code>.TO</code>/<code>.V</code>, indexes start with <code>^</code>. Yahoo Finance sometimes rate-limits; wait a few minutes and try again.</p></div>
+    <div class="pj-details-body"><p>Canadian listings need <code>.TO</code>/<code>.V</code>; indexes are not available on free provider plans. Check that your provider covers the exchange and that its free allowance is not used up (Alpha Vantage 25 per day, Marketstack 100 per month).</p></div>
   </details>
   <details class="pj-details">
     <summary>Offline CSV says the data doesn't overlap the dates</summary>
-    <div class="pj-details-body"><p>The sample covers only 2024-01-02 to 2024-01-04. Set those dates, or switch to Yahoo Finance for recent data.</p></div>
+    <div class="pj-details-body"><p>The sample covers only 2024-01-02 to 2024-01-04. Set those dates, or switch to a provider with your own key for recent data.</p></div>
   </details>
   <details class="pj-details">
     <summary>A currency-mismatch warning appears</summary>
@@ -69,7 +69,7 @@ sections:
 
 <section class="pj-section" id="developers" aria-labelledby="developers-h">
   <h2 id="developers-h">For developers</h2>
-  <p>The program is in <code>scripts/</code> (<code>main.py</code> GUI, <code>data_sources.py</code> for Yahoo Finance/offline CSV, <code>analytics.py</code>, <code>plots.py</code>, <code>exports.py</code>). Yahoo Finance is the only online data provider. The unit tests are in the source repository (<code>files/tests</code>) and aren't included in the ZIP:</p>
+  <p>The program is in <code>scripts/</code> (<code>main.py</code> GUI, <code>data_sources.py</code> for provider-key and offline CSV sources, <code>analytics.py</code>, <code>plots.py</code>, <code>exports.py</code>). Online data comes only from providers you choose with your own key. The unit tests are in the source repository (<code>files/tests</code>) and aren't included in the ZIP:</p>
   <div class="pj-code"><pre><code id="sd-dev-cmd">.venv/bin/python -m pip install pytest
 .venv/bin/python -m pytest files/tests -q</code></pre><button type="button" data-copy-target="sd-dev-cmd" hidden>Copy</button></div>
   <p class="muted">On Windows use <code>.venv\Scripts\python.exe</code>. The web version on the project page is a separate client-side implementation; see its <a href="{{ p.page | relative_url }}#compare">comparison table</a>.</p>

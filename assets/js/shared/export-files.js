@@ -4,7 +4,8 @@
 // against spreadsheet formula injection (a leading = + - @ tab or CR is prefixed
 // with an apostrophe) and illegal XML control characters are removed.
 
-const FORMULA_PREFIX = /^[=+\-@\t\r]/;
+// Also LF and the full-width forms (＝ ＋ － ＠), which spreadsheets treat the same way.
+const FORMULA_PREFIX = /^[=+\-@\t\r\n\uFF1D\uFF0B\uFF0D\uFF20]/;
 // XML 1.0 forbids most C0 control characters.
 const ILLEGAL_XML = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g;
 

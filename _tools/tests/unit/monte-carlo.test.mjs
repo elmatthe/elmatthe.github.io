@@ -82,3 +82,55 @@ test("percentileSorted matches numpy linear interpolation on small arrays", () =
   assert.equal(E.percentileSorted(sorted, 0.1), 1.3);
   assert.equal(E.percentileSorted(Float64Array.from([5]), 0.9), 5);
 });
+
+test("spending basis: retirement-year dollars stay the default; today's dollars are converted", () => {
+  const legacy = E.validateInputs(BASE);
+  assert.equal(legacy.spendingBasis, "retirement");
+  assert.deepEqual(E.firstYearWithdrawal(legacy), { entered: 42000, factor: 1, nominal: 42000, basis: "retirement" });
+  const today = E.validateInputs({ ...BASE, spendingBasis: "today" });
+  const first = E.firstYearWithdrawal(today);
+  assert.ok(Math.abs(first.nominal - 88097.838321435) < 1e-6, String(first.nominal));
+  const a = run(BASE, 5);
+  const b = run({ ...BASE, spendingBasis: "today" }, 5);
+  assert.equal(a.summary.netWithdrawal, 42000);
+  assert.equal(b.summary.netWithdrawal, first.nominal);
+  assert.equal(b.summary.netWithdrawalEntered, 42000);
+  assert.ok(b.summary.successProbability < a.summary.successProbability);
+  assert.throws(() => E.validateInputs({ ...BASE, spendingBasis: "nominal" }), /Spending basis/);
+});
+
+test("one number grammar: decimals and exponents yes; hex, nan, inf, underscores and non-ASCII digits no", () => {
+  for (const ok of ["7", "-3.5", "+2", ".5", "5.", "1e3", "1.5E-2", " 42 "]) assert.notEqual(E.parseNumberText(ok), null, ok);
+  for (const bad of ["", "abc", "nan", "NaN", "inf", "Infinity", "0x10", "1_000", "1,000", "١٠", "1e", "--1"]) assert.equal(E.parseNumberText(bad), null, bad);
+  assert.equal(E.validateInputs({ ...BASE, yearsToRetirement: "30.0", simulations: "1e2" }).simulations, 100);
+});
+
+test("assumption warnings flag likely percent mix-ups and impossible returns without changing inputs", () => {
+  const codes = raw => E.assumptionWarnings(E.validateInputs(raw)).map(w => w.code);
+  assert.deepEqual(codes(BASE), []);
+  assert.deepEqual(codes({ ...BASE, expectedReturn: 0.07 }), ["return_looks_fractional"]);
+  assert.deepEqual(codes({ ...BASE, volatility: 50 }), ["volatility_high", "returns_below_total_loss"]);
+  assert.deepEqual(codes({ ...BASE, volatility: 28 }), []);
+  assert.deepEqual(codes({ ...BASE, inflation: -100 }), ["real_values_undefined"]);
+  assert.ok(Math.abs(E.totalLossProbability({ expectedReturn: 7, volatility: 50 }) - 0.0162) < 0.0005);
+  const r = run({ ...BASE, volatility: 50, simulations: 100 });
+  assert.equal(r.warnings.length, 2);
+  assert.equal(r.engineVersion, E.ENGINE_VERSION);
+  assert.match(r.model, /arithmetic expected return/);
+});
+
+test("typical compound growth is below the arithmetic mean and matches simulation medians", () => {
+  assert.ok(Math.abs(E.typicalGrowth(7, 12) - 6.33) < 0.01);
+  assert.ok(Math.abs(E.typicalGrowth(7, 0) - 7) < 1e-12);
+  assert.equal(E.typicalGrowth(-100, 10), null);
+  // The audit measured a median CAGR of 6.34% at 7%/12% over 100,000 paths.
+  assert.ok(Math.abs(E.typicalGrowth(7, 12) - 6.34) < 0.05);
+});
+
+test("draw count: ruined paths stop drawing, and the summary reports how many draws were used", () => {
+  let used = 0;
+  const normal = () => { used += 1; return 0; };
+  const r = E.runSimulation(E.validateInputs({ ...BASE, expectedReturn: -100, volatility: 0, annualContribution: 0, simulations: 4 }), { normal });
+  assert.equal(r.summary.draws, used);
+  assert.equal(used, 4 * (30 + 1));
+});

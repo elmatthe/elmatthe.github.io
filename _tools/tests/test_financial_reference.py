@@ -151,12 +151,7 @@ def test_monte_carlo_zero_volatility_matches_closed_form(raw):
         annual_spending=float(raw["annualSpending"]), pension_income=float(raw["pensionIncome"]), simulations=raw["simulations"],
         workbook_path=Path("unused.xlsx"),
     )
-    original = np.random.normal
-    np.random.normal = lambda loc, scale: loc  # zero shocks, as in the browser run
-    try:
-        desktop = mc_core.run_monte_carlo(inputs)
-    finally:
-        np.random.normal = original
+    desktop = mc_core.run_monte_carlo(inputs, normal=lambda: 0.0)  # zero shocks, as in the browser run
     assert math.isclose(desktop.median_portfolio_at_retirement, at_retirement, rel_tol=1e-12)
     assert math.isclose(desktop.median_final_value, value, rel_tol=1e-9, abs_tol=1e-6)
     assert desktop.success_probability == (0 if ruined else 100)

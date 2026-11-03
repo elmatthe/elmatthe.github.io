@@ -1,856 +1,802 @@
-"""Tkinter GUI for the Portfolio Rebalancer."""
+"""Tkinter window for the Portfolio Rebalancer (same workflow and rules as the web app).
+
+Layout: settings and market data at the top; holdings on the left and the trade
+plan on the right in a resizable pane (stacked on narrow screens). Holdings are a
+scrollable list (ticker, shares, target %, optional account, status line); the plan
+is a compact table (action, ticker, shares, amount, weight before -> after) with a
+details panel for the selected holding. Network work runs on worker threads; every
+answer is checked against the holding's current revision before it is shown.
+"""
 from __future__ import annotations
 
-import datetime as dt
+import csv
+import io
 import queue
+import sys
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 TK_AVAILABLE = True
 try:
     import tkinter as tk
-    from tkinter import filedialog, ttk
-except ImportError:
+    from tkinter import filedialog, messagebox, ttk
+except ImportError:  # pragma: no cover
     TK_AVAILABLE = False
-    tk = None  # type: ignore[assignment]
-    filedialog = None  # type: ignore[assignment]
-    ttk = None  # type: ignore[assignment]
+    tk = ttk = filedialog = messagebox = None  # type: ignore[assignment]
 
-from portfolio_rebalancer.core import calculate_rebalance_plan
+from market_data.catalog import PROVIDERS, providers_for
+from market_data.errors import DataError
+from market_data.freshness import freshness_of
+from market_data.service import MarketData
+from portfolio_rebalancer import core
 from portfolio_rebalancer.export import write_csv_export, write_excel_export
-from portfolio_rebalancer.fx import (
-    ACCOUNT_TYPES,
-    CURRENCY_CODE_TO_KEY,
-    CURRENCY_OPTIONS,
-    DEFAULT_FX_AS_OF,
-    fallback_fx_to_usd,
-    format_currency,
-    format_fx,
-    format_input_price,
-    format_pct,
-    format_shares,
-    get_fx_to_reporting,
-    get_fx_to_usd,
-    get_meta,
-)
-from portfolio_rebalancer.pricing import (
-    fetch_live_fx_to_usd,
-    fetch_live_quote_details,
-    find_cross_market_quote,
-)
-from portfolio_rebalancer.ticker_helper import (
-    build_ticker_candidates,
-    build_ticker_input_hint,
-)
+from portfolio_rebalancer.model import (ACCOUNT_TYPES, REPORTING, Row, Settings, action_lines, build_plan, money, qty, quote_label,
+                                         rows_from_sample)
+from portfolio_rebalancer.sample import CURRENCY_TEST_GROUP, SAMPLE_PORTFOLIO
 
-STATUS_NEUTRAL = "#1f4f8a"
-STATUS_ERROR = "#9b2f2f"
-STATUS_SUCCESS = "#1c7550"
-STATUS_WARN = "#8f5f12"
-
-SAMPLE_PORTFOLIO = [
-    {"ticker": "VTI", "shares": 120, "price": 250, "targetWeight": 10, "currencyKey": "USD"},
-    {"ticker": "XIC.TO", "shares": 320, "price": 36, "targetWeight": 10, "currencyKey": "CAD"},
-    {"ticker": "VEQT.TO", "shares": 410, "price": 42, "targetWeight": 20, "currencyKey": "CAD"},
-    {"ticker": "EWJ", "shares": 220, "price": 64, "targetWeight": 10, "currencyKey": "USD"},
-    {"ticker": "VGK", "shares": 115, "price": 64, "targetWeight": 10, "currencyKey": "USD"},
-    {"ticker": "ISF.L", "shares": 260, "price": 7.4, "targetWeight": 10, "currencyKey": "GBP"},
-    {"ticker": "AAPL", "shares": 45, "price": 180, "targetWeight": 10, "currencyKey": "USD"},
-    {"ticker": "BND", "shares": 200, "price": 72, "targetWeight": 10, "currencyKey": "USD"},
-    {"ticker": "MCHI", "shares": 140, "price": 40, "targetWeight": 10, "currencyKey": "USD"},
-]
+TOOL_ROOT = Path(__file__).resolve().parents[2]
+RUNTIME = TOOL_ROOT / "files" / "runtime"
+STARTUP_FX = ["USD", "EUR", "GBP", "JPY", "CNY", "HKD", "CHF", "AUD"]
+COLORS = {"ok": "#1c7550", "warn": "#8f5f12", "error": "#9b2f2f", "busy": "#1f4f8a", "": "#3f5066"}
+DESKTOP_PROVIDERS = providers_for("desktop")
 
 
-def clamp_row_count(value: int) -> int:
-    return max(1, min(50, int(value)))
+def enable_dpi_awareness() -> None:
+    """Sharp text at 125% and 150% Windows display scaling (before the window exists)."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:  # noqa: BLE001 - older Windows: fall back to system scaling
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:  # noqa: BLE001
+                pass
 
 
-class PortfolioRebalancerApp:
-    def __init__(self, root: tk.Tk) -> None:
+class RebalancerApp:
+    def __init__(self, root: "tk.Tk", market: MarketData | None = None) -> None:
         self.root = root
-        self.root.title("Portfolio Rebalancer Desktop Tool")
-        self.root.geometry("1400x960")
-        self.root.minsize(1200, 760)
+        self.md = market or MarketData(RUNTIME)
+        self.rows: list[Row] = [Row()]
+        self.fx: dict[str, dict] = {"CAD": {"cadPer": 1.0, "kind": "official", "label": "base"}}
+        self.fx_note = ""
+        self.run: dict | None = None
+        self.plan_requested = False
+        self.events: queue.Queue = queue.Queue()
+        self.pool = ThreadPoolExecutor(max_workers=4)
+        self.row_widgets: dict[str, dict] = {}
+        self.closing = False
+        root.title("Portfolio Rebalancer")
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        root.geometry(f"{min(1360, int(sw * 0.92))}x{min(900, int(sh * 0.88))}")
+        root.minsize(min(900, sw), min(600, sh))
+        self._build()
+        self._render_rows()
+        self._poll()
+        self.pool.submit(self._load_fx, STARTUP_FX, "CAD")
+        self._status("Ready. Enter your holdings, or load the sample portfolio.")
 
-        self.rows: list[dict] = []
-        self.has_calculated = False
-        self.is_running = False
-        self.worker_thread: threading.Thread | None = None
-        self.worker_events: queue.Queue[tuple[str, object]] = queue.Queue()
+    # ------------------------------------------------------------------ layout
+    def _build(self) -> None:
+        r = self.root
+        style = ttk.Style(r)
+        style.configure("Status.TLabel", foreground=COLORS[""])
+        top = ttk.Frame(r, padding=(10, 8, 10, 4))
+        top.pack(fill="x")
+        ttk.Label(top, text="Portfolio Rebalancer", font=("TkDefaultFont", 15, "bold")).grid(row=0, column=0, columnspan=8, sticky="w")
+        self.reporting = tk.StringVar(value="CAD")
+        self.mode = tk.StringVar(value="New Money (buy only)")
+        self.budget = tk.StringVar(value="3000")
+        self.rounding = tk.StringVar(value="Fractional shares")
+        self.show_accounts = tk.BooleanVar(value=False)
+        self.source = tk.StringVar(value="Automatic (route by market)")
+        self.fallback = tk.BooleanVar(value=self.md.prefs["fallback"])
+        fields = [("Reporting currency", ttk.Combobox(top, textvariable=self.reporting, values=REPORTING, width=8, state="readonly")),
+                  ("Mode", ttk.Combobox(top, textvariable=self.mode, values=["New Money (buy only)", "Rebalance (sells fund buys)"], width=24, state="readonly")),
+                  ("New money budget", ttk.Entry(top, textvariable=self.budget, width=12)),
+                  ("Share quantities", ttk.Combobox(top, textvariable=self.rounding, values=["Fractional shares", "Whole shares"], width=16, state="readonly")),
+                  ("Price source", ttk.Combobox(top, textvariable=self.source, values=self._source_names(), width=26, state="readonly"))]
+        for i, (label, widget) in enumerate(fields):
+            ttk.Label(top, text=label).grid(row=1, column=i, sticky="w", padx=(0, 10))
+            widget.grid(row=2, column=i, sticky="we", padx=(0, 10))
+        self.budget_label, self.budget_entry = top.grid_slaves(row=1, column=2)[0], fields[2][1]
+        for var in (self.mode, self.rounding):
+            var.trace_add("write", lambda *_: self._after_change())
+        self.reporting.trace_add("write", lambda *_: (self.pool.submit(self._load_fx, [], self.reporting.get()), self._after_change()))
+        self.budget.trace_add("write", lambda *_: self._after_change())
+        self.source.trace_add("write", lambda *_: self._on_source())
+        bar = ttk.Frame(top)
+        bar.grid(row=3, column=0, columnspan=8, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(bar, text="Show account types", variable=self.show_accounts, command=self._render_rows).pack(side="left", padx=(0, 12))
+        ttk.Checkbutton(bar, text="If the chosen source cannot price a holding, try my other saved sources", variable=self.fallback,
+                        command=lambda: self.md.set_routing(fallback=self.fallback.get())).pack(side="left", padx=(0, 12))
+        ttk.Button(bar, text="API keys…", command=self._keys_dialog).pack(side="left", padx=(0, 6))
+        ttk.Button(bar, text="Exchange rates…", command=self._fx_dialog).pack(side="left")
 
-        self.row_count_var = tk.StringVar(value=str(len(SAMPLE_PORTFOLIO)))
-        self.reporting_currency_var = tk.StringVar(value="USD")
-        self.mode_var = tk.StringVar(value="new_money")
-        self.budget_var = tk.StringVar(value="0")
-        self.validation_var = tk.StringVar(value="")
-        self.live_current_total_var = tk.StringVar(value="Current total: $0.00")
-        self.live_weight_total_var = tk.StringVar(value="Target weight total: 0.00%")
-        self.budget_label_var = tk.StringVar(value="New money budget (USD)")
-        self.fetch_live_var = tk.BooleanVar(value=False)
-        self.show_account_type_var = tk.BooleanVar(value=False)
-        self.export_csv_var = tk.BooleanVar(value=False)
-        self.export_excel_var = tk.BooleanVar(value=False)
-        self.csv_path_var = tk.StringVar(value="")
-        self.excel_path_var = tk.StringVar(value="")
-        self.status_var = tk.StringVar(value="Ready.")
+        self.panes = ttk.PanedWindow(r, orient="horizontal" if r.winfo_screenwidth() >= 1100 else "vertical")
+        self.panes.pack(fill="both", expand=True, padx=10, pady=(4, 4))
+        left = ttk.LabelFrame(self.panes, text="Holdings", padding=6)
+        right = ttk.LabelFrame(self.panes, text="Trade plan", padding=6)
+        self.panes.add(left, weight=1)
+        self.panes.add(right, weight=1)
 
-        self.live_fx_to_usd: dict[str, float] = {}
-        self.live_fx_keys: set[str] = set()
-        self._ticker_validate_after_ids: dict[int, str] = {}
-        self._ticker_validation_tokens: dict[int, int] = {}
-        self._ticker_validation_feedback: dict[int, dict[str, str]] = {}
+        tools = ttk.Frame(left)
+        tools.pack(fill="x")
+        # Two rows of buttons so nothing is cut off on a 1366-pixel screen at 125% scaling.
+        for i, (text, cmd) in enumerate((("Add holding", self._add_row), ("Load sample", self._load_sample), ("Get prices", self._price_all),
+                                         ("Clear", self._clear), ("Price test rows", self._price_tests), ("Remove test rows", self._remove_tests),
+                                         ("Import CSV…", self._import_holdings), ("Export CSV…", self._export_holdings))):
+            ttk.Button(tools, text=text, command=cmd).grid(row=i // 4, column=i % 4, padx=(0, 4), pady=(0, 4), sticky="we")
+        self.estimate = ttk.Label(left, text="", wraplength=560, justify="left", foreground=COLORS[""])
+        self.estimate.pack(fill="x")
+        self.summary = ttk.Label(left, text="", font=("TkDefaultFont", 10, "bold"), wraplength=560, justify="left")
+        self.summary.pack(fill="x", pady=(2, 4))
+        holder = ttk.Frame(left)
+        holder.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(holder, highlightthickness=0)
+        scroll = ttk.Scrollbar(holder, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.rows_frame = ttk.Frame(self.canvas)
+        self.rows_window = self.canvas.create_window((0, 0), window=self.rows_frame, anchor="nw")
+        self.rows_frame.bind("<Configure>", lambda _: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", self._on_canvas_resize)
+        self.canvas.bind_all("<MouseWheel>", lambda e: self.canvas.yview_scroll(int(-e.delta / 120), "units"))
 
-        self._build_ui()
-        self.set_rows(len(SAMPLE_PORTFOLIO), SAMPLE_PORTFOLIO)
+        actions = ttk.Frame(right)
+        actions.pack(fill="x")
+        ttk.Button(actions, text="Calculate plan", command=self._calculate).pack(side="left", padx=(0, 4))
+        self.csv_button = ttk.Button(actions, text="Export CSV…", command=lambda: self._export("csv"), state="disabled")
+        self.csv_button.pack(side="left", padx=(0, 4))
+        self.xlsx_button = ttk.Button(actions, text="Export Excel…", command=lambda: self._export("xlsx"), state="disabled")
+        self.xlsx_button.pack(side="left")
+        self.status = ttk.Label(right, text="", wraplength=520, justify="left", style="Status.TLabel")
+        self.status.pack(fill="x", pady=(4, 4))
+        self.headline = ttk.Label(right, text="", wraplength=520, justify="left", font=("TkDefaultFont", 10, "bold"))
+        self.headline.pack(fill="x")
+        tree_holder = ttk.Frame(right)
+        tree_holder.pack(fill="both", expand=True, pady=(4, 4))
+        cols = ("action", "ticker", "shares", "amount", "weights")
+        self.tree = ttk.Treeview(tree_holder, columns=cols, show="headings", height=12, selectmode="browse")
+        for col, text, width, anchor in (("action", "Action", 56, "w"), ("ticker", "Ticker", 80, "w"), ("shares", "Shares", 74, "e"),
+                                         ("amount", "Amount", 96, "e"), ("weights", "Weight now → after (target)", 210, "w")):
+            self.tree.heading(col, text=text)
+            self.tree.column(col, width=width, anchor=anchor, stretch=True, minwidth=50)
+        tree_scroll = ttk.Scrollbar(tree_holder, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=tree_scroll.set)
+        tree_scroll.pack(side="right", fill="y")
+        self.tree.pack(side="left", fill="both", expand=True)
+        self.tree.bind("<<TreeviewSelect>>", lambda _: self._show_details())
+        self.details = tk.Text(right, height=10, wrap="word", relief="flat", background=r.cget("background"))
+        self.details.pack(fill="both", expand=False)
+        self.details.configure(state="disabled")
+        ttk.Label(r, text="Illustrative planning only; not financial, investment or trading advice. Prices are the latest available from your chosen "
+                          "provider, not real-time unless the source says so. Verify prices at your broker before trading.",
+                  wraplength=1200, foreground=COLORS[""]).pack(fill="x", padx=10, pady=(0, 6))
+        r.bind("<Configure>", self._on_window_resize)
+        r.protocol("WM_DELETE_WINDOW", self._close)
 
-    def _build_ui(self) -> None:
-        main = ttk.Frame(self.root)
-        main.pack(fill="both", expand=True, padx=10, pady=8)
+    def _source_names(self) -> list[str]:
+        return ["Automatic (route by market)"] + [PROVIDERS[p]["name"] for p in DESKTOP_PROVIDERS]
 
-        ttk.Label(main, text="Portfolio Rebalancer Project", font=("TkDefaultFont", 16, "bold")).pack(anchor="w")
-        ttk.Label(main, text="Desktop rebalancer with two modes (New Money / Rebalance), optional live fetch, and CSV/Excel export.", foreground="#3f5066").pack(anchor="w", pady=(0, 8))
+    def _source_id(self) -> str:
+        name = self.source.get()
+        return next((p for p in DESKTOP_PROVIDERS if PROVIDERS[p]["name"] == name), "auto")
 
-        controls = ttk.Frame(main)
-        controls.pack(fill="x", pady=(0, 6))
+    def _on_canvas_resize(self, event) -> None:
+        self.canvas.itemconfigure(self.rows_window, width=event.width)
+        for w in self.row_widgets.values():
+            w["status"].configure(wraplength=max(240, event.width - 40))
+        for label in (self.estimate, self.summary):
+            label.configure(wraplength=max(240, event.width))
 
-        ttk.Label(controls, text="Securities").grid(row=0, column=0, sticky="w")
-        self.row_count_spin = tk.Spinbox(controls, from_=1, to=50, width=6, textvariable=self.row_count_var, justify="right")
-        self.row_count_spin.grid(row=1, column=0, sticky="w", padx=(0, 10))
+    def _on_window_resize(self, event) -> None:
+        if event.widget is self.root:
+            width = max(300, event.width // 2 - 60)
+            for label in (self.status, self.headline):
+                label.configure(wraplength=width)
 
-        ttk.Label(controls, text="Reporting currency").grid(row=0, column=1, sticky="w")
-        self.reporting_combo = ttk.Combobox(controls, width=10, values=list(CURRENCY_OPTIONS.keys()), textvariable=self.reporting_currency_var, state="readonly")
-        self.reporting_combo.grid(row=1, column=1, sticky="w", padx=(0, 10))
-        self.reporting_combo.bind("<<ComboboxSelected>>", lambda _: self._on_reporting_change())
+    def _status(self, text: str, tone: str = "") -> None:
+        self.status.configure(text=text, foreground=COLORS.get(tone, COLORS[""]))
 
-        ttk.Label(controls, text="Mode").grid(row=0, column=2, sticky="w")
-        self.mode_combo = ttk.Combobox(controls, width=16, values=["new_money", "rebalance"], textvariable=self.mode_var, state="readonly")
-        self.mode_combo.grid(row=1, column=2, sticky="w", padx=(0, 10))
-        self.mode_combo.bind("<<ComboboxSelected>>", lambda _: self._on_mode_change())
+    # ------------------------------------------------------------------ holdings
+    def _render_rows(self) -> None:
+        for child in self.rows_frame.winfo_children():
+            child.destroy()
+        self.row_widgets.clear()
+        show_acct = self.show_accounts.get()
+        main = [r for r in self.rows if r.group != CURRENCY_TEST_GROUP]
+        tests = [r for r in self.rows if r.group == CURRENCY_TEST_GROUP]
+        line = 0
+        for group, rows in (("Holdings", main), ("International currency tests (0 shares, 0% target)", tests)):
+            if not rows:
+                continue
+            if group != "Holdings":
+                ttk.Label(self.rows_frame, text=group, font=("TkDefaultFont", 10, "bold")).grid(row=line, column=0, columnspan=6, sticky="w", pady=(10, 2))
+                line += 1
+            for row in rows:
+                line = self._build_row(row, line, show_acct)
+        self._after_change()
 
-        ttk.Button(controls, text="Apply Rows", command=self._on_apply_rows).grid(row=1, column=3, padx=(0, 6))
-        ttk.Button(controls, text="Add Row", command=self._on_add_row).grid(row=1, column=4, padx=(0, 6))
-        ttk.Button(controls, text="Remove Last", command=self._on_remove_row).grid(row=1, column=5)
+    def _build_row(self, row: Row, line: int, show_acct: bool) -> int:
+        f = self.rows_frame
+        ticker, shares, target = tk.StringVar(value=row.ticker), tk.StringVar(value=row.shares), tk.StringVar(value=row.target)
+        account = tk.StringVar(value=row.account or "Unassigned")
+        grid = ttk.Frame(f)
+        grid.grid(row=line, column=0, sticky="we", pady=(4, 0))
+        f.columnconfigure(0, weight=1)
+        ttk.Label(grid, text="Ticker").grid(row=0, column=0, sticky="w")
+        ttk.Label(grid, text="Shares").grid(row=0, column=1, sticky="w")
+        ttk.Label(grid, text="Target %").grid(row=0, column=2, sticky="w")
+        e_ticker = ttk.Entry(grid, textvariable=ticker, width=12)
+        e_shares = ttk.Entry(grid, textvariable=shares, width=9)
+        e_target = ttk.Entry(grid, textvariable=target, width=6)
+        e_ticker.grid(row=1, column=0, padx=(0, 6), sticky="w")
+        e_shares.grid(row=1, column=1, padx=(0, 6), sticky="w")
+        e_target.grid(row=1, column=2, padx=(0, 6), sticky="w")
+        col = 3
+        if show_acct:
+            ttk.Label(grid, text="Account").grid(row=0, column=col, sticky="w")
+            box = ttk.Combobox(grid, textvariable=account, values=["Unassigned"] + ACCOUNT_TYPES[1:], width=14, state="readonly")
+            box.grid(row=1, column=col, padx=(0, 6), sticky="w")
+            account.trace_add("write", lambda *_: self._edit(row, "account", "" if account.get() == "Unassigned" else account.get()))
+            col += 1
+        ttk.Button(grid, text="Price", width=6, command=lambda: self._price(row, force=True)).grid(row=1, column=col, padx=(0, 3))
+        ttk.Button(grid, text="My price", width=9, command=lambda: self._manual_dialog(row)).grid(row=1, column=col + 1, padx=(0, 3))
+        ttk.Button(grid, text="✕", width=2, command=lambda: self._remove_row(row)).grid(row=1, column=col + 2)
+        status = ttk.Label(f, text="", wraplength=600, justify="left")
+        status.grid(row=line + 1, column=0, sticky="we", padx=(2, 0))
+        ttk.Separator(f, orient="horizontal").grid(row=line + 2, column=0, sticky="we", pady=(4, 0))
+        ticker.trace_add("write", lambda *_: self._ticker_edited(row, ticker.get()))
+        shares.trace_add("write", lambda *_: self._edit(row, "shares", shares.get()))
+        target.trace_add("write", lambda *_: self._edit(row, "target", target.get()))
+        e_ticker.bind("<Return>", lambda _: self._commit(row))
+        e_ticker.bind("<FocusOut>", lambda _: self._commit(row))
+        self.row_widgets[row.id] = {"status": status, "ticker": ticker}
+        self._paint_row(row)
+        return line + 3
 
-        table_section = ttk.LabelFrame(main, text="Portfolio Inputs")
-        table_section.pack(fill="both", expand=False, pady=(6, 6))
+    def _paint_row(self, row: Row) -> None:
+        w = self.row_widgets.get(row.id)
+        if not w:
+            return
+        text, tone = self._describe(row)
+        w["status"].configure(text=text, foreground=COLORS.get(tone, COLORS[""]))
 
-        header = ttk.Frame(table_section)
-        header.pack(fill="x", padx=6, pady=(6, 2))
-        header_labels = [("#", 4), ("Ticker", 14), ("Shares", 12), ("Price", 12), ("Currency", 10),
-                         ("FX", 10), ("Current Value", 16), ("Target %", 10), ("Account Type", 14)]
-        self.header_labels_widgets: list[ttk.Label] = []
-        for col, (label, width) in enumerate(header_labels):
-            w = ttk.Label(header, text=label, width=width, anchor="w")
-            w.grid(row=0, column=col, padx=2, sticky="w")
-            self.header_labels_widgets.append(w)
-        self.header_labels_widgets[-1].grid_remove()
+    def _describe(self, row: Row) -> tuple[str, str]:
+        ident = row.identity
+        if not row.ticker:
+            return "Enter the ticker as your broker shows it.", ""
+        if row.status == "draft":
+            return "Press Enter or leave the field to look up this ticker.", ""
+        if ident and ident["status"] != "resolved":
+            return ident.get("reason") or "This ticker is not supported.", "error"
+        head = ""
+        if ident:
+            unit = " (quoted in pence)" if ident.get("quoteUnit") == "minor" else ""
+            head = f"{ident.get('name') or ident['localSymbol']} · {ident['venueName']} · {ident.get('currency') or '?'}{unit}\n"
+        if row.status == "pricing":
+            return head + "Fetching the latest price…", "busy"
+        eff = row.effective()
+        if eff:
+            value = (core.parse_number(row.shares) or 0) * eff["price"]
+            if eff["source"]["kind"] == "provider":
+                state, missed = freshness_of(eff["source"]["tradingDate"], time.time(), ident.get("timeZone") if ident else None)
+                note = {"stale": f" · older than the latest session ({missed} missed)", "too_old": " · too old to use", "unknown": " · date unknown"}.get(state, "")
+                cached = " (saved copy)" if row.quote.get("cacheStatus") == "cached" else ""
+                return head + f"Verified {money(eff['price'], eff['currency'])} · {quote_label(row.quote)}{cached}{note} · value {money(value, eff['currency'])}", "ok" if state == "current" else "warn"
+            return head + f"User-supplied {money(eff['price'], eff['currency'])} · {eff['source']['label']} · value {money(value, eff['currency'])}", "warn"
+        if row.error:
+            covered = row.error.get("kind") in ("not_covered", "not_configured", "budget_withheld")
+            return head + ("Not covered: " if covered else "Price unavailable: ") + row.error.get("message", ""), "warn" if covered else "error"
+        if not row.active:
+            return head + "Not priced: 0 shares and a 0% target (not part of the plan).", ""
+        if not self.md.configured():
+            return head + "No price source yet: add your own key under API keys…, or use My price.", ""
+        r = self.md.route(ident) if ident else None
+        if r is not None and not r["candidates"]:
+            reasons = "; ".join(f"{PROVIDERS[x['id']]['name']}: {x['reason']}" for x in r["skipped"])
+            return head + f"Not covered: {reasons}. Use My price, or add a source that covers it.", "warn"
+        return head + "Not priced yet.", ""
 
-        canvas_holder = ttk.Frame(table_section)
-        canvas_holder.pack(fill="both", expand=True, padx=6, pady=(0, 4))
-        self.table_canvas = tk.Canvas(canvas_holder, height=280, highlightthickness=0)
-        self.table_canvas.pack(side="left", fill="both", expand=True)
-        scrollbar = ttk.Scrollbar(canvas_holder, orient="vertical", command=self.table_canvas.yview)
-        scrollbar.pack(side="right", fill="y")
-        self.table_canvas.configure(yscrollcommand=scrollbar.set)
-        self.rows_frame = ttk.Frame(self.table_canvas)
-        self.rows_window_id = self.table_canvas.create_window((0, 0), window=self.rows_frame, anchor="nw")
-        self.rows_frame.bind("<Configure>", lambda _: self.table_canvas.configure(scrollregion=self.table_canvas.bbox("all")))
-        self.table_canvas.bind("<Configure>", lambda e: self.table_canvas.itemconfigure(self.rows_window_id, width=e.width))
+    def _ticker_edited(self, row: Row, text: str) -> None:
+        if row.edit_ticker(text):
+            self._paint_row(row)
+            self._after_change()
 
-        totals = ttk.Frame(table_section)
-        totals.pack(fill="x", padx=6, pady=(2, 8))
-        ttk.Label(totals, textvariable=self.live_current_total_var).pack(side="left")
-        ttk.Label(totals, textvariable=self.live_weight_total_var).pack(side="right")
+    def _edit(self, row: Row, field_name: str, value: str) -> None:
+        setattr(row, field_name, value)
+        self._paint_row(row)
+        self._after_change()
 
-        self.budget_frame = ttk.Frame(main)
-        self.budget_frame.pack(fill="x", pady=(0, 4))
-        ttk.Label(self.budget_frame, textvariable=self.budget_label_var).pack(anchor="w")
-        self.budget_entry = ttk.Entry(self.budget_frame, textvariable=self.budget_var, width=24)
-        self.budget_entry.pack(anchor="w", pady=(2, 0))
-        self.budget_entry.bind("<KeyRelease>", lambda _: self._handle_input_change())
-        ttk.Label(self.budget_frame, text="Amount of new cash to invest. Buys will not exceed this budget.", foreground="#5c6a7c").pack(anchor="w")
+    def _commit(self, row: Row) -> None:
+        if not row.ticker or (row.identity and row.committed == row.ticker):
+            return
+        row.apply_identity(self.md.resolve(row.ticker))
+        self._paint_row(row)
+        self._after_change()
+        if row.status == "resolved" and row.active and self.md.configured():
+            self._price(row)
 
-        btn_row = ttk.Frame(main)
-        btn_row.pack(fill="x", pady=(6, 4))
-        self.run_button = ttk.Button(btn_row, text="Run Rebalance", command=self._on_run)
-        self.run_button.pack(side="left", padx=(0, 6))
-        ttk.Button(btn_row, text="Load Sample", command=self._load_sample).pack(side="left")
+    def _price(self, row: Row, force: bool = False) -> None:
+        if row.ticker and (not row.identity or row.committed != row.ticker):
+            row.apply_identity(self.md.resolve(row.ticker))
+        if not row.identity or row.identity["status"] != "resolved":
+            self._paint_row(row)
+            return
+        token = row.token()
+        route = self.md.route(row.identity)
+        if not route["candidates"]:
+            reasons = "; ".join(f"{PROVIDERS[x['id']]['name']}: {x['reason']}" for x in route["skipped"])
+            kind = "not_covered" if self.md.configured() else "not_configured"
+            row.apply_error(token, {"kind": kind, "message": f"Not covered by your saved sources ({reasons})." if self.md.configured() else "No price source is set up yet."})
+            self._paint_row(row)
+            self._after_change()
+            return
+        row.status = "pricing"
+        self._paint_row(row)
+        identity = row.identity
+        currency = identity.get("currency")
+        reporting = self.reporting.get()  # Tk variables are read on the main thread only
 
-        options = ttk.LabelFrame(main, text="Run Options")
-        options.pack(fill="x", pady=(4, 6))
-        options.columnconfigure(1, weight=1)
-        self.fetch_live_check = ttk.Checkbutton(options, text="Fetch live prices and FX rates (requires internet)", variable=self.fetch_live_var)
-        self.fetch_live_check.grid(row=0, column=0, columnspan=3, sticky="w", padx=6, pady=(6, 3))
-        self.acct_type_check = ttk.Checkbutton(options, text="Show Account Type column (cross-account funding checks)", variable=self.show_account_type_var, command=self._toggle_account_type)
-        self.acct_type_check.grid(row=1, column=0, columnspan=3, sticky="w", padx=6, pady=(0, 3))
-        self.csv_check = ttk.Checkbutton(options, text="Export CSV", variable=self.export_csv_var, command=self._toggle_exports)
-        self.csv_check.grid(row=2, column=0, sticky="w", padx=6, pady=2)
-        self.csv_entry = ttk.Entry(options, textvariable=self.csv_path_var, state="disabled")
-        self.csv_entry.grid(row=2, column=1, sticky="ew", padx=4, pady=2)
-        self.csv_button = ttk.Button(options, text="Browse...", command=self._browse_csv, state="disabled")
-        self.csv_button.grid(row=2, column=2, padx=6, pady=2)
-        self.excel_check = ttk.Checkbutton(options, text="Export Excel", variable=self.export_excel_var, command=self._toggle_exports)
-        self.excel_check.grid(row=3, column=0, sticky="w", padx=6, pady=(2, 6))
-        self.excel_entry = ttk.Entry(options, textvariable=self.excel_path_var, state="disabled")
-        self.excel_entry.grid(row=3, column=1, sticky="ew", padx=4, pady=(2, 6))
-        self.excel_button = ttk.Button(options, text="Browse...", command=self._browse_excel, state="disabled")
-        self.excel_button.grid(row=3, column=2, padx=6, pady=(2, 6))
+        def work() -> None:
+            try:
+                if currency and currency not in self.fx:
+                    self._load_fx([currency], reporting)
+                quote = self.md.price_instrument(identity, use_cache=not force, cancelled=lambda: self.closing)
+                self.events.put(("quote", row, token, quote))
+            except DataError as error:
+                self.events.put(("error", row, token, {**error.to_contract(), "kind": error.kind, "provider": error.provider}))
+            except Exception as error:  # noqa: BLE001 - shown to the user, never silently ignored
+                self.events.put(("error", row, token, {"kind": "failed", "message": f"{type(error).__name__}: {error}"}))
+        self.pool.submit(work)
 
-        self.progress = ttk.Progressbar(main, mode="indeterminate")
-        self.progress.pack(fill="x", pady=(0, 6))
-        self.status_label = tk.Label(main, textvariable=self.status_var, anchor="w", fg=STATUS_NEUTRAL, bg=self.root.cget("bg"))
-        self.status_label.pack(fill="x", pady=(0, 2))
-        ttk.Label(main, textvariable=self.validation_var, foreground="#B12828").pack(anchor="w", pady=(0, 4))
+    def _price_many(self, rows: list[Row], label: str) -> None:
+        targets = sorted([r for r in rows if r.ticker and not r.manual], key=lambda r: -(core.parse_number(r.target) or 0))
+        for r in targets:
+            if not r.identity or r.committed != r.ticker:
+                r.apply_identity(self.md.resolve(r.ticker))
+        remaining = {}
+        for pid in self.md.configured():
+            b = self.md.budget(pid)
+            if b["remaining"] is not None:
+                remaining[pid] = b["remaining"]
+        count = 0
+        for r in targets:
+            if r.identity["status"] != "resolved" or r.effective():
+                continue
+            first = (self.md.route(r.identity)["candidates"] or [None])[0]
+            if first and first["id"] in remaining:
+                cost = PROVIDERS[first["id"]]["requestCost"](r.identity)
+                if cost > remaining[first["id"]]:
+                    r.apply_error(r.token(), {"kind": "budget_withheld", "message": f"Not requested: by this computer's count your {PROVIDERS[first['id']]['name']} allowance is used up. Use another source, wait for the reset, or use My price."})
+                    self._paint_row(r)
+                    continue
+                remaining[first["id"]] -= cost
+            self._price(r)
+            count += 1
+        self._status(f"{label}: fetching {count} price{'s' if count != 1 else ''}…", "busy")
 
-        output = ttk.LabelFrame(main, text="Rebalance Output")
-        output.pack(fill="both", expand=True)
-        self.output_text = tk.Text(output, wrap="none", height=14, font=("Courier New", 10))
-        self.output_text.pack(fill="both", expand=True, padx=6, pady=6)
-        self.output_text.insert("1.0", "Output will appear here after you run rebalancing.")
-        self.output_text.configure(state="disabled")
+    def _price_all(self) -> None:
+        self._price_many([r for r in self.rows if r.group != CURRENCY_TEST_GROUP and r.active], "Holdings")
 
-    # ── helpers ──
+    def _price_tests(self) -> None:
+        self._price_many([r for r in self.rows if r.group == CURRENCY_TEST_GROUP], "Currency-test rows")
 
-    def _set_status(self, msg: str, color: str = STATUS_NEUTRAL) -> None:
-        self.status_var.set(msg)
-        self.status_label.config(fg=color)
-
-    def _set_running(self, running: bool) -> None:
-        self.is_running = running
-        st = "disabled" if running else "normal"
-        for w in (self.run_button, self.row_count_spin, self.reporting_combo, self.mode_combo,
-                  self.fetch_live_check, self.acct_type_check, self.csv_check, self.excel_check):
-            w.config(state=st)
-        if running:
-            self.progress.start(12)
-        else:
-            self.progress.stop()
-            self._toggle_exports()
-
-    def _render_output(self, text: str) -> None:
-        self.output_text.configure(state="normal")
-        self.output_text.delete("1.0", "end")
-        self.output_text.insert("1.0", text)
-        self.output_text.configure(state="disabled")
-
-    def _get_fx_to_reporting(self, currency_key: str) -> float:
-        return get_fx_to_reporting(currency_key, self.reporting_currency_var.get(), self.live_fx_to_usd or None)
-
-    @staticmethod
-    def _parse_float(raw: str) -> float | None:
-        raw = str(raw).strip()
-        if not raw:
-            return None
+    def _poll(self) -> None:
         try:
-            return float(raw)
-        except ValueError:
-            return None
-
-    def _toggle_exports(self) -> None:
-        csv_on = bool(self.export_csv_var.get()) and not self.is_running
-        excel_on = bool(self.export_excel_var.get()) and not self.is_running
-        self.csv_entry.config(state="normal" if csv_on else "disabled")
-        self.csv_button.config(state="normal" if csv_on else "disabled")
-        self.excel_entry.config(state="normal" if excel_on else "disabled")
-        self.excel_button.config(state="normal" if excel_on else "disabled")
-
-    def _browse_csv(self) -> None:
-        p = filedialog.asksaveasfilename(title="Select CSV output", defaultextension=".csv", filetypes=[("CSV file", "*.csv")])
-        if p:
-            self.csv_path_var.set(p)
-
-    def _browse_excel(self) -> None:
-        p = filedialog.asksaveasfilename(title="Select Excel output", defaultextension=".xlsx", filetypes=[("Excel workbook", "*.xlsx")])
-        if p:
-            self.excel_path_var.set(p)
-
-    def _toggle_account_type(self) -> None:
-        show = self.show_account_type_var.get()
-        if show:
-            self.header_labels_widgets[-1].grid()
-        else:
-            self.header_labels_widgets[-1].grid_remove()
-        for row in self.rows:
-            if show:
-                row["acct_combo"].grid()
-            else:
-                row["acct_combo"].grid_remove()
-
-    def _on_mode_change(self) -> None:
-        mode = self.mode_var.get()
-        if mode == "new_money":
-            self.budget_frame.pack(fill="x", pady=(0, 4), before=self.budget_frame.master.winfo_children()[
-                list(self.budget_frame.master.winfo_children()).index(self.budget_frame)])
-        else:
+            while True:
+                kind, *payload = self.events.get_nowait()
+                if kind == "quote":
+                    row, token, quote = payload
+                    if row in self.rows and row.apply_quote(token, quote):
+                        self._paint_row(row)
+                elif kind == "error":
+                    row, token, error = payload
+                    if row in self.rows and row.apply_error(token, error):
+                        self._paint_row(row)
+                elif kind == "fx":
+                    self._paint_all()
+                elif kind == "status":
+                    self._status(*payload)
+                self._after_change()
+        except queue.Empty:
             pass
-        self.budget_frame.pack_forget() if mode != "new_money" else self.budget_frame.pack(fill="x", pady=(0, 4))
-        self._handle_input_change()
+        if not self.closing:
+            self.root.after(80, self._poll)
 
-    def _on_reporting_change(self) -> None:
-        label = get_meta(self.reporting_currency_var.get())["label"]
-        self.budget_label_var.set(f"New money budget ({label})")
-        self._update_live_totals()
-        if self.has_calculated and not self.is_running:
-            self._recalculate(show_error=False)
-
-    # ── row management ──
-
-    def set_rows(self, count: int, seed_data: list[dict] | None = None) -> None:
-        count = clamp_row_count(count)
-        self.row_count_var.set(str(count))
-        for aid in self._ticker_validate_after_ids.values():
-            try:
-                self.root.after_cancel(aid)
-            except Exception:
-                pass
-        self._ticker_validate_after_ids.clear()
-        self._ticker_validation_tokens.clear()
-        self._ticker_validation_feedback.clear()
+    def _paint_all(self) -> None:
         for r in self.rows:
-            r["frame"].destroy()
-        self.rows.clear()
+            self._paint_row(r)
 
-        show_acct = self.show_account_type_var.get()
-        for idx in range(count):
-            d = seed_data[idx] if seed_data and idx < len(seed_data) else {}
-            ticker = str(d.get("ticker", "")).upper()
-            shares = str(d.get("shares", ""))
-            price = str(d.get("price", ""))
-            target = str(d.get("targetWeight", ""))
-            ckey = d.get("currencyKey", "USD")
-            if ckey not in CURRENCY_OPTIONS:
-                ckey = "USD"
-            acct = d.get("accountType", "")
-
-            frame = ttk.Frame(self.rows_frame)
-            frame.grid(row=idx, column=0, sticky="ew", pady=1)
-            frame.columnconfigure(9, weight=1)
-
-            tv = tk.StringVar(value=ticker)
-            sv = tk.StringVar(value=shares)
-            pv = tk.StringVar(value=price)
-            wv = tk.StringVar(value=target)
-            cv = tk.StringVar(value=ckey)
-            av = tk.StringVar(value=acct)
-
-            ttk.Label(frame, text=str(idx + 1), width=4).grid(row=0, column=0, padx=2)
-            te = ttk.Entry(frame, textvariable=tv, width=14)
-            te.grid(row=0, column=1, padx=2)
-            se = ttk.Entry(frame, textvariable=sv, width=12)
-            se.grid(row=0, column=2, padx=2)
-            pe = ttk.Entry(frame, textvariable=pv, width=12)
-            pe.grid(row=0, column=3, padx=2)
-            cc = ttk.Combobox(frame, textvariable=cv, values=list(CURRENCY_OPTIONS.keys()), state="readonly", width=10)
-            cc.grid(row=0, column=4, padx=2)
-            fl = ttk.Label(frame, text=format_fx(self._get_fx_to_reporting(ckey)), width=10)
-            fl.grid(row=0, column=5, padx=2)
-            vl = ttk.Label(frame, text=format_currency(0), width=16)
-            vl.grid(row=0, column=6, padx=2)
-            we = ttk.Entry(frame, textvariable=wv, width=10)
-            we.grid(row=0, column=7, padx=2)
-            ac = ttk.Combobox(frame, textvariable=av, values=ACCOUNT_TYPES, state="readonly", width=14)
-            ac.grid(row=0, column=8, padx=2)
-            if not show_acct:
-                ac.grid_remove()
-            hl = ttk.Label(frame, text="", foreground=STATUS_WARN)
-            hl.grid(row=1, column=1, columnspan=8, padx=2, sticky="w")
-
-            te.bind("<KeyRelease>", lambda _, i=idx: self._on_ticker_change(i))
-            te.bind("<FocusOut>", lambda _, i=idx: self._on_ticker_change(i))
-            cc.bind("<<ComboboxSelected>>", lambda _, i=idx: self._on_ticker_change(i))
-            for entry in (se, pe, we):
-                entry.bind("<KeyRelease>", lambda _: self._handle_input_change())
-                entry.bind("<FocusOut>", lambda _: self._handle_input_change())
-
-            self.rows.append({
-                "frame": frame, "ticker_var": tv, "shares_var": sv, "price_var": pv,
-                "target_var": wv, "currency_var": cv, "acct_var": av,
-                "fx_label": fl, "current_label": vl, "hint_label": hl, "acct_combo": ac,
-            })
-
-        self._update_mode_ui()
-        self._update_live_totals()
-        for idx, r in enumerate(self.rows):
-            if r["ticker_var"].get().strip():
-                self._schedule_ticker_validation(idx)
-
-    def _get_current_seed(self) -> list[dict]:
-        return [{
-            "ticker": r["ticker_var"].get().strip().upper(),
-            "shares": r["shares_var"].get().strip(),
-            "price": r["price_var"].get().strip(),
-            "currencyKey": r["currency_var"].get() or "USD",
-            "targetWeight": r["target_var"].get().strip(),
-            "accountType": r["acct_var"].get(),
-        } for r in self.rows]
-
-    # ── live totals ──
-
-    def _update_live_totals(self) -> None:
-        total_current = 0.0
-        total_weight = 0.0
-        rkey = self.reporting_currency_var.get()
-        for idx, r in enumerate(self.rows):
-            shares = self._parse_float(r["shares_var"].get())
-            price = self._parse_float(r["price_var"].get())
-            target = self._parse_float(r["target_var"].get())
-            ckey = r["currency_var"].get()
-            fx = self._get_fx_to_reporting(ckey)
-            is_live = ckey in self.live_fx_keys or rkey in self.live_fx_keys
-            cv = shares * price * fx if shares is not None and price is not None and shares >= 0 and price > 0 else 0.0
-            r["fx_label"].configure(text=format_fx(fx, is_live))
-            r["current_label"].configure(text=format_currency(cv, rkey))
-            ticker = r["ticker_var"].get().strip().upper()
-            fb = self._ticker_validation_feedback.get(idx)
-            if fb and fb.get("ticker") == ticker:
-                r["hint_label"].configure(text=fb["text"], foreground=fb.get("color", STATUS_WARN))
-            else:
-                hint = build_ticker_input_hint(ticker, ckey)
-                r["hint_label"].configure(text=hint, foreground=STATUS_WARN)
-            total_current += cv
-            if target is not None and target >= 0:
-                total_weight += target
-
-        self.live_current_total_var.set(f"Current total: {format_currency(total_current, rkey)}")
-        self.live_weight_total_var.set(f"Target weight total: {format_pct(total_weight)}")
-
-    def _update_mode_ui(self) -> None:
-        mode = self.mode_var.get()
-        if mode == "new_money":
-            self.budget_frame.pack(fill="x", pady=(0, 4))
+    def _after_change(self) -> None:
+        main = [r for r in self.rows if r.group != CURRENCY_TEST_GROUP and r.ticker]
+        priced = sum(1 for r in main if r.effective())
+        active = sum(1 for r in main if r.active)
+        rep = self.reporting.get()
+        total, complete = 0.0, True
+        for r in main:
+            eff = r.effective()
+            if not r.active:
+                continue
+            if not eff or eff["currency"] not in self.fx or rep not in self.fx:
+                complete = False
+                continue
+            total += (core.parse_number(r.shares) or 0) * eff["price"] * self.fx[eff["currency"]]["cadPer"] / self.fx[rep]["cadPer"]
+        tests = sum(1 for r in self.rows if r.group == CURRENCY_TEST_GROUP)
+        parts = [f"{len(main)} holdings", f"{priced} priced"]
+        if active - priced > 0:
+            parts.append(f"{active - priced} without a usable price")
+        if tests:
+            parts.append(f"{tests} currency-test rows")
+        if main:
+            parts.append(f"value {money(total, rep)}{'' if complete else ' (incomplete)'}")
+        self.summary.configure(text=" · ".join(parts) if main else "")
+        pending = [r.identity for r in self.rows if r.group != CURRENCY_TEST_GROUP and r.active and r.identity and r.identity["status"] == "resolved" and not r.effective()]
+        if not self.md.configured():
+            self.estimate.configure(text="To get prices automatically, add your own key for at least one source under API keys…. You can also use My price on each holding.")
+        elif pending:
+            est = self.md.estimate(pending)
+            parts = [f"about {e['requests']} {PROVIDERS[p]['name']} request{'s' if e['requests'] != 1 else ''} for {e['rows']} holding{'s' if e['rows'] != 1 else ''}"
+                     f" (this computer sent {e['sentToday']} today{', ' + str(e['sentMonth']) + ' this month' if e['period'] == 'month' else ''})" for p, e in est["perProvider"].items()]
+            unc = ", ".join(u["displayTicker"] for u in est["uncovered"])
+            self.estimate.configure(text=f"Get prices: {'; '.join(parts) or 'no requests'}.{' Not covered by your saved sources: ' + unc + '.' if unc else ''}")
         else:
-            self.budget_frame.pack_forget()
+            self.estimate.configure(text="")
+        mode_new = self.mode.get().startswith("New")
+        self.budget_entry.configure(state="normal" if mode_new else "disabled")
+        if self.plan_requested:
+            self._calculate(quiet=True)
 
-    # ── ticker validation ──
-
-    def _on_ticker_change(self, row_idx: int) -> None:
-        self._ticker_validation_feedback.pop(row_idx, None)
-        self._handle_input_change()
-        self._schedule_ticker_validation(row_idx)
-
-    def _handle_input_change(self) -> None:
-        self.validation_var.set("")
-        self._update_live_totals()
-        if self.has_calculated and not self.is_running:
-            self._recalculate(show_error=False)
-
-    def _schedule_ticker_validation(self, row_idx: int) -> None:
-        existing = self._ticker_validate_after_ids.get(row_idx)
-        if existing:
-            try:
-                self.root.after_cancel(existing)
-            except Exception:
-                pass
-        token = self._ticker_validation_tokens.get(row_idx, 0) + 1
-        self._ticker_validation_tokens[row_idx] = token
-        self._ticker_validate_after_ids[row_idx] = self.root.after(
-            800, lambda i=row_idx, t=token: self._validate_ticker(i, t)
-        )
-
-    def _validate_ticker(self, row_idx: int, token: int) -> None:
-        self._ticker_validate_after_ids.pop(row_idx, None)
-        if token != self._ticker_validation_tokens.get(row_idx):
+    def _add_row(self) -> None:
+        if len(self.rows) >= 50:
+            self._status("At most 50 holdings.", "warn")
             return
-        if row_idx >= len(self.rows):
-            return
-        r = self.rows[row_idx]
-        ticker = r["ticker_var"].get().strip().upper()
-        ckey = r["currency_var"].get()
-        if not ticker:
-            self._ticker_validation_feedback.pop(row_idx, None)
-            r["hint_label"].configure(text="", foreground=STATUS_WARN)
-            return
-        self._ticker_validation_feedback[row_idx] = {"ticker": ticker, "text": f"Checking {ticker}...", "color": "#3f5066"}
-        self._update_live_totals()
+        idx = next((i for i, r in enumerate(self.rows) if r.group == CURRENCY_TEST_GROUP), len(self.rows))
+        self.rows.insert(idx, Row())
+        self._render_rows()
 
-        def _apply(msg: str, color: str) -> None:
-            if token != self._ticker_validation_tokens.get(row_idx):
-                return
-            if row_idx >= len(self.rows):
-                return
-            if self.rows[row_idx]["ticker_var"].get().strip().upper() != ticker:
-                return
-            self._ticker_validation_feedback[row_idx] = {"ticker": ticker, "text": msg, "color": color}
-            self._update_live_totals()
+    def _remove_row(self, row: Row) -> None:
+        self.rows = [r for r in self.rows if r is not row] or [Row()]
+        self._render_rows()
 
-        def worker() -> None:
-            candidates = build_ticker_candidates(ticker, ckey)
-            sel_code = CURRENCY_OPTIONS.get(ckey, CURRENCY_OPTIONS["USD"])["code"]
-            first_mismatch = None
-            for c in candidates:
-                q = fetch_live_quote_details(c)
-                if q:
-                    if q.get("quoteCurrency") and q["quoteCurrency"] != sel_code:
-                        if not first_mismatch:
-                            first_mismatch = q
-                        continue
-                    self.root.after(0, lambda: _apply(f"✓ Verified: {q['resolvedTicker']} ({q.get('quoteCurrency', '?')})", STATUS_SUCCESS))
-                    return
-            cross = find_cross_market_quote(ticker, candidates)
-            if cross:
-                cc = cross.get("quoteCurrency", "?")
-                self.root.after(0, lambda: _apply(f"⚠ {ticker} not found in {sel_code}. Found as {cross['resolvedTicker']} ({cc}). Update row currency or ticker symbol.", STATUS_WARN))
-                return
-            if first_mismatch:
-                self.root.after(0, lambda: _apply(f"⚠ Found {first_mismatch['resolvedTicker']} but quotes in {first_mismatch.get('quoteCurrency', '?')}, not {sel_code}. Check row currency.", STATUS_WARN))
-                return
-            hint = build_ticker_input_hint(ticker, ckey)
-            msg = "✗ Not found on Yahoo Finance. Verify the symbol at finance.yahoo.com."
-            if hint:
-                msg += f" {hint}"
-            self.root.after(0, lambda: _apply(msg, STATUS_ERROR))
+    def _remove_tests(self) -> None:
+        self.rows = [r for r in self.rows if r.group != CURRENCY_TEST_GROUP] or [Row()]
+        self._render_rows()
+        self._status("Currency-test rows removed.")
 
-        threading.Thread(target=worker, daemon=True).start()
-
-    # ── parse & calculate ──
-
-    def _parse_positions(self, require_price: bool = True) -> list[dict]:
-        if not self.rows:
-            raise ValueError("Add at least one security row.")
-        positions = []
-        rkey = self.reporting_currency_var.get()
-        for idx, r in enumerate(self.rows):
-            ticker = r["ticker_var"].get().strip().upper()
-            shares = self._parse_float(r["shares_var"].get())
-            price = self._parse_float(r["price_var"].get())
-            target = self._parse_float(r["target_var"].get())
-            ckey = r["currency_var"].get()
-            acct = r["acct_var"].get() if self.show_account_type_var.get() else ""
-            if not ticker:
-                raise ValueError(f"Row {idx + 1}: ticker is required.")
-            if shares is None or shares < 0:
-                raise ValueError(f"Row {idx + 1}: shares must be a non-negative number.")
-            if require_price and (price is None or price <= 0):
-                raise ValueError(f"Row {idx + 1}: price must be greater than 0.")
-            if not require_price and price is not None and price <= 0:
-                raise ValueError(f"Row {idx + 1}: manual price must be > 0 when provided.")
-            if target is None or target < 0:
-                raise ValueError(f"Row {idx + 1}: target weight must be >= 0.")
-            positions.append({
-                "rowIndex": idx, "ticker": ticker, "shares": shares, "price": price,
-                "currencyKey": ckey, "currencyLabel": get_meta(ckey)["label"],
-                "targetWeight": target, "accountType": acct,
-            })
-        if not any(p["targetWeight"] > 0 for p in positions):
-            raise ValueError("At least one target weight must be > 0.")
-        return positions
-
-    def _enrich(self, positions: list[dict], fx_map: dict[str, float]) -> list[dict]:
-        rkey = self.reporting_currency_var.get()
-        r2u = fx_map.get(rkey, fallback_fx_to_usd(rkey))
-        enriched = []
-        for p in positions:
-            row2u = fx_map.get(p["currencyKey"], fallback_fx_to_usd(p["currencyKey"]))
-            fx = row2u / r2u
-            price = p["price"]
-            if price is None or price <= 0:
-                raise ValueError(f"{p['ticker']}: price must be > 0.")
-            cv_local = p["shares"] * price
-            enriched.append({**p, "fxToReporting": fx, "currentValueLocal": cv_local, "currentValue": cv_local * fx})
-        return enriched
-
-    def _recalculate(self, show_error: bool = True) -> None:
-        self.validation_var.set("")
-        try:
-            positions = self._parse_positions(require_price=True)
-            mode = self.mode_var.get()
-            budget = self._parse_float(self.budget_var.get()) or 0.0
-            fx_map = {k: get_fx_to_usd(k, self.live_fx_to_usd or None) for k in CURRENCY_OPTIONS}
-            enriched = self._enrich(positions, fx_map)
-            summary, results, warnings = calculate_rebalance_plan(enriched, mode, budget)
-            self._render_output(self._build_output(summary, results, warnings))
-            self.has_calculated = True
-        except ValueError as exc:
-            self._render_output("Output will appear here after you run rebalancing.")
-            self.validation_var.set(str(exc))
-            self.has_calculated = False
-            if show_error:
-                self.root.bell()
-
-    def _build_output(self, summary: dict, results: list[dict], warnings: list[str] | None = None, notes: list[str] | None = None, exports: list[str] | None = None, live: bool = False) -> str:
-        rkey = self.reporting_currency_var.get()
-        mode_label = "New Money" if summary.get("mode") == "new_money" else "Rebalance (Pure)"
-        lines = ["SUMMARY", "-" * 96]
-        lines.append(f"Run Date:            {dt.datetime.now().isoformat(timespec='seconds')}")
-        lines.append(f"Mode:                {mode_label}")
-        lines.append(f"Live data used:      {'Yes' if live else 'No'}")
-        lines.append(f"Total Current Value: {format_currency(summary['totalCurrent'], rkey)}")
-        if summary.get("mode") == "new_money":
-            lines.append(f"New Money Budget:    {format_currency(summary.get('budget', 0), rkey)}")
-        lines.append(f"Target Pool:         {format_currency(summary['pool'], rkey)}")
-        lines.append(f"Total Buy Value:     {format_currency(summary['totalBuys'], rkey)}")
-        lines.append(f"Total Sell Value:    {format_currency(summary['totalSells'], rkey)}")
-        lines.append("")
-        show_acct = self.show_account_type_var.get()
-        acct_hdr = f"{'Acct':>14}" if show_acct else ""
-        lines.append("TRADE PLAN")
-        lines.append("-" * (170 + (14 if show_acct else 0)))
-        lines.append(f"{'Ticker':<8}{acct_hdr}{'Curr':<10}{'Shares':>12}{'Price':>14}{'Current':>14}{'Target%':>10}{'Target':>14}{'Trade':>14}{'Trade Local':>14}{'Trade Sh':>12}{'Action':>9}{'Post Sh':>12}")
-        lines.append("-" * (170 + (14 if show_acct else 0)))
-        for r in results:
-            acct_col = f"{(r.get('accountType') or ''):>14}" if show_acct else ""
-            lines.append(
-                f"{r['ticker']:<8}{acct_col}{r['currencyLabel']:<10}"
-                f"{format_shares(r['shares']):>12}{format_currency(r['price'], r['currencyKey']):>14}"
-                f"{format_currency(r['currentValue'], rkey):>14}{format_pct(r['targetWeightNorm'] * 100):>10}"
-                f"{format_currency(r['targetValue'], rkey):>14}{format_currency(r['tradeValue'], rkey):>14}"
-                f"{format_currency(r['tradeValueLocal'], r['currencyKey']):>14}"
-                f"{format_shares(r['tradeShares']):>12}{r['action']:>9}{format_shares(r['postTradeShares']):>12}"
-            )
-        if warnings:
-            lines += ["", "WARNINGS", "-" * 96] + [f"- {w}" for w in warnings]
-        if notes:
-            lines += ["", "NOTES", "-" * 96] + [f"- {n}" for n in notes]
-        if exports:
-            lines += ["", "EXPORTS", "-" * 96] + [f"- {e}" for e in exports]
-        return "\n".join(lines)
-
-    # ── run ──
-
-    def _on_run(self) -> None:
-        if self.is_running:
-            return
-        self.validation_var.set("")
-        mode = self.mode_var.get()
-        budget = self._parse_float(self.budget_var.get()) or 0.0
-        wants_live = bool(self.fetch_live_var.get())
-        from portfolio_rebalancer.pricing import yf as _yf
-        use_live = wants_live and _yf is not None
-        pre_warnings: list[str] = []
-        if wants_live and not use_live:
-            pre_warnings.append("yfinance is not installed; using manual prices. Install with: pip install yfinance")
-        try:
-            csv_path = self._validate_path(self.export_csv_var, self.csv_path_var, ".csv")
-            excel_path = self._validate_path(self.export_excel_var, self.excel_path_var, ".xlsx")
-            positions = self._parse_positions(require_price=not use_live)
-            if mode == "new_money" and budget <= 0:
-                raise ValueError("New money budget must be greater than 0.")
-        except ValueError as exc:
-            self.validation_var.set(str(exc))
-            self.root.bell()
-            return
-
-        self._set_running(True)
-        self._set_status("Fetching live data..." if use_live else "Running rebalance...", STATUS_NEUTRAL)
-        payload = {"positions": positions, "mode": mode, "budget": budget, "use_live": use_live,
-                   "pre_warnings": pre_warnings, "csv_path": csv_path, "excel_path": excel_path,
-                   "reporting_currency": self.reporting_currency_var.get()}
-        self.worker_thread = threading.Thread(target=self._run_worker, args=(payload,), daemon=True)
-        self.worker_thread.start()
-        self.root.after(80, self._poll_events)
-
-    def _validate_path(self, enabled_var: tk.BooleanVar, path_var: tk.StringVar, ext: str) -> Path | None:
-        if not enabled_var.get():
-            return None
-        raw = path_var.get().strip()
-        if not raw:
-            raise ValueError(f"Export is enabled but no {ext} path is selected.")
-        p = Path(raw)
-        if p.suffix.lower() != ext:
-            raise ValueError(f"Export path must end with {ext}")
-        if not p.parent.exists():
-            raise ValueError(f"Export folder does not exist: {p.parent}")
-        return p
-
-    def _run_worker(self, payload: dict) -> None:
-        try:
-            warnings = list(payload["pre_warnings"])
-            notes: list[str] = []
-            positions = [dict(p) for p in payload["positions"]]
-            mode = str(payload["mode"])
-            budget = float(payload["budget"])
-            rkey = str(payload["reporting_currency"])
-            use_live = bool(payload["use_live"])
-            csv_path: Path | None = payload["csv_path"]
-            excel_path: Path | None = payload["excel_path"]
-
-            fx_map = {k: fallback_fx_to_usd(k) for k in CURRENCY_OPTIONS}
-            live_keys: set[str] = set()
-            price_updates: dict[int, float] = {}
-            currency_updates: dict[int, str] = {}
-
-            if use_live:
-                self.worker_events.put(("status", "Fetching live prices..."))
-                for pos in positions:
-                    ticker = pos["ticker"]
-                    ri = int(pos["rowIndex"])
-                    sel_key = pos["currencyKey"]
-                    sel_code = CURRENCY_OPTIONS[sel_key]["code"]
-                    manual = pos["price"]
-                    candidates = build_ticker_candidates(ticker, sel_key)
-                    best = None
-                    fallback = None
-                    for c in candidates:
-                        q = fetch_live_quote_details(c)
-                        if not q:
-                            continue
-                        if q.get("quoteCurrency") == sel_code:
-                            best = q
-                            break
-                        if not fallback:
-                            fallback = q
-                    chosen = best or fallback
-                    if not chosen:
-                        cross = find_cross_market_quote(ticker, candidates)
-                        chosen = cross
-                    if not chosen:
-                        att = ", ".join(candidates) if candidates else ticker
-                        if manual is None:
-                            raise ValueError(f"Live price unavailable for {ticker} (tried: {att}). Enter a manual price.")
-                        warnings.append(f"Live price unavailable for {ticker} (tried: {att}). Using manual entry {manual:.4f}.")
-                        continue
-                    qcode = chosen.get("quoteCurrency")
-                    qkey = CURRENCY_CODE_TO_KEY.get(qcode) if qcode else None
-                    cp = float(chosen["price"])
-                    if qcode and qcode != sel_code:
-                        if qkey and manual is None:
-                            pos["currencyKey"] = qkey
-                            pos["currencyLabel"] = get_meta(qkey)["label"]
-                            currency_updates[ri] = qkey
-                            pos["price"] = cp
-                            price_updates[ri] = cp
-                            warnings.append(f"{ticker}: using {chosen['resolvedTicker']} ({qcode}), adjusted currency.")
-                            continue
-                        if manual is not None:
-                            warnings.append(f"{ticker}: found as {chosen['resolvedTicker']} ({qcode}). Keeping manual entry.")
-                            continue
-                        raise ValueError(f"{ticker}: unsupported currency {qcode}. Enter a manual price.")
-                    pos["price"] = cp
-                    price_updates[ri] = cp
-                    if chosen["resolvedTicker"] != ticker:
-                        warnings.append(f"{ticker}: used {chosen['resolvedTicker']} for live quote.")
-                    if chosen.get("unitScale", 1.0) != 1.0:
-                        notes.append(f"{ticker}: converted from sub-units ({chosen.get('rawQuoteCurrency')}).")
-
-                self.worker_events.put(("status", "Fetching FX rates..."))
-                in_scope = {rkey}
-                in_scope.update(p["currencyKey"] for p in positions)
-                for ck in sorted(in_scope):
-                    code = CURRENCY_OPTIONS[ck]["code"]
-                    rate = fetch_live_fx_to_usd(code)
-                    if rate:
-                        fx_map[ck] = rate
-                        live_keys.add(ck)
-                    else:
-                        warnings.append(f"Live FX unavailable for {ck}; using the built-in estimate {fallback_fx_to_usd(ck):.4f} USD per unit (Bank of Canada rate for {DEFAULT_FX_AS_OF}).")
-            else:
-                in_scope = {rkey, *(p["currencyKey"] for p in positions)}
-                if len(in_scope) > 1:
-                    warnings.append(
-                        f"Exchange rates are built-in estimates (Bank of Canada rates for {DEFAULT_FX_AS_OF}), "
-                        "not current market rates. Turn on live prices and FX or check the rates before trading."
-                    )
-
-            r2u = fx_map.get(rkey, fallback_fx_to_usd(rkey))
-            enriched = []
-            for p in positions:
-                row2u = fx_map.get(p["currencyKey"], fallback_fx_to_usd(p["currencyKey"]))
-                fx = row2u / r2u
-                price = p["price"]
-                if price is None or price <= 0:
-                    raise ValueError(f"{p['ticker']}: price must be > 0.")
-                cv = p["shares"] * price * fx
-                enriched.append({**p, "fxToReporting": fx, "currentValue": cv})
-
-            summary, results, plan_warnings = calculate_rebalance_plan(enriched, mode, budget)
-            all_warnings = plan_warnings + warnings
-
-            exports: list[str] = []
-            if csv_path:
-                self.worker_events.put(("status", "Writing CSV..."))
-                write_csv_export(csv_path, summary, results, rkey, all_warnings, notes)
-                exports.append(f"CSV: {csv_path}")
-            if excel_path:
-                self.worker_events.put(("status", "Writing Excel..."))
-                write_excel_export(excel_path, summary, results, rkey)
-                exports.append(f"Excel: {excel_path}")
-
-            self.worker_events.put(("success", {
-                "summary": summary, "results": results, "warnings": all_warnings,
-                "notes": notes, "exports": exports, "live": use_live,
-                "fx_map": fx_map if use_live else {}, "live_keys": live_keys,
-                "price_updates": price_updates, "currency_updates": currency_updates,
-            }))
-        except Exception as exc:
-            self.worker_events.put(("error", str(exc)))
-
-    def _poll_events(self) -> None:
-        while True:
-            try:
-                event, payload = self.worker_events.get_nowait()
-            except queue.Empty:
-                break
-            if event == "status":
-                self._set_status(str(payload), STATUS_NEUTRAL)
-            elif event == "success":
-                d = payload
-                self._set_running(False)
-                self.live_fx_to_usd = dict(d["fx_map"])
-                self.live_fx_keys = set(d["live_keys"])
-                for ri, np in d.get("price_updates", {}).items():
-                    i = int(ri)
-                    if 0 <= i < len(self.rows):
-                        self.rows[i]["price_var"].set(format_input_price(float(np)))
-                for ri, nk in d.get("currency_updates", {}).items():
-                    i = int(ri)
-                    if 0 <= i < len(self.rows):
-                        self.rows[i]["currency_var"].set(nk)
-                self._update_live_totals()
-                self._render_output(self._build_output(d["summary"], d["results"], d["warnings"], d.get("notes"), d["exports"], d["live"]))
-                self.has_calculated = True
-                if d["warnings"]:
-                    self._set_status(f"Completed with {len(d['warnings'])} warning(s).", STATUS_WARN)
-                else:
-                    self._set_status("Rebalance completed successfully.", STATUS_SUCCESS)
-            elif event == "error":
-                self._set_running(False)
-                self._render_output("Output will appear here after you run rebalancing.")
-                self.validation_var.set(str(payload))
-                self.has_calculated = False
-                self._set_status("Run failed.", STATUS_ERROR)
-                self.root.bell()
-        if self.is_running:
-            self.root.after(80, self._poll_events)
-
-    # ── UI callbacks ──
-
-    def _on_apply_rows(self) -> None:
-        seed = self._get_current_seed()
-        count = clamp_row_count(int(float(self.row_count_var.get() or "1")))
-        self.set_rows(count, [seed[i] if i < len(seed) else {} for i in range(count)])
-
-    def _on_add_row(self) -> None:
-        seed = self._get_current_seed()
-        if len(seed) >= 50:
-            self.validation_var.set("Maximum 50 rows.")
-            return
-        seed.append({})
-        self.set_rows(len(seed), seed)
-
-    def _on_remove_row(self) -> None:
-        seed = self._get_current_seed()
-        if len(seed) <= 1:
-            self.validation_var.set("At least one row required.")
-            return
-        seed.pop()
-        self.set_rows(len(seed), seed)
+    def _clear(self) -> None:
+        self.rows = [Row()]
+        self.plan_requested = False
+        self._render_rows()
+        self._clear_plan("Cleared.")
 
     def _load_sample(self) -> None:
-        self.live_fx_to_usd.clear()
-        self.live_fx_keys.clear()
-        self.set_rows(len(SAMPLE_PORTFOLIO), SAMPLE_PORTFOLIO)
-        self.budget_var.set("0")
-        self.mode_var.set("new_money")
-        self._update_mode_ui()
-        self.validation_var.set("")
-        self._render_output("Output will appear here after you run rebalancing.")
-        self.has_calculated = False
-        self._set_status("Sample portfolio loaded.", STATUS_NEUTRAL)
+        self.reporting.set(SAMPLE_PORTFOLIO["reportingCurrency"])
+        self.mode.set("New Money (buy only)")
+        self.budget.set(str(SAMPLE_PORTFOLIO["budget"]))
+        self.plan_requested = False
+        self.rows = rows_from_sample(SAMPLE_PORTFOLIO)
+        for r in self.rows:
+            r.apply_identity(self.md.resolve(r.ticker))
+        self._render_rows()
+        self._clear_plan("Sample portfolio loaded: 10 holdings and 4 international currency-test rows, with no prices. Press Get prices; nothing is fetched until you do.")
+
+    def _on_source(self) -> None:
+        self.md.set_routing(mode=self._source_id())
+        self._sources_changed("Price source changed.")
+
+    def _sources_changed(self, message: str) -> None:
+        for r in self.rows:
+            r.reset_quote()
+        self._paint_all()
+        self._after_change()
+        self._status(f"{message} Fetched prices were cleared; press Get prices to fetch them again.")
+
+    # ------------------------------------------------------------------ exchange rates
+    def _load_fx(self, codes: list[str], reporting: str) -> None:
+        """Runs on a worker thread: must not touch Tk widgets or variables."""
+        wanted = sorted({c for c in codes + [reporting] if c and c != "CAD" and c not in self.fx})
+        if not wanted:
+            return
+        try:
+            fx = self.md.latest_fx(wanted)
+            for code in wanted:
+                point = fx["cadPer"].get(code)
+                if point and self.fx.get(code, {}).get("kind") != "manual":
+                    self.fx[code] = {"cadPer": point["cadPer"], "kind": "official", "label": f"{fx['provider']}, {point['date']}", "date": point["date"]}
+            self.fx_note = fx["attribution"]
+        except DataError as error:
+            self.fx_note = f"Official exchange rates are unavailable right now ({error.message})."
+        self.events.put(("fx",))
+
+    def _fx_dialog(self) -> None:
+        top = tk.Toplevel(self.root)
+        top.title("Exchange rates")
+        rep = self.reporting.get()
+        codes = sorted({(r.effective() or {}).get("currency") or (r.identity or {}).get("currency") for r in self.rows} - {None, rep})
+        ttk.Label(top, text=f"{rep} per 1 unit. Official daily averages (Bank of Canada; ECB fallback). Type a rate to use your own.", wraplength=460).pack(padx=10, pady=8, anchor="w")
+        entries = {}
+        for code in codes:
+            frame = ttk.Frame(top)
+            frame.pack(fill="x", padx=10, pady=2)
+            ttk.Label(frame, text=code, width=6).pack(side="left")
+            var = tk.StringVar(value=f"{self.fx[code]['cadPer'] / self.fx[rep]['cadPer']:.6g}" if code in self.fx and rep in self.fx else "")
+            ttk.Entry(frame, textvariable=var, width=14).pack(side="left", padx=6)
+            ttk.Label(frame, text=self.fx.get(code, {}).get("label", "not loaded")).pack(side="left")
+            entries[code] = var
+        ttk.Label(top, text=self.fx_note, wraplength=460, foreground=COLORS[""]).pack(padx=10, pady=6, anchor="w")
+
+        def apply() -> None:
+            for code, var in entries.items():
+                value = core.parse_number(var.get())
+                current = self.fx[code]["cadPer"] / self.fx[rep]["cadPer"] if code in self.fx and rep in self.fx else None
+                if value and value > 0 and rep in self.fx and (current is None or abs(value - current) > 1e-12 * max(1, value)):
+                    self.fx[code] = {"cadPer": value * self.fx[rep]["cadPer"], "kind": "manual", "label": "Entered by you"}
+            top.destroy()
+            self._paint_all()
+            self._after_change()
+        buttons = ttk.Frame(top)
+        buttons.pack(fill="x", padx=10, pady=8)
+        ttk.Button(buttons, text="Use these rates", command=apply).pack(side="left")
+        ttk.Button(buttons, text="Reload official rates", command=lambda: (self.fx.clear(), self.fx.update({"CAD": {"cadPer": 1.0, "kind": "official", "label": "base"}}),
+                                                                          self.pool.submit(self._load_fx, STARTUP_FX + codes, rep), top.destroy())).pack(side="left", padx=6)
+
+    # ------------------------------------------------------------------ manual price and keys
+    def _manual_dialog(self, row: Row) -> None:
+        if not row.ticker:
+            return
+        top = tk.Toplevel(self.root)
+        top.title(f"My price for {row.ticker}")
+        ttk.Label(top, text="Your own price is used instead of a fetched one and is labelled as user-supplied in the plan and exports.", wraplength=380).pack(padx=10, pady=8)
+        price = tk.StringVar(value=str(row.manual["enteredPrice"]) if row.manual else "")
+        cur = tk.StringVar(value=(row.manual or {}).get("currency") or (row.identity or {}).get("currency") or self.reporting.get())
+        unit = tk.StringVar(value="pence / cents (÷100)" if (row.identity or {}).get("quoteUnit") == "minor" else "units of the currency")
+        frame = ttk.Frame(top)
+        frame.pack(padx=10, pady=4)
+        ttk.Entry(frame, textvariable=price, width=12).grid(row=0, column=0, padx=4)
+        ttk.Combobox(frame, textvariable=cur, values=sorted(set(REPORTING + [cur.get()])), width=6, state="readonly").grid(row=0, column=1, padx=4)
+        ttk.Combobox(frame, textvariable=unit, values=["units of the currency", "pence / cents (÷100)"], width=20, state="readonly").grid(row=0, column=2, padx=4)
+        error = ttk.Label(top, text="", foreground=COLORS["error"])
+        error.pack()
+
+        def apply() -> None:
+            try:
+                row.set_manual(price.get(), cur.get(), 0.01 if unit.get().startswith("pence") else 1.0)
+            except ValueError as e:
+                error.configure(text=str(e))
+                return
+            top.destroy()
+            self._paint_row(row)
+            self._after_change()
+
+        def remove() -> None:
+            row.manual = None
+            top.destroy()
+            self._paint_row(row)
+            self._after_change()
+        buttons = ttk.Frame(top)
+        buttons.pack(pady=8)
+        ttk.Button(buttons, text="Use this price", command=apply).pack(side="left", padx=4)
+        if row.manual:
+            ttk.Button(buttons, text="Remove my price", command=remove).pack(side="left", padx=4)
+
+    def _keys_dialog(self) -> None:
+        top = tk.Toplevel(self.root)
+        top.title("API keys")
+        ttk.Label(top, wraplength=560, justify="left", text=(
+            "Each key is yours: it stays on this computer and is sent only to its own provider. A key is kept until you close the "
+            "program unless you tick Remember (then it is saved in files/runtime/keys.json in this folder, never in exports). "
+            "Free plans are for personal, non-commercial use.")).pack(padx=10, pady=8, anchor="w")
+        for pid in DESKTOP_PROVIDERS:
+            self._key_frame(top, pid)
+        off = [p for p in PROVIDERS if p not in DESKTOP_PROVIDERS]
+        for pid in off:
+            ttk.Label(top, text=f"{PROVIDERS[pid]['name']} (not offered): {PROVIDERS[pid].get('unsupportedReason', '')}", wraplength=560,
+                      foreground=COLORS[""]).pack(padx=10, pady=(4, 0), anchor="w")
+        ttk.Button(top, text="Forget all keys", command=lambda: (self.md.forget_all_keys(), top.destroy(), self._sources_changed("All keys were removed."))).pack(pady=8)
+
+    def _key_frame(self, top, pid: str) -> None:
+        p = PROVIDERS[pid]
+        st = self.md.status(pid)
+        box = ttk.LabelFrame(top, text=f"{p['name']} — {'key saved' if st['configured'] else 'no key saved'}", padding=6)
+        box.pack(fill="x", padx=10, pady=4)
+        ttk.Label(box, text=f"{p['priceLabel'][0].upper()}{p['priceLabel'][1:]}. {p['licence']}", wraplength=540).grid(row=0, column=0, columnspan=6, sticky="w")
+        key, secret, remember = tk.StringVar(), tk.StringVar(), tk.BooleanVar(value=st["persistence"] == "local")
+        ttk.Label(box, text="Key ID" if pid == "alpaca" else "API key").grid(row=1, column=0, sticky="w")
+        ttk.Entry(box, textvariable=key, show="•", width=30).grid(row=1, column=1, sticky="w", padx=4)
+        if pid == "alpaca":
+            ttk.Label(box, text="Secret").grid(row=1, column=2, sticky="w")
+            ttk.Entry(box, textvariable=secret, show="•", width=30).grid(row=1, column=3, sticky="w", padx=4)
+        ttk.Checkbutton(box, text="Remember on this computer", variable=remember).grid(row=2, column=0, columnspan=2, sticky="w")
+        message = ttk.Label(box, text="", wraplength=540)
+        message.grid(row=5, column=0, columnspan=6, sticky="w")
+
+        def save() -> None:
+            try:
+                self.md.set_key(pid, key.get(), secret.get() or None, remember.get())
+                key.set("")
+                secret.set("")
+                message.configure(text=f"{p['name']} key saved{' on this computer' if remember.get() else ' for this session'}.")
+                self._sources_changed(f"{p['name']} key saved.")
+            except ValueError as e:
+                message.configure(text=str(e))
+        ttk.Button(box, text="Save key", command=save).grid(row=2, column=2, padx=4)
+        ttk.Button(box, text="Remove key", command=lambda: (self.md.set_key(pid, ""), message.configure(text="Key removed."), self._sources_changed(f"{p['name']} key removed."))).grid(row=2, column=3, padx=4)
+        plan = tk.StringVar(value=st["plan"]["label"])
+        labels = {pl["label"]: pl["id"] for pl in p["plans"]}
+        ttk.Label(box, text="Your plan").grid(row=3, column=0, sticky="w")
+        combo = ttk.Combobox(box, textvariable=plan, values=list(labels), width=46, state="readonly")
+        combo.grid(row=3, column=1, columnspan=3, sticky="w", padx=4)
+        limit = tk.StringVar(value=str(st["plan"]["limits"].get(st["plan"].get("editable") or "", "")))
+        ttk.Entry(box, textvariable=limit, width=8).grid(row=3, column=4, sticky="w")
+        combo.bind("<<ComboboxSelected>>", lambda _: (self.md.set_plan(pid, labels[plan.get()], core.parse_number(limit.get())), self._after_change()))
+        usage = f"Requests sent from this computer: {st.get('sentToday', 0)} today (UTC), {st.get('sentMonth', 0)} this month. Your provider counts every use of the key."
+        rec = st.get("limitRecord")
+        if rec:
+            usage += f"\n{p['name']} reported its {rec['scope']} limit; no more requests are sent until the {'month' if rec['scope'] == 'monthly' else 'day'} ends (UTC)."
+            if rec.get("notice"):
+                usage += f"\nProvider said: “{rec['notice']}”"
+        ttk.Label(box, text=usage, wraplength=540, foreground=COLORS["warn" if rec else ""]).grid(row=4, column=0, columnspan=5, sticky="w")
+        if st["configured"]:
+            ttk.Button(box, text="Check again (1 request)", command=lambda: self.pool.submit(lambda: self.events.put(("status", self.md.check_again(pid)["message"], "")))).grid(row=4, column=5)
+
+    # ------------------------------------------------------------------ plan
+    def _settings(self) -> Settings:
+        return Settings(reporting=self.reporting.get(), mode="new_money" if self.mode.get().startswith("New") else "rebalance",
+                        budget=self.budget.get(), whole_shares=self.rounding.get() == "Whole shares", show_accounts=self.show_accounts.get(),
+                        accept_stale=getattr(self, "accept_stale", False))
+
+    def _clear_plan(self, message: str = "") -> None:
+        self.run = None
+        self.tree.delete(*self.tree.get_children())
+        self.headline.configure(text="")
+        self._set_details("")
+        self.csv_button.configure(state="disabled")
+        self.xlsx_button.configure(state="disabled")
+        if message:
+            self._status(message)
+
+    def _calculate(self, quiet: bool = False) -> None:
+        self.plan_requested = True
+        run = build_plan(self.rows, self._settings(), self.fx)
+        self._clear_plan()
+        v = run["valuation"]
+        if not run["plan"]:
+            reasons: dict[str, list[str]] = {}
+            for u in v["unpriced"]:
+                reasons.setdefault(u["reason"], []).append(u["ticker"])
+            lines = [f"{', '.join(t)}: {why}" for why, t in reasons.items()]
+            if v["stale"] and not v["unpriced"]:
+                lines.append("Older prices: " + ", ".join(f"{s['ticker']} ({s.get('tradingDate')})" for s in v["stale"]))
+                if not quiet and messagebox.askyesno("Older prices", "Some prices are older than the latest trading session. Use them for this plan (they are labelled)?"):
+                    self.accept_stale = True
+                    self._calculate()
+                    return
+            self.headline.configure(text="Plan withheld", foreground=COLORS["error"])
+            self._set_details("\n".join(lines) + "\n\nNothing is estimated or filled in for you. Get prices, choose another source, or use My price on those holdings.")
+            self._status(f"Plan withheld: {run['error'] or v['blockedReason']}", "error")
+            return
+        self.run = run
+        s = run["plan"]["summary"]
+        whole = run["whole"]
+        rep = run["settings"].reporting
+        manual = len(v["manualOverrides"])
+        buys = whole["totalBuys"] if whole else s["totalBuys"]
+        sells = whole["totalSells"] if whole else s["totalSells"]
+        cash = whole["cashLeft"] if whole else s["cashLeft"]
+        self.headline.configure(foreground=COLORS["warn" if manual else "ok"], text=(
+            f"{'Plan includes ' + str(manual) + ' user-supplied price(s)' if manual else 'Plan ready'} · {'New Money' if s['mode'] == 'new_money' else 'Rebalance'} · "
+            f"value {money(s['totalCurrent'], rep)} · buys {money(buys, rep)} · sells {money(sells, rep)} · cash left {money(cash, rep)} · "
+            f"{'whole' if whole else 'fractional'} shares"))
+        for i, line in enumerate(action_lines(run)):
+            r = line["result"]
+            self.tree.insert("", "end", iid=str(i), values=(line["action"].upper(), r["ticker"], "—" if line["action"] == "Hold" else qty(abs(line["shares"])),
+                                                           "—" if line["action"] == "Hold" else money(abs(line["value"]), rep),
+                                                           f"{line['before'] * 100:.1f}% → {line['after'] * 100:.1f}% ({r['targetWeightNorm'] * 100:.1f}%)"))
+        self._lines = action_lines(run)
+        notes = run["notes"]
+        text = []
+        if run["notValued"]:
+            text.append("Not in the plan (0 shares, 0% target): " + ", ".join(r.ticker for r in run["notValued"]))
+        if notes["attention"]:
+            text.append("Needs your attention:\n• " + "\n• ".join(notes["attention"]))
+        if notes["info"]:
+            text.append("Information:\n• " + "\n• ".join(notes["info"]))
+        self._notes_text = "\n\n".join(text)
+        self._set_details(self._notes_text)
+        counts = {a: sum(1 for x in self._lines if x["action"] == a) for a in ("Buy", "Sell", "Hold")}
+        self._status(f"Plan ready: {counts['Buy']} buys, {counts['Sell']} sells, {counts['Hold']} holds{'; includes ' + str(manual) + ' user-supplied price(s)' if manual else ''}.", "warn" if manual else "ok")
+        self.csv_button.configure(state="normal")
+        self.xlsx_button.configure(state="normal")
+
+    def _show_details(self) -> None:
+        sel = self.tree.selection()
+        if not sel or not self.run:
+            return
+        line = self._lines[int(sel[0])]
+        r, row = line["result"], line["row"]
+        rep = self.run["settings"].reporting
+        eff = row.effective()
+        parts = [f"{r['ticker']} — {(row.identity or {}).get('name') or ''} ({(row.identity or {}).get('venueName', '')}, {r['currencyKey']})",
+                 f"Price: {money(r['price'], r['currencyKey'])} · {eff['source']['label']}"]
+        if row.quote and not row.manual:
+            q = row.quote
+            parts.append(f"Provider symbol {q['providerSymbol']} · retrieved {q['retrievedAt']} · currency evidence: {q['currencyEvidence']}")
+        if r["currencyKey"] != rep:
+            parts.append(f"Exchange rate: 1 {r['currencyKey']} = {r['fxToReporting']:.6g} {rep} · {self.run['fx'][r['currencyKey']].get('label', '')}")
+        parts += [f"Shares held: {qty(r['shares'])} · current value {money(r['currentValue'], rep)} · target value {money(r['targetValue'], rep)}",
+                  f"Trade: {line['action']} {qty(abs(line['shares']))} shares · {money(line['value'], rep)} ({money(line['local'], r['currencyKey'])}) · shares after {qty(line['post'])}"]
+        if self.run["settings"].show_accounts:
+            parts.append(f"Account: {r.get('accountType') or 'Unassigned'}")
+        self._set_details("\n".join(parts) + "\n\n" + getattr(self, "_notes_text", ""))
+
+    def _set_details(self, text: str) -> None:
+        self.details.configure(state="normal")
+        self.details.delete("1.0", "end")
+        self.details.insert("1.0", text)
+        self.details.configure(state="disabled")
+
+    def _export(self, kind: str) -> None:
+        if not self.run:
+            return
+        path = filedialog.asksaveasfilename(defaultextension=f".{kind}", filetypes=[("CSV", "*.csv")] if kind == "csv" else [("Excel workbook", "*.xlsx")],
+                                            initialfile=f"rebalance-plan.{kind}")
+        if not path:
+            return
+        try:
+            (write_csv_export if kind == "csv" else write_excel_export)(Path(path), self.run)
+            self._status(f"Saved {Path(path).name}.", "ok")
+        except Exception as error:  # noqa: BLE001 - shown to the user
+            self._status(f"Could not save: {error}", "error")
+
+    # ------------------------------------------------------------------ holdings CSV
+    def _import_holdings(self) -> None:
+        path = filedialog.askopenfilename(filetypes=[("CSV", "*.csv")])
+        if not path:
+            return
+        try:
+            rows = list(csv.DictReader(io.StringIO(Path(path).read_text(encoding="utf-8-sig"))))
+            pick = lambda rec, names: next((rec[k] for k in rec if k and k.strip().lower() in names), "")  # noqa: E731
+            data = [Row(pick(r, {"ticker", "symbol"}), pick(r, {"shares", "quantity", "units"}), pick(r, {"target_pct", "target", "weight"}),
+                        pick(r, {"account", "account_type"}) if pick(r, {"account", "account_type"}) in ACCOUNT_TYPES else "") for r in rows if pick(r, {"ticker", "symbol"})][:50]
+            if not data:
+                raise ValueError("No holdings found (columns: ticker, shares, target_pct, account).")
+            self.rows = data
+            for r in self.rows:
+                r.apply_identity(self.md.resolve(r.ticker))
+            self._render_rows()
+            self._status(f"Imported {len(data)} holdings. No prices were imported; press Get prices.", "ok")
+        except Exception as error:  # noqa: BLE001
+            self._status(f"Import failed: {error}", "error")
+
+    def _export_holdings(self) -> None:
+        path = filedialog.asksaveasfilename(defaultextension=".csv", initialfile="holdings.csv", filetypes=[("CSV", "*.csv")])
+        if not path:
+            return
+        with Path(path).open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["ticker", "shares", "target_pct", "account"])
+            for r in self.rows:
+                if r.ticker:
+                    w.writerow([r.ticker, r.shares, r.target, r.account])
+        self._status(f"Saved {Path(path).name}.", "ok")
+
+    def _close(self) -> None:
+        self.closing = True
+        self.pool.shutdown(wait=False, cancel_futures=True)
+        self.root.destroy()
 
 
 def main() -> None:
     if not TK_AVAILABLE:
-        raise RuntimeError("tkinter is not available. Install tkinter to run the desktop GUI.")
+        print("tkinter is not available in this Python. Run the setup launcher again.", file=sys.stderr)
+        sys.exit(1)
+    enable_dpi_awareness()
     root = tk.Tk()
-    PortfolioRebalancerApp(root)
+    RebalancerApp(root)
     root.mainloop()

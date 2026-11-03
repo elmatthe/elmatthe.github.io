@@ -6,6 +6,9 @@
 //   data-api.ecb.europa.eu SDMX CSV (EXR.D.<CUR>.EUR.SP00.A)
 //   www.alphavantage.co    SYMBOL_SEARCH, GLOBAL_QUOTE, TIME_SERIES_DAILY,
 //                          TIME_SERIES_WEEKLY_ADJUSTED, plus its HTTP-200 error bodies
+//                          (daily limit, and the 2026 per-second burst wording)
+//   api.marketstack.com    /v2/eod/latest (exchange MIC and price_currency per row)
+//   finnhub.io             /api/v1/quote (US listings only, as on the free plan)
 // Any other external request except the Chart.js CDN is aborted and recorded, so a
 // test can prove which hosts a page contacted. No real market data is stored here.
 //
@@ -18,6 +21,9 @@ const { chromium } = require("playwright");
 
 const SITE_URL = (process.env.SITE_URL || "http://127.0.0.1:4000").replace(/\/$/, "");
 const TEST_KEY = "TESTKEY12345";
+const MS_KEY = "MSTESTKEY1234567890AB";
+const FH_KEY = "FHTESTKEY1234567890AB";
+const AV_BURST = "Thank you for using Alpha Vantage! Please consider spreading out your free API requests more sparingly (1 request per second). You may subscribe to any of the premium plans at https://www.alphavantage.co/premium/ to lift the free key rate limit (25 requests per day), raise the per-second burst limit, and instantly unlock all premium endpoints";
 const DAY = 86400000;
 const CORS = { "access-control-allow-origin": "*" };
 const JSON_HEADERS = { ...CORS, "content-type": "application/json" };
@@ -85,7 +91,11 @@ function ecbBody(url) {
 
 const avCurrency = symbol => (/\.(TRT|TRV)$/.test(symbol) ? "CAD" : /\.LON$/.test(symbol) ? "GBX" : /\.DEX$/.test(symbol) ? "EUR" : "USD");
 const avRegion = symbol => (/\.TRT$/.test(symbol) ? "Toronto" : /\.TRV$/.test(symbol) ? "Toronto Venture" : /\.LON$/.test(symbol) ? "United Kingdom" : "United States");
-function avPrice(symbol, ms) {
+// "SPLITX" has a 3-for-2 split 20 sessions ago: as-traded closes drop by a third,
+// adjusted closes are continuous.
+const SPLIT_AT = Date.now() - 28 * DAY;
+function avPrice(symbol, ms, adjusted = false) {
+  if (symbol === "SPLITX" && !adjusted && ms < SPLIT_AT) return Number((avPrice(symbol, ms, true) * 1.5).toFixed(4));
   const seed = hash(symbol);
   const base = /\.LON$/.test(symbol) ? 300 + (seed % 900) : 20 + (seed % 400);
   const t = Math.floor(ms / DAY);
@@ -96,6 +106,7 @@ function avBody(url, mode) {
   const symbol = (url.searchParams.get("symbol") || url.searchParams.get("keywords") || "").toUpperCase();
   if (url.searchParams.get("apikey") !== TEST_KEY) return JSON.stringify({ "Error Message": "the parameter apikey is invalid or missing. Please claim your free API key on (https://www.alphavantage.co/support/#api-key). It should take less than 20 seconds." });
   mode.avCalls = (mode.avCalls || 0) + 1;
+  if (mode.avBurstOn && mode.avBurstOn.includes(mode.avCalls)) return JSON.stringify({ Information: AV_BURST });
   if (mode.avLimit !== undefined && mode.avCalls > mode.avLimit) return JSON.stringify({ Information: "We have detected your API key as TESTKEY12345 and our standard API rate limit is 25 requests per day. Please subscribe to any of the premium plans to instantly remove all daily rate limits." });
   const unknown = /^ZZZ/.test(symbol);
   if (fn === "SYMBOL_SEARCH") {
@@ -123,15 +134,45 @@ function avBody(url, mode) {
   if (fn === "TIME_SERIES_WEEKLY_ADJUSTED") {
     const fridays = days.filter(t => new Date(t).getUTCDay() === 5);
     return JSON.stringify({ "Meta Data": { "1. Information": "Weekly Adjusted Prices and Volumes", "2. Symbol": symbol, "3. Last Refreshed": iso(fridays[fridays.length - 1]), "4. Time Zone": "US/Eastern" },
-      "Weekly Adjusted Time Series": Object.fromEntries(fridays.reverse().map(t => [iso(t), { "1. open": "1", "2. high": "1", "3. low": "1", "4. close": String(avPrice(symbol, t)), "5. adjusted close": String(Number((avPrice(symbol, t) * 0.98).toFixed(4))), "6. volume": "5000", "7. dividend amount": "0.0000" }])) });
+      "Weekly Adjusted Time Series": Object.fromEntries(fridays.reverse().map(t => [iso(t), { "1. open": "1", "2. high": "1", "3. low": "1", "4. close": String(avPrice(symbol, t)), "5. adjusted close": String(Number((avPrice(symbol, t, true) * 0.98).toFixed(4))), "6. volume": "5000", "7. dividend amount": "0.0000" }])) });
   }
   return JSON.stringify({ "Error Message": "Invalid API call." });
 }
 
+// Marketstack /v2/eod/latest: Yahoo-style symbols; exchange MIC and price_currency
+// as Marketstack reports them (London in GBX, Tokyo as XJPX). YNVD is not listed.
+const MS_VENUE = [[/\.TO$/, "XTSE", "CAD"], [/\.V$/, "XTSX", "CAD"], [/\.NE$/, "NEOE", "CAD"], [/\.L$/, "XLON", "GBX"], [/\.DE$/, "XETR", "EUR"], [/\.T$/, "XJPX", "JPY"], [/\.SS$/, "XSHG", "CNY"], [/\.SZ$/, "XSHE", "CNY"]];
+function lastSession() { const days = businessDays(Date.now() - 10 * DAY, Date.now() - DAY); return days[days.length - 1]; }
+function msBody(url, mode) {
+  if (url.searchParams.get("access_key") !== MS_KEY) return { status: 401, body: JSON.stringify({ error: { code: "invalid_access_key", message: "You have not supplied a valid API Access Key." } }) };
+  mode.msCalls = (mode.msCalls || 0) + 1;
+  if (mode.msLimit !== undefined && mode.msCalls > mode.msLimit) return { status: 429, body: JSON.stringify({ error: { code: "usage_limit_reached", message: "Your monthly usage limit has been reached. Please upgrade your Subscription Plan." } }) };
+  const symbols = String(url.searchParams.get("symbols") || "").split(",").filter(Boolean);
+  const t = lastSession();
+  const data = symbols.filter(sym => !/^(YNVD|ZZZ)/.test(sym)).map(sym => {
+    const venue = MS_VENUE.find(([re]) => re.test(sym)) || [null, "XNAS", "USD"];
+    const p = avPrice(venue[1] === "XLON" ? `${sym}LON` : sym, t);
+    return { open: p, high: p, low: p, close: venue[1] === "XLON" ? Number((p * 1).toFixed(2)) : p, volume: 1000, adj_close: p, name: `Mock ${sym}`, exchange_code: venue[1], asset_type: "Stock", price_currency: venue[2], symbol: sym, exchange: venue[1], date: `${iso(t)}T00:00:00+0000` };
+  });
+  return { status: 200, body: JSON.stringify({ pagination: { limit: 100, offset: 0, count: data.length, total: data.length }, data }) };
+}
+// Finnhub /api/v1/quote: US listings only (international symbols are refused, as on the free plan).
+function fhBody(url) {
+  if (url.searchParams.get("token") !== FH_KEY) return { status: 401, body: JSON.stringify({ error: "Invalid API key." }) };
+  const sym = String(url.searchParams.get("symbol") || "");
+  if (/\.[A-Z]{1,3}$/.test(sym) && !/\.[A-B]$/.test(sym)) return { status: 403, body: JSON.stringify({ error: "You don't have access to this resource." }) };
+  if (/^ZZZ/.test(sym)) return { status: 200, body: JSON.stringify({ c: 0, d: null, dp: null, h: 0, l: 0, o: 0, pc: 0, t: 0 }) };
+  const t = lastSession();
+  const p = avPrice(`FH:${sym}`, t);
+  return { status: 200, body: JSON.stringify({ c: p, d: 0.5, dp: 0.2, h: p * 1.01, l: p * 0.99, o: p, pc: p * 0.998, t: Math.floor((t + 21 * 3600000) / 1000) }) };
+}
+
 // Installs the mocks. `mode` flags (mutable during a test): bocDown, ecbDown, avDown,
-// avLimit (requests before the daily limit), searchMissesSuffix.
+// avLimit (requests before the daily limit), avBurstOn (request numbers answered with
+// the burst notice), searchMissesSuffix, msLimit, fhDown, hold ({ SYMBOL: Promise }
+// delays the answer for that symbol until the promise resolves).
 async function mockMarketData(context, mode = {}) {
-  const calls = { boc: 0, ecb: 0, av: [], blocked: [] };
+  const calls = { boc: 0, ecb: 0, av: [], ms: [], fh: [], blocked: [] };
   await context.route(/^https:\/\/www\.bankofcanada\.ca\/valet\//, route => {
     calls.boc += 1;
     if (mode.bocDown) return route.fulfill({ status: 503, headers: { "content-type": "text/html" }, body: "<html>Service unavailable</html>" });
@@ -142,16 +183,34 @@ async function mockMarketData(context, mode = {}) {
     if (mode.ecbDown) return route.abort("connectionrefused");
     return route.fulfill({ status: 200, headers: { ...CORS, "content-type": "text/csv" }, body: ecbBody(new URL(route.request().url())) });
   });
-  await context.route(/^https:\/\/www\.alphavantage\.co\//, route => {
+  const held = async symbol => { const gate = mode.hold?.[symbol]; if (gate) await gate; };
+  await context.route(/^https:\/\/www\.alphavantage\.co\//, async route => {
     const url = new URL(route.request().url());
-    calls.av.push(`${url.searchParams.get("function")}:${url.searchParams.get("symbol") || url.searchParams.get("keywords")}`);
+    const symbol = url.searchParams.get("symbol") || url.searchParams.get("keywords");
+    calls.av.push(`${url.searchParams.get("function")}:${symbol}`);
+    await held(symbol);
     if (mode.avDown) return route.abort("connectionrefused");
     return route.fulfill({ status: 200, headers: JSON_HEADERS, body: avBody(url, mode) });
+  });
+  await context.route(/^https:\/\/api\.marketstack\.com\//, async route => {
+    const url = new URL(route.request().url());
+    calls.ms.push(String(url.searchParams.get("symbols")));
+    await held(url.searchParams.get("symbols"));
+    const { status, body } = msBody(url, mode);
+    return route.fulfill({ status, headers: JSON_HEADERS, body });
+  });
+  await context.route(/^https:\/\/finnhub\.io\//, async route => {
+    const url = new URL(route.request().url());
+    calls.fh.push(String(url.searchParams.get("symbol")));
+    await held(url.searchParams.get("symbol"));
+    if (mode.fhDown) return route.abort("connectionrefused");
+    const { status, body } = fhBody(url);
+    return route.fulfill({ status, headers: JSON_HEADERS, body });
   });
   await context.route(url => {
     const u = new URL(url);
     return u.protocol.startsWith("http") && !/^(127\.0\.0\.1|localhost)$/.test(u.hostname)
-      && !/^(www\.bankofcanada\.ca|data-api\.ecb\.europa\.eu|www\.alphavantage\.co|cdn\.jsdelivr\.net)$/.test(u.hostname);
+      && !/^(www\.bankofcanada\.ca|data-api\.ecb\.europa\.eu|www\.alphavantage\.co|api\.marketstack\.com|finnhub\.io)$/.test(u.hostname);
   }, route => { calls.blocked.push(route.request().url()); return route.abort("blockedbyclient"); });
   await context.route(/favicon\.ico/, r => r.fulfill({ status: 204 }));
   return calls;
@@ -176,7 +235,7 @@ function watchNetwork(page) {
   return { external, errors };
 }
 
-const ALLOWED_HOSTS = /^(www\.bankofcanada\.ca|data-api\.ecb\.europa\.eu|www\.alphavantage\.co|cdn\.jsdelivr\.net)$/;
+const ALLOWED_HOSTS = /^(www\.bankofcanada\.ca|data-api\.ecb\.europa\.eu|www\.alphavantage\.co|api\.marketstack\.com|finnhub\.io)$/;
 const disallowedRequests = urls => urls.filter(u => !ALLOWED_HOSTS.test(new URL(u).hostname));
 
 function checker() {
@@ -186,4 +245,4 @@ function checker() {
   return { check, done };
 }
 
-module.exports = { SITE_URL, TEST_KEY, launch, mockMarketData, watchNetwork, checker, disallowedRequests };
+module.exports = { SITE_URL, TEST_KEY, MS_KEY, FH_KEY, launch, mockMarketData, watchNetwork, checker, disallowedRequests };

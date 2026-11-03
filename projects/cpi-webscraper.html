@@ -8,7 +8,7 @@ redirect_from:
   - /projects/cpi-dashboard-automation/
 summary: Windows desktop tool that downloads Canadian and US inflation, rates, PCE and S&P 500 data from Statistics Canada and FRED straight into an existing Excel model, with optional CSV export.
 lede: Refresh an inflation and rates workbook in one click. The CPI Web Scraper collects 18 Statistics Canada and FRED series for any month or date range back to 1913, validates everything, and writes it into your existing Excel model without touching its formulas.
-last_updated: 2026-11-02
+last_updated: 2026-11-03
 sections:
   - { id: overview, label: Overview }
   - { id: download, label: Download }
@@ -26,11 +26,11 @@ sections:
     <li class="pj-card"><h3>Validated first</h3><p>All sources are collected and checked before Excel opens. If any source fails, nothing is written.</p></li>
   </ul>
   <figure class="pj-figure">
-    <img src="{{ '/assets/images/cpi-workflow-overview.svg' | relative_url }}" alt="Three-step workflow: download economic data with Python, update the spreadsheet model, use the output in planning discussions" width="960" height="300" loading="lazy">
-    <figcaption>Download → update the Excel model → use the results in planning discussions.</figcaption>
+    <img src="{{ '/assets/images/cpi-workflow-overview.svg' | relative_url }}" alt="Three steps: download Statistics Canada and FRED series, write them into the Excel model, recalculate in Excel" width="960" height="300" loading="lazy">
+    <figcaption>Download → write into the Excel model → recalculate in Excel.</figcaption>
   </figure>
   <div class="pj-note">
-    <p><strong>Desktop only.</strong> The tool needs desktop Microsoft Excel for Windows, so there is no web version. Everything you need is in the download. A browser version could read the five Statistics Canada series directly (their data service allows it, with no key), but the thirteen FRED series need a personal API key and FRED does not allow requests from other websites, so a complete web version would need a server.</p>
+    <p><strong>Desktop only.</strong> The tool updates an existing model through desktop Microsoft Excel for Windows, which no browser can do (browser spreadsheet libraries neither recalculate formulas nor keep this model's charts and dynamic arrays). A browser could read the five Statistics Canada series directly (their data service allows it, with no key), but FRED does not answer requests from other websites, so FRED data could only be added from files you download yourself. A values-only browser data pack is a possible future addition; it is not offered yet.</p>
   </div>
 </section>
 
@@ -53,7 +53,7 @@ sections:
 
 <section class="pj-section" id="data" aria-labelledby="data-h">
   <h2 id="data-h">Data sources</h2>
-  <p>Monthly rows are keyed to the first day of each month from January 1913. History before a series begins stays blank: nothing is interpolated, forward-filled, or replaced by a proxy series. Daily FRED series (DFF, SP500, T10Y2Y) use the last valid observation of each month.</p>
+  <p>Monthly rows are keyed to the first day of each month from January 1913. History before a series begins stays blank: nothing is interpolated, forward-filled, or replaced by a proxy series. Daily FRED series (DFF, SP500, T10Y2Y) use the last valid observation of each month; for the current, unfinished month these three columns are left blank until the month ends, so a mid-month value is never written as a month-end value.</p>
   <div class="pj-table-wrap">
     <table class="pj-table">
       <caption class="muted" style="caption-side:top;text-align:left;padding:.5rem .75rem;">Default columns of the supplied model (sheet <code>CPI_Downloader</code>)</caption>
@@ -67,24 +67,27 @@ sections:
         <tr><th scope="row">I–J</th><td>Core CPI, unadjusted / seasonally adjusted (US)</td><td>FRED CPILFENS / CPILFESL</td><td>1957-01</td></tr>
         <tr><th scope="row">K</th><td>Unemployment rate, seasonally adjusted</td><td>FRED UNRATE</td><td>1948-01</td></tr>
         <tr><th scope="row">L–M</th><td>Effective fed funds rate: monthly average / end of period</td><td>FRED FEDFUNDS / DFF</td><td>1954-07</td></tr>
-        <tr><th scope="row">N</th><td>S&amp;P 500, last trading-day close</td><td>FRED SP500 (optional Yahoo Finance backfill)</td><td>About 10 years (see below)</td></tr>
+        <tr><th scope="row">N</th><td>S&amp;P 500, last trading-day close</td><td>FRED SP500, downloaded with your own key</td><td>About 10 years (see below)</td></tr>
         <tr><th scope="row">O</th><td>10-year minus 2-year Treasury spread, end of month</td><td>FRED T10Y2Y</td><td>1976-06</td></tr>
         <tr><th scope="row">P–Q</th><td>10-year / 2-year Treasury yield, monthly average</td><td>FRED GS10 / GS2</td><td>1953-04 / 1976-06</td></tr>
         <tr><th scope="row">R–S</th><td>Headline / core PCE price index, seasonally adjusted</td><td>FRED PCEPI / PCEPILFE</td><td>1959-01</td></tr>
       </tbody>
     </table>
   </div>
-  <p class="muted">“Core” here is Statistics Canada's all-items CPI excluding food and energy (tables 18-10-0004 and 18-10-0006), not the Bank of Canada's preferred core measures (CPI-trim, CPI-median). Seasonally adjusted series are revised by Statistics Canada, typically each January; every download fetches the current published values, so a re-run picks up revisions.</p>
-  <h3>Optional S&amp;P 500 history</h3>
-  <p>FRED publishes only about ten years of S&amp;P 500 history, and that series carries third-party usage restrictions. Setting <code>add_missing_data = true</code> under <code>[sp500_history]</code> in <code>config.toml</code> fills older months from Yahoo Finance <code>^GSPC</code> daily closes. FRED always wins any overlap, the two sources must agree within 0.005 index points, and any mismatch stops the download before Excel is touched. The default is <code>false</code>, which makes no Yahoo requests.</p>
-  <p class="pj-disclaimer">This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis. Statistics Canada is the source of the Canadian data; this application does not imply Statistics Canada endorsement. Confirm your organization's rights to S&amp;P 500 data before professional use.</p>
+  <p class="muted">“Core” here is Statistics Canada's all-items CPI excluding food and energy (tables 18-10-0004 and 18-10-0006), not the Bank of Canada's preferred core measures (CPI-trim, CPI-median). Statistics Canada revises the previous month's seasonally adjusted values every month and the last three years each January, and FRED series such as PCE are revised too; every download fetches the current published values, so re-running a range picks up revisions.</p>
+  <h3>S&amp;P 500 history</h3>
+  <p>FRED publishes only about ten years of S&amp;P 500 history, and S&amp;P Dow Jones Indices restricts its reproduction. The bundled <code>CPI.xlsx</code> therefore contains <strong>no S&amp;P 500 values</strong> (and no saved results derived from them): column N is filled only when you download with your own FRED key. Because downloads now merge into the sheet, months you downloaded earlier are kept even after they leave FRED's window. The earlier optional Yahoo Finance backfill is no longer available.</p>
+  <p class="pj-disclaimer">This product uses the FRED® API but is not endorsed or certified by the Federal Reserve Bank of St. Louis. Statistics Canada is the source of the Canadian data; this application does not imply Statistics Canada endorsement. Statistics Canada data is used under the <a href="https://www.statcan.gc.ca/en/terms-conditions/open-licence">Statistics Canada Open Licence</a>. Confirm your organization's rights to S&amp;P 500 data before professional use or sharing a workbook that contains it.</p>
 </section>
 
 <section class="pj-section" id="workbook" aria-labelledby="workbook-h">
   <h2 id="workbook-h">Workbook safety</h2>
   <ul>
-    <li>Writes through a private Excel instance and clears <strong>contents only</strong> inside the owned A:S area of the target sheet. It never inserts or deletes rows, recreates sheets, or changes formulas, formats, named ranges, VBA, charts or tables.</li>
-    <li>Macros, events and external-link updates are disabled during the write. Worksheet calculation is suppressed so dynamic-array spills can't change model cells, and the workbook's own calculation mode is preserved.</li>
+    <li>Writes through a private Excel instance and changes <strong>contents only</strong> inside the owned A:S area of the target sheet. It never inserts or deletes rows, recreates sheets, or changes formulas, formats, named ranges, charts or tables.</li>
+    <li><strong>Downloads are merged:</strong> the months you download replace those months in the sheet, and every other month already there is kept, so a single-month update no longer clears the history. Tick <em>Replace all rows</em> (with a confirmation) to make the sheet hold exactly the downloaded months.</li>
+    <li>Macros, events and external-link updates are disabled during the write. Worksheet calculation is suppressed so dynamic-array spills can't change model cells, and the workbook's own calculation mode is preserved. <strong>The model sheets are therefore not recalculated by the tool:</strong> after a download, open the workbook in Excel, press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>F9</kbd> and save. Whether Excel recalculates by itself on opening has not been verified.</li>
+    <li>The month range is limited to January 1913 through the current month. Downloads run in the background with progress and a <em>Cancel</em> button; nothing is written until every source has been fetched and checked.</li>
+    <li>.xlsm workbooks are opened with macros disabled and saved in the same format; workbooks with VBA have not been part of the automated tests.</li>
     <li>Read-only, locked or protected targets, formulas or merged cells inside the raw area, and a missing sheet all fail with a clear message before any change is made.</li>
     <li>The optional CSV uses the same columns and data with <code>YYYY-MM-DD</code> dates. A CSV failure is reported separately from an Excel write that already completed.</li>
   </ul>
@@ -93,9 +96,9 @@ sections:
 <section class="pj-section" id="privacy" aria-labelledby="privacy-h">
   <h2 id="privacy-h">Credentials &amp; privacy</h2>
   <ul>
-    <li><strong>You need your own free FRED API key</strong> (<a href="https://fred.stlouisfed.org/docs/api/api_key.html">request one here</a>). It is saved only in <code>config.toml</code> inside your copy of the tool, which the launcher creates from a blank template. Never share that file.</li>
-    <li>The download contains no API key or other credential; the bundled template's key field is blank.</li>
-    <li>Only series identifiers, dates and your FRED key (to FRED) are sent. Your workbook stays on your PC.</li>
+    <li><strong>You need your own free FRED API key</strong> (<a href="https://fred.stlouisfed.org/docs/api/api_key.html">request one here</a>). It is saved, as plain text in <code>config.toml</code> inside your copy of the tool, only if you tick <em>Remember on this computer</em>. Never share that file.</li>
+    <li>The download contains no API key or other credential; the bundled template's key field is blank, and the bundled workbook has no author names, local paths or add-in references.</li>
+    <li>During a download only series identifiers, dates and your FRED key (to FRED) are sent, to Statistics Canada and FRED. Setup and repair also contact the Python package index (PyPI) and, if you agree to install Python, winget. Your workbook stays on your PC.</li>
   </ul>
 </section>
 

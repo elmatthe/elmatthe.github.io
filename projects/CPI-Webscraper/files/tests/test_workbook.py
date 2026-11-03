@@ -20,6 +20,8 @@ def com(monkeypatch,tmp_path):
     cell = Mock()
     cell.MergeCells = cell.HasFormula = False
     cell.Find.return_value = SimpleNamespace(Row=1500)
+    # Existing raw data read back for the merge: the header only (no history yet).
+    cell.Value2 = (tuple(f'h{i}' for i in range(19)),)
     sheet = Mock()
     sheet.Range.return_value = cell
     sheet.ProtectContents = False
@@ -35,8 +37,6 @@ def com(monkeypatch,tmp_path):
     client=SimpleNamespace(DispatchEx=dispatch)
     monkeypatch.setitem(sys.modules,'win32com',SimpleNamespace(client=client))
     monkeypatch.setitem(sys.modules,'win32com.client',client)
-    monkeypatch.setattr(io,'onedrive_pause',lambda:None)
-    monkeypatch.setattr(io,'onedrive_resume',lambda:None)
     path=tmp_path/'test.xlsm'
     path.touch()
     return SimpleNamespace(path=path,wb=wb,excel=excel,sheet=sheet,cell=cell,pythoncom=pythoncom,dispatch=dispatch)
@@ -100,9 +100,55 @@ def test_csv_schema(config,rows,tmp_path):
     assert result[1][-1]=='2024-01-01'
     assert result[1][0]=='18.0'
 
-def test_onedrive_absent_or_fails(monkeypatch):
-    monkeypatch.setattr(io,'_get_onedrive_exe',lambda:None)
-    io.onedrive_pause(); io.onedrive_resume()
-    monkeypatch.setattr(io,'_get_onedrive_exe',lambda:'fake.exe')
-    monkeypatch.setattr(io.subprocess,'run',Mock(side_effect=OSError()))
-    io.onedrive_pause(); io.onedrive_resume()
+
+def serial(d):
+    return (d - date(1899,12,30)).days
+
+
+def raw_row(d, value, width=19):
+    return (serial(d), *([float(value)] * (width - 1)))
+
+
+def test_merge_keeps_history_and_replaces_downloaded_months(config):
+    header = config.headers
+    existing = (tuple(header), raw_row(date(2023,12,1), 1), raw_row(date(2024,1,1), 2), (None,) * 19, raw_row(date(2024,2,1), 3))
+    new = (tuple(header), raw_row(date(2024,2,1), 30), raw_row(date(2024,3,1), 40))
+    merged, stats = io.merge_rows(existing, new)
+    assert [row[0] for row in merged[1:]] == [serial(date(2023,12,1)), serial(date(2024,1,1)), serial(date(2024,2,1)), serial(date(2024,3,1))]
+    assert merged[3][1] == 30.0 and merged[1][1] == 1.0
+    assert stats == {'kept': 2, 'updated': 1, 'added': 1}
+
+
+@pytest.mark.parametrize('bad', [('text', *([1.0] * 18)), (45000.5, *([1.0] * 18)), (True, *([1.0] * 18))])
+def test_merge_refuses_rows_without_a_valid_date(config, bad):
+    with pytest.raises(io.WorkbookError, match='no valid date'):
+        io.merge_rows((tuple(config.headers), bad), (tuple(config.headers),))
+
+
+def test_merge_refuses_duplicate_months(config):
+    row = raw_row(date(2024,1,1), 1)
+    with pytest.raises(io.WorkbookError, match='repeats a month'):
+        io.merge_rows((tuple(config.headers), row, row), (tuple(config.headers),))
+
+
+def test_single_month_write_keeps_existing_history(com, config, rows):
+    history = tuple(raw_row(date(2023,m,1), m) for m in range(1, 13))
+    com.cell.Value2 = (tuple(config.headers), *history)
+    com.cell.Find.return_value = SimpleNamespace(Row=13)
+    stats = io.write_to_workbook(rows, com.path, config)
+    assert stats == {'kept': 12, 'updated': 0, 'added': 1, 'rows': 13}
+    written = com.cell.Value2
+    assert len(written) == 14 and written[1][0] == serial(date(2023,1,1)) and written[-1][0] == serial(date(2024,1,1))
+
+
+def test_replace_mode_writes_only_downloaded_months(com, config, rows):
+    com.cell.Value2 = (tuple(config.headers), *(raw_row(date(2023,m,1), m) for m in range(1, 13)))
+    com.cell.Find.return_value = SimpleNamespace(Row=13)
+    stats = io.write_to_workbook(rows, com.path, config, replace=True)
+    assert stats == {'kept': 0, 'updated': 0, 'added': 1, 'rows': 1}
+    assert len(com.cell.Value2) == 2
+
+
+def test_no_onedrive_switches_are_used():
+    source = (ROOT / 'scripts/workbook_io.py').read_text(encoding='utf-8').lower()
+    assert 'onedrive' not in source and '/pause' not in source

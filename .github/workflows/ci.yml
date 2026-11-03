@@ -41,8 +41,12 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: _tools/tests/requirements.txt
-      - name: JavaScript unit tests (market data, analytics, Monte Carlo; mocked network)
+      - name: JavaScript unit tests (market data, providers, integrity, analytics, Monte Carlo; mocked network)
         run: node --test _tools/tests/unit/*.test.mjs
+      - name: Desktop copies of the shared market_data package match _tools/shared_py
+        run: python _tools/sync_shared_py.py --check
+      - name: Public CPI workbook has no S&P 500 values, cached results or local metadata
+        run: python _tools/cpi_public_workbook.py --check
       - name: Install Python test dependencies
         run: python -m pip install -r _tools/tests/requirements.txt
       - name: Python reference and parity tests (browser engines vs desktop engines, numpy/scipy, hand-calculated cases)
@@ -91,8 +95,9 @@ jobs:
           for i in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:4000/projects/ && exit 0; sleep 1; done
           echo "::error::local server did not start"; cat "$RUNNER_TEMP/http.log"; exit 1
       # Each suite prints PASS/FAIL per check and exits non-zero on any failure.
-      # harness.js answers the Bank of Canada, ECB and Alpha Vantage with synthetic
-      # data and aborts (and fails on) any other host except the Chart.js CDN.
+      # harness.js answers the Bank of Canada, ECB, Alpha Vantage, Marketstack and
+      # Finnhub with synthetic data and aborts (and fails on) every other host;
+      # Chart.js is self-hosted, so no CDN is contacted.
       - name: Pages (all project pages, guides, redirects, ZIP links, phone width)
         working-directory: _tools/tests/browser
         run: node pages.test.js
@@ -142,6 +147,8 @@ jobs:
           grep -vi '^pywin32' "projects/${{ matrix.tool }}/scripts/requirements.txt" > "$RUNNER_TEMP/requirements.txt"
           python -m pip install -r "$RUNNER_TEMP/requirements.txt" pytest==9.1.1
           python -c "import tkinter" || { echo "::error::tkinter is not available in this Python"; exit 1; }
+      - name: Install Xvfb for the Tk window smoke tests
+        run: sudo apt-get update -q && sudo apt-get install -y -q xvfb
       - name: Run the tool's tests
         working-directory: projects/${{ matrix.tool }}
         env:
@@ -149,9 +156,11 @@ jobs:
           SELECT: ${{ matrix.select }}
         run: |
           mkdir -p files/run-temp
+          # The Tk smoke tests (test_ui_smoke.py / test_gui_smoke.py) need a display:
+          # a 1366x768 virtual screen. They do not replace manual checks on Windows.
           if [ -n "$SELECT" ]; then
             echo "Windows-only tests excluded on Linux: $SELECT" >> "$GITHUB_STEP_SUMMARY"
-            python -m pytest -q -rf -p no:cacheprovider files/tests -k "$SELECT"
+            xvfb-run -a -s "-screen 0 1366x768x24" python -m pytest -q -rf -p no:cacheprovider files/tests -k "$SELECT"
           else
-            python -m pytest -q -rf -p no:cacheprovider files/tests
+            xvfb-run -a -s "-screen 0 1366x768x24" python -m pytest -q -rf -p no:cacheprovider files/tests
           fi
