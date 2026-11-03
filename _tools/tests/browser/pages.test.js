@@ -47,6 +47,21 @@ const BOC_FX = /^https:\/\/www\.bankofcanada\.ca\/valet\/observations\/[A-Z,]+\/
         }));
         check(info.h1.length > 0 && info.h1Count === 1, `${tag} has one hero heading`);
         check(info.overflow <= 1, `${tag} no horizontal scroll (${info.overflow}px)`);
+        if (width === 1280) {
+          // Every page at the plan's widths; 1093/911 and 1024/853 are 1366 and 1280 px at 125%/150% browser zoom.
+          const wide = [];
+          for (const w of [360, 390, 768, 853, 911, 1093, 1366, 1440, 1920]) {
+            await page.setViewportSize({ width: w, height: 900 });
+            await page.waitForTimeout(60);
+            const over = await page.evaluate(() => ({
+              page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+              small: [...document.querySelectorAll(".pj-body td, .pj-body .pj-tile strong")].filter(n => n.offsetParent && /\d/.test(n.textContent) && parseFloat(getComputedStyle(n).fontSize) < 13).length,
+            }));
+            if (over.page > 1 || over.small) wide.push(`${w}px: ${over.page}px overflow, ${over.small} values under 13px`);
+          }
+          await page.setViewportSize({ width, height: 900 });
+          check(wide.length === 0, `${url} no horizontal scroll or tiny figures at 360–1920px and 125%/150% zoom${wide.length ? ": " + wide.join("; ") : ""}`);
+        }
         check(info.navTargets.length > 2 && info.missing.length === 0, `${tag} local nav anchors resolve${info.missing.length ? " (missing " + info.missing.join(",") + ")" : ""}`);
         check(info.zipLinks.length > 0 && info.zipLinks.every(h => h === tool.zip), `${tag} links only to ${tool.zip}`);
         check(!info.stale, `${tag} has no stale names`);

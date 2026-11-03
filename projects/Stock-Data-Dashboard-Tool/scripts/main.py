@@ -911,7 +911,22 @@ class StockAnalyticsApp(tk.Tk):
         self.logs_text.delete("1.0", tk.END)
 
 
+def enable_dpi_awareness() -> None:
+    """Sharp text at 125% and 150% Windows display scaling (before the window exists)."""
+    import sys
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:  # noqa: BLE001 - older Windows: fall back to system scaling
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def main() -> None:
+    enable_dpi_awareness()
     app = StockAnalyticsApp()
     app.mainloop()
 

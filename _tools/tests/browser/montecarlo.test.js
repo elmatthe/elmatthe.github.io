@@ -117,7 +117,7 @@ const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "mc-test-"));
     `CSV has the seed, generator, engine version, basis, warnings, model and one row per year (${lines.length} lines for ${years} years)`);
 
   // No sideways scrolling anywhere, including the checkpoint table (stacked when narrow).
-  for (const width of [360, 390, 768, 1024, 1366, 1920]) {
+  for (const width of [360, 390, 768, 853, 911, 1024, 1093, 1280, 1366, 1440, 1920]) {
     await page.setViewportSize({ width, height: 900 });
     await page.waitForTimeout(150);
     const overflow = await page.evaluate(() => {
