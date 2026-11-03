@@ -116,6 +116,7 @@ export function normalizeStatcanResponse(body, { vectors, start, end }) {
     const flags = {};
     let revised = 0;
     let preliminary = 0;
+    let latestRelease = null;
     for (const p of data.vectorDataPoint) {
       const date = isoDate(p?.refPer);
       if (!date || !date.endsWith("-01")) throw new DataShapeError("reference period is not a month");
@@ -126,10 +127,11 @@ export function normalizeStatcanResponse(body, { vectors, start, end }) {
       if (p.securityLevelCode === 1) { flags[ym] = "restricted"; continue; } // "x": suppressed under the Statistics Act
       if (p.value === null || p.value === undefined) { flags[ym] = "missing"; continue; } // "..": not available
       values[ym] = numeric(p.value);
+      if (typeof p.releaseTime === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(p.releaseTime) && (!latestRelease || p.releaseTime > latestRelease)) latestRelease = p.releaseTime.slice(0, 16);
       if (p.symbolCode === 3) revised += 1;
       if (p.symbolCode === 1) preliminary += 1;
     }
-    out[id] = { values, flags, revised, preliminary };
+    out[id] = { values, flags, revised, preliminary, latestRelease };
   }
   for (const v of vectors) if (!out[v]) throw new DataShapeError("a requested vector is missing");
   return out;
@@ -253,7 +255,7 @@ export function csvCell(value) {
   if (value === null || value === undefined) return "";
   if (typeof value === "number") return pyFloat(value);
   let text = String(value);
-  if (/^[=+\-@\t\r]/.test(text) && !NUMERIC_TEXT.test(text)) text = `'${text}`;
+  if (/^[=+\-@\t\r\n\uFF1D\uFF0B\uFF0D\uFF20]/.test(text) && !NUMERIC_TEXT.test(text)) text = `'${text}`;
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
 

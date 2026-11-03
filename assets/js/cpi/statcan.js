@@ -59,7 +59,7 @@ export function createStatcanClient({ fetchImpl = globalThis.fetch?.bind(globalT
   // be retrieved and why. Throws only when cancelled.
   async function fetchRange(start, end, { signal, force = false, onProgress } = {}) {
     const chunks = planStatcanRequests(start, end);
-    const acc = Object.fromEntries(STATCAN_SERIES.map(c => [c.id, { values: {}, flags: {}, failedRanges: [], revised: 0, preliminary: 0 }]));
+    const acc = Object.fromEntries(STATCAN_SERIES.map(c => [c.id, { values: {}, flags: {}, failedRanges: [], revised: 0, preliminary: 0, latestRelease: null }]));
     let requests = 0;
     let cachedCount = 0;
     for (const [i, chunk] of chunks.entries()) {
@@ -75,6 +75,7 @@ export function createStatcanClient({ fetchImpl = globalThis.fetch?.bind(globalT
           Object.assign(acc[col.id].flags, part.flags);
           acc[col.id].revised += part.revised;
           acc[col.id].preliminary += part.preliminary;
+          if (part.latestRelease && (!acc[col.id].latestRelease || part.latestRelease > acc[col.id].latestRelease)) acc[col.id].latestRelease = part.latestRelease;
         }
       } catch (error) {
         if (error?.kind === "aborted" || signal?.aborted) throw new DataError("Request cancelled.", { kind: "aborted" });
@@ -94,14 +95,13 @@ export function createStatcanClient({ fetchImpl = globalThis.fetch?.bind(globalT
     for (const col of STATCAN_SERIES) {
       const a = acc[col.id];
       const notes = [];
-      if (a.revised) notes.push(`${a.revised} observation${a.revised === 1 ? "" : "s"} marked revised by Statistics Canada`);
-      if (a.preliminary) notes.push(`${a.preliminary} observation${a.preliminary === 1 ? "" : "s"} marked preliminary`);
       const wholeRangeFailed = a.failedRanges.length && a.failedRanges.length === chunks.filter(c => c.columns.includes(col)).length;
       series[col.id] = seriesResult({
         status: wholeRangeFailed ? a.failedRanges[0].reason : a.failedRanges.length ? "partial" : "ok",
         message: a.failedRanges[0]?.message || null,
         values: a.values, flags: a.flags, failedRanges: wholeRangeFailed ? [] : a.failedRanges, notes,
-        source: { provider: "Statistics Canada", id: col.sourceId, retrievedAt },
+        // revised / preliminary: observations Statistics Canada flags with symbol r / p.
+        source: { provider: "Statistics Canada", id: col.sourceId, retrievedAt, latestRelease: a.latestRelease, revised: a.revised, preliminary: a.preliminary }, // release time in Eastern time
       });
     }
     return { series, requests, cached: cachedCount, chunks: chunks.length, retrievedAt };

@@ -19,6 +19,11 @@ cpi:
   name: CPI Web Scraper
   category: Research Automation Tool
   version: 0.4.0
+  web_app: Runs in your browser
+  # The CPI data gateway (Cloudflare Worker, _services/cpi-data-gateway) that lets the
+  # web app read the US series with each visitor's own FRED key. Empty until the
+  # owner deploys it; the web app then works in Canadian-only mode and says so.
+  data_gateway: ""
   platforms: Windows (desktop Excel)
   python: "3.11–3.14"
   page: /projects/cpi-webscraper/

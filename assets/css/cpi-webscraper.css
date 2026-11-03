@@ -1,0 +1,101 @@
+/* CPI Web Scraper web app. Loaded only on /projects/cpi-webscraper/; builds on the
+   .pj tokens from project-pages.css.
+   Layout rules: nothing is wider than its container (no page-wide horizontal scroll
+   from 320 px up); the results table shows one group (at most six series plus the
+   date) and turns into stacked month cards when its container is narrow; values are
+   at least 0.875rem (14 px) and right-aligned with tabular figures. */
+
+.cpi { overflow-wrap: anywhere; }
+.cpi-block { border-top: 1px solid var(--pj-border); padding: 1rem 0 .6rem; }
+.cpi-block:first-child { border-top: 0; padding-top: .2rem; }
+.cpi-block > h3 { display: flex; align-items: center; gap: .55rem; margin: 0 0 .7rem; }
+.cpi-step { display: inline-grid; place-items: center; width: 1.6rem; height: 1.6rem; border-radius: 50%; background: var(--pj-primary); color: #fff; font-size: .9rem; flex: 0 0 auto; }
+.cpi-note { font-size: .875rem; color: var(--pj-muted); margin: .4rem 0; }
+.cpi-note:empty { display: none; }
+.cpi-field-error { color: var(--pj-error); font-weight: 600; margin: .3rem 0; }
+.cpi-field-error:empty { display: none; }
+.cpi-sub { font-weight: 500; font-size: .8125rem; color: var(--pj-muted); }
+.cpi .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+
+/* ---- Months ---- */
+.cpi-mode { border: 0; padding: 0; margin: 0 0 .6rem; display: flex; flex-wrap: wrap; align-items: center; gap: .3rem 0; }
+.cpi-mode legend { font-weight: 650; font-size: .92rem; color: var(--pj-heading); margin-right: 1rem; float: left; padding: 0; }
+.cpi-dates { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 9.5rem), 1fr)); gap: .75rem 1rem; max-width: 44rem; }
+
+/* ---- Sources and key ---- */
+.cpi-sources { list-style: none; padding: 0; margin: 0 0 .6rem; display: grid; gap: .45rem; }
+.cpi-sources li { display: flex; flex-wrap: wrap; align-items: baseline; gap: .25rem .6rem; background: var(--pj-surface-2); border: 1px solid var(--pj-border); border-radius: 8px; padding: .5rem .75rem; }
+.cpi-source-text { flex: 1 1 18rem; font-size: .875rem; color: var(--pj-muted); }
+.cpi-badge { display: inline-block; font-size: .8125rem; font-weight: 650; border-radius: 999px; padding: .05rem .55rem; border: 1px solid var(--pj-border); color: var(--pj-text); background: #0f1d31; }
+.cpi-badge[data-tone="ok"] { color: var(--pj-ok); border-color: rgba(94, 240, 171, .45); }
+.cpi-badge[data-tone="warn"] { color: var(--pj-warn); border-color: rgba(242, 193, 78, .45); }
+.cpi-badge[data-tone="error"] { color: var(--pj-error); border-color: rgba(255, 143, 163, .45); }
+.cpi-key { display: flex; flex-wrap: wrap; gap: .6rem 1rem; align-items: end; }
+.cpi-key .pj-field { flex: 1 1 18rem; max-width: 28rem; }
+.cpi input[type="password"] { font: inherit; min-height: 2.5rem; padding: .45rem .6rem; width: 100%; color: var(--pj-text); background: #0f1d31; border: 1px solid var(--pj-border); border-radius: 6px; }
+.cpi-check { display: flex; gap: .5rem; align-items: center; font-weight: 500; cursor: pointer; min-height: 2.5rem; }
+
+/* ---- Progress ---- */
+.cpi-progress { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem .8rem; margin: .4rem 0; }
+.cpi-progress progress { width: min(100%, 18rem); height: .8rem; accent-color: var(--pj-accent); }
+.cpi-progress span { font-size: .875rem; color: var(--pj-muted); }
+
+/* ---- Results header ---- */
+.cpi-source-status { list-style: none; padding: 0; margin: .2rem 0 .6rem; display: grid; gap: .35rem; font-size: .875rem; }
+.cpi-source-status li { border-left: 4px solid var(--pj-accent); background: var(--pj-surface-2); padding: .4rem .7rem; border-radius: 6px; }
+.cpi-source-status li[data-tone="warn"] { border-left-color: var(--pj-warn); }
+.cpi-source-status li[data-tone="error"] { border-left-color: var(--pj-error); }
+.cpi-source-status li[data-tone="ok"] { border-left-color: var(--pj-ok); }
+
+/* ---- Group tabs and pager ---- */
+.cpi-tabs { display: flex; flex-wrap: wrap; gap: .4rem; margin: .8rem 0 .5rem; }
+.cpi-tabs [role="tab"] { font: inherit; font-weight: 650; min-height: 2.5rem; padding: .35rem .9rem; border-radius: 999px; border: 1px solid var(--pj-border); background: var(--pj-surface-2); color: var(--pj-text); cursor: pointer; }
+.cpi-tabs [role="tab"][aria-selected="true"] { background: var(--pj-primary); border-color: var(--pj-primary); color: #fff; }
+.cpi-tabs [role="tab"] small { font-weight: 500; opacity: .85; }
+.cpi-pager { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .8rem; margin: .4rem 0 .6rem; }
+.cpi-page { font-weight: 650; }
+.cpi-jump { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin-left: auto; }
+.cpi-jump label { font-size: .875rem; color: var(--pj-muted); }
+.cpi-jump input[type="text"] { width: 7.5rem; min-height: 2.5rem; }
+
+/* ---- Table: one group, fixed layout, wraps instead of scrolling ---- */
+.cpi-table-wrap { container-type: inline-size; border: 1px solid var(--pj-border); border-radius: 10px; margin: .2rem 0 .8rem; }
+.cpi-table-wrap:focus-visible { outline: 3px solid var(--pj-focus); outline-offset: 2px; }
+.pj table.cpi-table { width: 100%; table-layout: fixed; border-collapse: collapse; margin: 0; border: 0; background: transparent; font-size: .95rem; }
+.pj table.cpi-table caption { caption-side: top; text-align: left; padding: .55rem .75rem; color: var(--pj-muted); font-size: .875rem; }
+.pj table.cpi-table th, .pj table.cpi-table td { padding: .5rem .6rem; border: 0; border-bottom: 1px solid var(--pj-border); background: transparent; color: var(--pj-text); vertical-align: top; }
+.pj table.cpi-table thead th { background: var(--pj-surface-2); color: var(--pj-heading); font-size: .875rem; line-height: 1.3; text-align: right; white-space: normal; overflow-wrap: break-word; hyphens: auto; }
+.pj table.cpi-table thead th:first-child, .pj table.cpi-table tbody th { text-align: left; }
+.pj table.cpi-table thead th .cpi-col { display: block; font-weight: 500; color: var(--pj-muted); font-size: .8125rem; }
+.pj table.cpi-table tbody th { font-weight: 650; color: var(--pj-heading); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.pj table.cpi-table td { text-align: right; font-variant-numeric: tabular-nums; }
+.pj table.cpi-table td .cpi-blank { display: inline-block; font-size: .8125rem; font-style: italic; color: var(--pj-muted); line-height: 1.25; text-align: right; }
+.pj table.cpi-table td[data-reason="source_unavailable"] .cpi-blank,
+.pj table.cpi-table td[data-reason="provider_error"] .cpi-blank,
+.pj table.cpi-table td[data-reason="key_rejected"] .cpi-blank,
+.pj table.cpi-table td[data-reason="gateway_unavailable"] .cpi-blank { color: var(--pj-warn); }
+.pj table.cpi-table tbody tr:last-child > * { border-bottom: 0; }
+.pj table.cpi-table col.cpi-date-col { width: 7.5rem; }
+
+/* Narrow containers (phones, small tablets): one card per month, label then value. */
+@container (max-width: 620px) {
+  .pj table.cpi-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .pj table.cpi-table, .pj table.cpi-table tbody { display: block; width: 100%; }
+  .pj table.cpi-table colgroup { display: none; }
+  .pj table.cpi-table caption { display: block; }
+  .pj table.cpi-table tr { display: grid; grid-template-columns: minmax(0, 1fr); gap: .15rem; padding: .55rem .75rem; border-bottom: 1px solid var(--pj-border); }
+  .pj table.cpi-table tbody tr:last-child { border-bottom: 0; }
+  .pj table.cpi-table tr > th { padding: 0 0 .15rem; border: 0; font-size: 1rem; }
+  .pj table.cpi-table tr > td { display: flex; justify-content: space-between; align-items: baseline; gap: .75rem; padding: .1rem 0; border: 0; text-align: right; }
+  .pj table.cpi-table tr > td::before { content: attr(data-label); color: var(--pj-muted); font-weight: 600; font-size: .875rem; text-align: left; font-style: normal; }
+}
+
+/* ---- Legends ---- */
+.cpi-legend { margin-top: .4rem; }
+.cpi-columns { list-style: none; padding: 0; margin: 0; display: grid; gap: .45rem; font-size: .875rem; }
+.cpi-columns li strong { color: var(--pj-heading); }
+.cpi-columns li span { color: var(--pj-muted); }
+
+@media (max-width: 600px) {
+  .cpi-jump { margin-left: 0; }
+}

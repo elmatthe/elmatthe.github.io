@@ -7,7 +7,7 @@ import * as S from "../../../assets/js/cpi/schema.js";
 import * as D from "../../../assets/js/cpi/dates.js";
 import * as E from "../../../assets/js/cpi/engine.js";
 import { createStatcanClient, planStatcanRequests, statcanUrl } from "../../../assets/js/cpi/statcan.js";
-import { createFredClient, planFredRequests, validFredKey } from "../../../assets/js/cpi/fred.js";
+import { createFredClient, planFredRequests, resolveGateway, validFredKey } from "../../../assets/js/cpi/fred.js";
 
 const TODAY = new Date(2026, 10, 3); // 2026-11-03, local time
 const KEY = "abcdefghij0123456789abcdefghij01";
@@ -333,4 +333,12 @@ test("FRED client: unreachable gateway stops early; not configured is reported w
   assert.deepEqual(await none.health(), { ok: false, reason: "gateway_not_configured" });
   assert.equal(createFredClient({ gatewayUrl: "http://evil.example", fetchImpl }).configured, false, "plain http is refused (loopback excepted)");
   assert.equal(createFredClient({ gatewayUrl: "https://gw.example/?x=1", fetchImpl }).configured, false);
+});
+
+test("gateway override: only when the page is served from this computer", () => {
+  const prod = { hostname: "elmatthe.github.io", search: "?gateway=https://evil.example" };
+  assert.equal(resolveGateway("https://cpi-data-gateway.x.workers.dev", prod), "https://cpi-data-gateway.x.workers.dev", "a link cannot redirect production keys");
+  assert.equal(resolveGateway("", prod), "");
+  assert.equal(resolveGateway("", { hostname: "127.0.0.1", search: "?gateway=http://127.0.0.1:8787" }), "http://127.0.0.1:8787");
+  assert.equal(resolveGateway("https://cfg.example", { hostname: "localhost", search: "" }), "https://cfg.example");
 });

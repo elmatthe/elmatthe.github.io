@@ -25,6 +25,17 @@ const TRANSIENT = new Set(["rate_limited", "upstream_rate_limited", "upstream_un
 
 export const validFredKey = key => FRED_KEY_PATTERN.test(String(key || ""));
 
+// The gateway the page uses: the one configured for the site, or a `?gateway=` override
+// only when the page itself is served from this computer (127.0.0.1 or localhost), so
+// a link can never send production visitors' keys to another server.
+export function resolveGateway(configured, location) {
+  if (location && ["127.0.0.1", "localhost"].includes(location.hostname)) {
+    const override = new URLSearchParams(location.search || "").get("gateway");
+    if (override) return override;
+  }
+  return configured || "";
+}
+
 // [{ column, start: YYYY-MM-DD, end: YYYY-MM-DD, months: [YYYY-MM, YYYY-MM] }]
 export function planFredRequests(start, end, { today = new Date(), series = FRED_SERIES } = {}) {
   const out = [];
