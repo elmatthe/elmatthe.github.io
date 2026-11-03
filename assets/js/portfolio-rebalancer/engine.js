@@ -262,7 +262,9 @@ function holdBuys(results) {
 }
 
 // Returns { summary, results, warnings }. `money` formats reporting-currency amounts.
-export function calculateRebalancePlan(enriched, mode, budget, { money = v => `$${v.toFixed(2)}` } = {}) {
+// Default amount format matches the desktop's f"${value:,.2f}" exactly.
+const usd = v => `$${v.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+export function calculateRebalancePlan(enriched, mode, budget, { money = usd } = {}) {
   const totalCurrent = enriched.reduce((sum, p) => sum + p.currentValue, 0);
   const totalWeight = enriched.reduce((sum, p) => sum + p.targetWeight, 0);
   let pool;

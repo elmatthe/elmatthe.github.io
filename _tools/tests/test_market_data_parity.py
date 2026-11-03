@@ -1,0 +1,308 @@
+"""Web vs desktop parity for the shared market-data layer and the Rebalancer extras.
+
+The browser modules (assets/js/...) run under Node; the desktop package
+(_tools/shared_py/market_data, copied into the desktop tools) runs in-process. Both
+read the same fixtures: verbatim Alpha Vantage notices, provider response bodies and
+the curated instrument reference. Results must be identical, including message text.
+"""
+from __future__ import annotations
+
+import json
+import math
+import random
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+RUNNER = Path(__file__).with_name("js_engines.mjs")
+FIXTURES = ROOT / "_tools" / "tests" / "fixtures" / "providers"
+sys.path.insert(0, str(ROOT / "_tools" / "shared_py"))
+sys.path.insert(0, str(ROOT / "projects" / "portfolio-rebalancer-tool" / "scripts"))
+pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required")
+
+from market_data import alphavantage as av  # noqa: E402
+from market_data import catalog as cat  # noqa: E402
+from market_data.errors import DataError  # noqa: E402
+from market_data.freshness import freshness_of  # noqa: E402
+from market_data.instruments import InstrumentResolver, load_reference  # noqa: E402
+from market_data.service import MarketData, compare_quotes  # noqa: E402
+from portfolio_rebalancer import core  # noqa: E402
+from portfolio_rebalancer.sample import SAMPLE_PORTFOLIO  # noqa: E402
+
+REFERENCE = json.loads((ROOT / "assets" / "data" / "instruments.v1.json").read_text(encoding="utf-8"))
+NOTICES = json.loads((FIXTURES / "alphavantage-notices.json").read_text(encoding="utf-8"))
+RESPONSES = json.loads((FIXTURES / "quote-responses.json").read_text(encoding="utf-8"))
+TICKERS = [r["ticker"] for r in SAMPLE_PORTFOLIO["rows"]] + [
+    "RY.TO", "DLR-U.TO", "MSFT", "BRK.B", "TSX:RY", "^GSPC", "CADUSD=X", "CL=F", "AB.XYZ", "bad ticker!", "0700.HK",
+    "TSCO.L", "YNVD.NE", "ynvd.to", "SHOP.V", "MC.PA", "BHP.AX", "RELIANCE.BO", "", "  vfv.to ",
+]
+
+
+def run_js(tool: str, cases: list) -> list:
+    result = subprocess.run(["node", str(RUNNER)], input=json.dumps({"tool": tool, "cases": cases}), capture_output=True, text=True, timeout=120, check=False)
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+def test_shared_package_copies_are_current():
+    result = subprocess.run([sys.executable, str(ROOT / "_tools" / "sync_shared_py.py"), "--check"], capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert load_reference() == REFERENCE, "the desktop package ships the site's instrument reference"
+
+
+def test_alpha_vantage_notices_classified_identically():
+    js = run_js("market-data", [{"op": "notice", "text": n["text"]} for n in NOTICES["notices"]])
+    for n, browser in zip(NOTICES["notices"], js):
+        kind, scope = av.classify_notice(n["text"])
+        assert {"kind": kind, "quotaScope": scope} == browser, n["name"]
+        with pytest.raises(DataError) as e:
+            av.parse_body(json.dumps({n["field"]: n["text"]}), "AAPL")
+        assert e.value.kind == n["expect"]["kind"], n["name"]
+        assert e.value.quota_scope == n["expect"]["quotaScope"], n["name"]
+        if n["expect"].get("redacts"):
+            assert n["expect"]["redacts"] not in e.value.message and n["expect"]["redacts"] not in (e.value.notice or "")
+
+
+def test_burst_notice_containing_daily_wording_is_always_a_burst():
+    for b in ["spreading out your free API requests", "1 request per second", "raise the per-second burst limit"]:
+        for d in ["(25 requests per day)", "our standard API rate limit is 25 requests per day", "to instantly remove all daily rate limits"]:
+            assert av.classify_notice(f"{b}. {d}.") == ("rate_limited", "burst")
+            assert av.classify_notice(f"{d}. {b}.") == ("rate_limited", "burst")
+
+
+def test_identity_resolution_identical():
+    js = run_js("market-data", [{"op": "resolve", "ticker": t} for t in TICKERS])
+    resolver = InstrumentResolver(REFERENCE)
+    for ticker, browser in zip(TICKERS, js):
+        desktop = resolver.resolve(ticker)
+        assert desktop == browser, (ticker, desktop, browser)
+
+
+def test_catalog_plans_and_routing_identical():
+    (js,) = run_js("market-data", [{"op": "catalog"}])
+    assert js["version"] == cat.CATALOG_VERSION
+    assert js["routes"] == cat.ROUTES
+    for pid, p in cat.PROVIDERS.items():
+        mine = {"name": p["name"], "status": p["status"], "plans": [{"id": pl["id"], "label": pl["label"], "limits": pl["limits"], "editable": pl.get("editable")} for pl in p["plans"]], "gaps": p["gaps"]}
+        assert mine == js["catalog"][pid], pid
+    assert len(cat.PROVIDERS) == 5
+    key_sets = [["alphavantage"], ["finnhub"], ["marketstack"], ["alpaca"], ["alphavantage", "finnhub"], ["alphavantage", "marketstack", "finnhub", "alpaca"], []]
+    cases = [{"op": "route", "ticker": t, "configured": ks, "platform": platform, "mode": mode}
+             for t in TICKERS for ks in key_sets for platform in ("browser", "desktop") for mode in ("auto", "marketstack", "alpaca")]
+    js_routes = run_js("market-data", cases)
+    resolver = InstrumentResolver(REFERENCE)
+    plans = {pid: cat.plan_of(pid) for pid in cat.PROVIDER_IDS}
+    for c, browser in zip(cases, js_routes):
+        desktop = cat.route_instrument(resolver.resolve(c["ticker"]), c["mode"], c["configured"], plans, c["platform"])
+        assert desktop == browser, c
+
+
+def test_paid_plan_profiles_identical():
+    cases = [{"op": "plan", "id": "alphavantage", "planId": "premium", "overrides": {"limit": 150}},
+             {"op": "plan", "id": "marketstack", "planId": "basic"}, {"op": "plan", "id": "marketstack", "planId": "custom", "overrides": {"limit": 50000}},
+             {"op": "plan", "id": "finnhub", "planId": "paid", "overrides": {"limit": 300, "international": True}},
+             {"op": "plan", "id": "alpaca", "planId": "algo-plus"}, {"op": "plan", "id": "finnhub", "planId": "nonexistent"}]
+    for c, browser in zip(cases, run_js("market-data", cases)):
+        assert cat.plan_of(c["id"], c["planId"], c.get("overrides")) == browser, c
+
+
+def _fake_http(case):
+    def http(url, headers):
+        return case["status"], case["body"]
+    return http
+
+
+@pytest.mark.parametrize("case", RESPONSES["cases"], ids=lambda c: c["name"])
+def test_provider_fixtures_give_the_same_quote_or_error(case):
+    resolver = InstrumentResolver(REFERENCE)
+    identity = resolver.resolve(case["ticker"])
+    if case["provider"] == "massive":  # deferred: adapter level only (as in the JS tests)
+        from market_data.adapters import ADAPTERS
+        a = ADAPTERS["massive"]
+        if case["expect"].get("kind"):
+            with pytest.raises(DataError) as e:
+                if case["status"] != 200:
+                    raise a.classify(case["status"], case["body"])
+                a.parse(case["body"], case["symbol"], identity)
+            assert e.value.kind == case["expect"]["kind"]
+        else:
+            raw = a.parse(case["body"], case["symbol"], identity)
+            assert raw["rawPrice"] == case["expect"]["price"] and raw["tradingDate"] == case["expect"]["tradingDate"]
+        return
+    md = MarketData(None, http=_fake_http(case), reference=REFERENCE, sleep=lambda s: None, pacing_override_ms=0, now=lambda: 1793714400.0)
+    keys = {"marketstack": "MSKEY1234567890ABCDEF", "finnhub": "FHKEY1234567890ABCDEF"}
+    md.set_key(case["provider"], keys[case["provider"]])
+    if case["expect"].get("kind"):
+        with pytest.raises(DataError) as e:
+            md.price_with(case["provider"], identity)
+        assert e.value.kind == case["expect"]["kind"]
+        if case["expect"].get("quotaScope"):
+            assert e.value.quota_scope == case["expect"]["quotaScope"]
+        if case["expect"].get("persist"):
+            assert md.budget(case["provider"])["limitRecord"]["scope"] == case["expect"]["quotaScope"]
+            sent = md.budget(case["provider"])["sentToday"]
+            with pytest.raises(DataError) as again:
+                md.price_with(case["provider"], resolver.resolve("VST"))
+            assert again.value.quota_scope == case["expect"]["quotaScope"] and md.budget(case["provider"])["sentToday"] == sent
+    else:
+        q = md.price_with(case["provider"], identity)
+        assert q["schema"] == "md.quote.v1"
+        assert math.isclose(q["nativePriceMajorUnits"], case["expect"]["price"], rel_tol=1e-12)
+        assert q["nativeCurrency"] == case["expect"]["currency"]
+        assert q["tradingDate"] == case["expect"]["tradingDate"]
+        if case["expect"].get("currencyEvidence"):
+            assert q["currencyEvidence"] == case["expect"]["currencyEvidence"]
+        assert q["currencyVerified"] is True
+        assert not any(k in json.dumps(q) for k in keys.values())
+
+
+def test_alpha_vantage_service_burst_retry_and_daily_record():
+    notices = {n["name"]: n["text"] for n in NOTICES["notices"]}
+    answers = iter([json.dumps({"Information": notices["burst-2026"]}), json.dumps({"Global Quote": {"05. price": "60.84", "07. latest trading day": "2026-11-02"}}),
+                    json.dumps({"Information": notices["daily"]})])
+    waits = []
+    md = MarketData(None, http=lambda url, headers: (200, next(answers)), reference=REFERENCE, sleep=waits.append, pacing_override_ms=0)
+    md.set_key("alphavantage", "AVKEY1234567")
+    q = md.price_with("alphavantage", md.resolve("VEQT.TO"))
+    assert q["nativePriceMajorUnits"] == 60.84 and q["providerSymbol"] == "VEQT.TRT" and q["currencyEvidence"] == "curated_reference"
+    assert waits == [2.0] and md.budget("alphavantage")["limitRecord"] is None
+    with pytest.raises(DataError) as e:
+        md.price_with("alphavantage", md.resolve("CNQ.TO"))
+    assert e.value.quota_scope == "daily" and md.budget("alphavantage")["limitRecord"]["scope"] == "daily"
+    with pytest.raises(DataError) as local:
+        md.price_with("alphavantage", md.resolve("XQQ.TO"))
+    assert "Check again" in local.value.message and md.budget("alphavantage")["sentToday"] == 3
+    with pytest.raises(DataError) as ynvd:
+        md.price_instrument(md.resolve("YNVD.TO"))
+    assert ynvd.value.kind == "not_covered" and "Cboe Canada" in ynvd.value.message
+
+
+def test_keys_remembered_only_when_asked_and_removed_completely(tmp_path):
+    md = MarketData(tmp_path, http=lambda url, headers: (500, ""), reference=REFERENCE)
+    md.set_key("finnhub", "FHKEY1234567890ABCDEF")
+    assert not (tmp_path / "keys.json").exists(), "session-only by default"
+    md.set_key("alpaca", "ALPACAKEYID000000001", secret="SECRETSECRETSECRETSECRET", remember=True)
+    saved = json.loads((tmp_path / "keys.json").read_text())
+    assert set(saved) == {"alpaca"} and saved["alpaca"]["secret"]
+    reopened = MarketData(tmp_path, http=lambda url, headers: (500, ""), reference=REFERENCE)
+    assert reopened.configured() == ["alpaca"]
+    with pytest.raises(ValueError):
+        md.set_key("massive", "MASSIVEKEY0000000000")
+    md.forget_all_keys()
+    assert not (tmp_path / "keys.json").exists()
+
+
+def test_compare_quotes_and_freshness_identical():
+    base = {"canonicalId": "XNAS:AAPL", "nativeCurrency": "USD", "priceType": "eod_close", "tradingDate": "2026-11-02", "nativePriceMajorUnits": 100.0}
+    variants = [{}, {"nativePriceMajorUnits": 100.05}, {"nativePriceMajorUnits": 100.6}, {"nativePriceMajorUnits": 1.0}, {"nativePriceMajorUnits": 150.0},
+                {"tradingDate": "2026-10-30"}, {"priceType": "last_trade"}, {"canonicalId": "XTSE:AAPL"}, {"nativeCurrency": "CAD"}, {"priceType": "latest_trading_day"}]
+    cases = [{"op": "compare", "a": base, "b": {**base, **v}} for v in variants]
+    for c, browser in zip(cases, run_js("market-data", cases)):
+        desktop = compare_quotes(c["a"], c["b"])
+        browser = {k: browser[k] for k in desktop}
+        d_pct, b_pct = desktop.pop("diffPct"), browser.pop("diffPct")
+        assert (d_pct is None and b_pct is None) or d_pct == pytest.approx(b_pct, rel=1e-12), c
+        assert desktop == browser, c
+    now = 1793718000.0  # 2026-11-03 15:00 UTC (Tuesday)
+    fcases = [{"op": "freshness", "date": d, "now": now * 1000, "tz": tz} for d in ["2026-11-03", "2026-11-02", "2026-10-30", "2026-10-29", "2026-10-26", None, "bad"]
+              for tz in ["America/Toronto", "Asia/Tokyo", "Europe/London"]]
+    for c, browser in zip(fcases, run_js("market-data", fcases)):
+        state, missed = freshness_of(c["date"], now, c["tz"])
+        assert {"freshness": state, "missed": missed} == browser, c
+
+
+def test_sample_portfolio_identical():
+    (js,) = run_js("market-data", [{"op": "sample"}])
+    assert js == SAMPLE_PORTFOLIO
+    assert [r["ticker"] for r in SAMPLE_PORTFOLIO["rows"][:10]] == ["VEQT.TO", "CNQ.TO", "XQQ.TO", "HEWB.TO", "AAPL", "VFV.TO", "SPCX", "CBRS", "YNVD.TO", "VST"]
+    assert sum(r["targetWeight"] for r in SAMPLE_PORTFOLIO["rows"]) == 100
+    assert all(r["shares"] == 0 and r["targetWeight"] == 0 for r in SAMPLE_PORTFOLIO["rows"][10:])
+    assert not any("price" in r for r in SAMPLE_PORTFOLIO["rows"])
+
+
+# ---------------------------------------------------------------- Rebalancer extras
+PROBES = ["", " ", "nan", "NaN", "inf", "Infinity", "-inf", "1e999", "1,5", "abc", "0x10", "0", "5", " 2.5 ", ".5", "1e3", "-0", "12.", "+3", 7, 2.5, None]
+
+
+def test_number_parsing_identical():
+    (js,) = run_js("rebalancer-extras", [{"op": "parse", "values": PROBES}])
+    for value, browser in zip(PROBES, js):
+        assert core.parse_number(value) == browser, repr(value)
+
+
+def _scenarios(count=80):
+    rng = random.Random(2026)
+    fx = {"USD": 1.0, "CAD": 0.73, "EUR": 1.09, "GBP": 1.28, "JPY": 0.0068}
+    for i in range(count):
+        n = rng.randint(1, 10)
+        positions = [{"rowIndex": j, "ticker": f"T{j}", "shares": rng.choice([0, 1, 3, 12.5, 40, 305]), "price": round(rng.uniform(1, 400), 4),
+                      "currencyKey": rng.choice(list(fx)), "targetWeight": rng.choice([0, 1, 2, 5, 7, 10, 70]),
+                      "accountType": rng.choice(["", "TFSA", "RRSP"]) if i % 4 == 0 else ""} for j in range(n)]
+        if not any(p["targetWeight"] for p in positions):
+            positions[0]["targetWeight"] = 10
+        yield {"positions": positions, "fxToUsd": fx, "reportingKey": rng.choice(list(fx)), "mode": rng.choice(["new_money", "rebalance"]), "budget": rng.choice([500, 3000, 25000])}
+
+
+def _desktop_plan(c):
+    rate = lambda k: c["fxToUsd"][k] / c["fxToUsd"][c["reportingKey"]]  # noqa: E731
+    positions = [{**p, "currencyLabel": p["currencyKey"], "fxToReporting": rate(p["currencyKey"]), "currentValue": p["shares"] * p["price"] * rate(p["currencyKey"])} for p in c["positions"]]
+    summary, results, warnings = core.calculate_rebalance_plan(positions, c["mode"], c["budget"])
+    return summary, results, warnings, positions
+
+
+def test_warning_text_and_whole_shares_identical():
+    cases = [{"op": "whole", **c} for c in _scenarios()]
+    checked = 0
+    for c, browser in zip(cases, run_js("rebalancer-extras", cases)):
+        try:
+            summary, results, warnings, positions = _desktop_plan(c)
+        except ValueError as error:
+            assert browser.get("error") == str(error)
+            continue
+        assert browser["plan"]["warnings"] == warnings, "warning text, not just the count"
+        assert math.isclose(browser["plan"]["summary"]["cashLeft"], summary["cashLeft"], abs_tol=1e-9)
+        whole = core.apply_whole_shares(summary, results)
+        assert math.isclose(browser["whole"]["totalBuys"], whole["totalBuys"], rel_tol=1e-12, abs_tol=1e-9)
+        assert math.isclose(browser["whole"]["cashLeft"], whole["cashLeft"], rel_tol=1e-12, abs_tol=1e-9)
+        assert [r["wholeShares"] for r in browser["whole"]["results"]] == [r["wholeShares"] for r in whole["results"]]
+        if c["mode"] == "new_money":
+            assert whole["totalBuys"] <= c["budget"] + 1e-9
+        else:
+            assert whole["totalBuys"] <= whole["totalSells"] + 1e-9
+        assert all(float(r["wholeShares"]).is_integer() for r in whole["results"])
+        checked += 1
+        (js_w,) = run_js("rebalancer-extras", [{"op": "weights", "positions": c["positions"]}]) if checked <= 5 else [None]
+        if js_w is not None:
+            assert js_w == core.weight_warnings(c["positions"])
+    assert checked >= 50
+
+
+def test_rb01_zero_proceeds_identical():
+    rows = [{"rowIndex": i, "ticker": t, "shares": 100, "price": p, "currencyKey": "USD", "targetWeight": 1, "accountType": ""} for i, (t, p) in enumerate([("A", 100.02), ("B", 100.02), ("C", 99.96)])]
+    case = {"op": "whole", "positions": rows, "fxToUsd": {"USD": 1.0}, "reportingKey": "USD", "mode": "rebalance", "budget": 0}
+    (browser,) = run_js("rebalancer-extras", [case])
+    summary, results, warnings, _ = _desktop_plan(case)
+    assert [r["action"] for r in results] == ["Hold", "Hold", "Hold"] == [r["action"] for r in browser["plan"]["results"]]
+    assert warnings == browser["plan"]["warnings"] and "cannot be funded" in warnings[0]
+
+
+def test_valuation_gate_identical():
+    def row(t, shares, target, price, **kw):
+        return {"rowId": t, "ticker": t, "shares": shares, "targetWeight": target, "price": price, "currency": "CAD" if price else None,
+                "fxAvailable": True, "source": {"kind": "provider", "currencyVerified": True, "freshness": "current"} if price else {}, **kw}
+    sets = [
+        [row(r["ticker"], r["shares"], r["targetWeight"], None) for r in SAMPLE_PORTFOLIO["rows"]],
+        [row(r["ticker"], r["shares"], r["targetWeight"], 10 if r["group"] == "main" else None) for r in SAMPLE_PORTFOLIO["rows"]],
+        [row("A", 1, 1, 10, source={"kind": "provider", "currencyVerified": False, "freshness": "current"})],
+        [row("A", 1, 1, 10, source={"kind": "provider", "currencyVerified": True, "freshness": "stale", "tradingDate": "2026-10-29"})],
+        [row("A", 1, 1, 10, source={"kind": "manual", "freshness": "current"}), row("B", "", 1, 10)],
+        [row("A", 1, 1, 10, fxAvailable=False)],
+        [row("A", 0, 0, None)],
+    ]
+    cases = [{"op": "valuation", "rows": rows, "acceptStale": accept} for rows in sets for accept in (False, True)]
+    for c, browser in zip(cases, run_js("rebalancer-extras", cases)):
+        assert core.assess_valuation(c["rows"], c["acceptStale"]) == browser, c

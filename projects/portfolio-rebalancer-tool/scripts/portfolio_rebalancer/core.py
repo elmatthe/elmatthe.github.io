@@ -21,6 +21,15 @@ READINESS_SCHEMA = "md.valuation-readiness.v1"
 _NUMBER = re.compile(r"^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$")
 
 
+def _plain_sum(values) -> float:
+    """Left-to-right float addition, like JavaScript's reduce. (Python 3.12+ sum() uses
+    compensated summation, which can differ from the web engine in the last bit.)"""
+    total = 0.0
+    for v in values:
+        total += v
+    return total
+
+
 def _dollars(value: float) -> str:
     return f"${value:,.2f}"
 
@@ -44,7 +53,7 @@ def parse_number(value) -> float | None:
 
 def weight_warnings(positions: list[dict]) -> list[str]:
     """Same text as engine.weightWarnings: says when targets do not add up to 100."""
-    total = sum(p["targetWeight"] for p in positions)
+    total = _plain_sum(p["targetWeight"] for p in positions)
     if not total > 0 or abs(total - 100) < 0.005:
         return []
     return [f"Target weights add up to {total:.2f}%, not 100%; each target is divided by "
@@ -63,8 +72,8 @@ def calculate_rebalance_plan(
     in warnings (US-dollar style by default, as in the web engine's default).
     """
     money = money or _dollars
-    total_current = sum(p["currentValue"] for p in positions)
-    total_weight = sum(p["targetWeight"] for p in positions)
+    total_current = _plain_sum(p["currentValue"] for p in positions)
+    total_weight = _plain_sum(p["targetWeight"] for p in positions)
 
     if mode == "new_money":
         if not budget > 0:
@@ -112,14 +121,14 @@ def calculate_rebalance_plan(
             "postTradeShares": p["shares"] + t_shares,
         })
 
-    total_buys = sum(r["tradeValue"] for r in results if r["action"] == "Buy")
-    total_sells = sum(abs(r["tradeValue"]) for r in results if r["action"] == "Sell")
+    total_buys = _plain_sum(r["tradeValue"] for r in results if r["action"] == "Buy")
+    total_sells = _plain_sum(abs(r["tradeValue"]) for r in results if r["action"] == "Sell")
 
     # Invariant 1: new-money budget cap
     if mode == "new_money" and total_buys > budget + 0.01 and total_buys > 0:
         scale = budget / total_buys
         _scale_buys(results, scale)
-        scaled = sum(r["tradeValue"] for r in results if r["action"] == "Buy")
+        scaled = _plain_sum(r["tradeValue"] for r in results if r["action"] == "Buy")
         warnings.append(
             f"Buy recommendations scaled down by {(1 - scale) * 100:.1f}% to stay "
             f"within the new-money budget of {money(budget)} "
@@ -133,7 +142,7 @@ def calculate_rebalance_plan(
         if total_sells > 0:
             scale = total_sells / total_buys
             _scale_buys(results, scale)
-            scaled = sum(r["tradeValue"] for r in results if r["action"] == "Buy")
+            scaled = _plain_sum(r["tradeValue"] for r in results if r["action"] == "Buy")
             warnings.append(
                 f"Buy recommendations scaled down by {(1 - scale) * 100:.1f}% to stay "
                 f"within sell proceeds of {money(total_sells)} "
@@ -278,8 +287,8 @@ def apply_whole_shares(summary: dict, results: list[dict], max_steps: int = 1000
 
     def total(side: str) -> float:
         if side == "buy":
-            return sum(x["wholeShares"] * x["_unit"] for x in rows if x["wholeShares"] > 0)
-        return sum(-x["wholeShares"] * x["_unit"] for x in rows if x["wholeShares"] < 0)
+            return _plain_sum(x["wholeShares"] * x["_unit"] for x in rows if x["wholeShares"] > 0)
+        return _plain_sum(-x["wholeShares"] * x["_unit"] for x in rows if x["wholeShares"] < 0)
 
     def available() -> float:
         return budget if mode == "new_money" else total("sell")
@@ -306,6 +315,7 @@ def apply_whole_shares(summary: dict, results: list[dict], max_steps: int = 1000
         candidates[0][1]["wholeShares"] += 1
         steps += 1
 
+    buys, sells, cash = total("buy"), total("sell"), max(0.0, available() - total("buy"))
     out = []
     for x in rows:
         unit = x.pop("_unit")
@@ -317,8 +327,7 @@ def apply_whole_shares(summary: dict, results: list[dict], max_steps: int = 1000
             "wholeTradeValue": w * unit,
             "wholePostTradeShares": x["shares"] + w,
         })
-    buys = total("buy")
-    return {"results": out, "totalBuys": buys, "totalSells": total("sell"), "cashLeft": max(0.0, available() - buys)}
+    return {"results": out, "totalBuys": buys, "totalSells": sells, "cashLeft": cash}
 
 
 def assess_valuation(rows: list[dict], accept_stale: bool = False) -> dict:
