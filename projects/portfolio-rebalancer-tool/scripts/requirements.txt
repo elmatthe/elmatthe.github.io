@@ -1,7 +1,6 @@
 # Pinned dependencies for the Portfolio Rebalancer tool.
 # The setup launcher installs these into a local .venv (never system-wide).
+# Prices come from the provider you choose with your own key, through the
+# standard-library market_data package in this folder; no third-party data library.
 
-openpyxl==3.1.5      # CSV/Excel export of the trade plan
-yfinance==1.7.0      # live price + FX snapshot from Yahoo Finance
-pandas==3.0.3        # pinned to match the data stack the Dashboard fetches with successfully
-numpy==2.4.6         # pinned to match the data stack the Dashboard fetches with successfully
+openpyxl==3.1.5      # Excel export of the trade plan

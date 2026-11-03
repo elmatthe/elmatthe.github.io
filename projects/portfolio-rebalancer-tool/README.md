@@ -16,33 +16,65 @@ downloading anything: <https://elmatthe.github.io/projects/portfolio-rebalancer/
 
 ## What it does
 
-- Multi-row position entry: ticker, shares/units, local price, row currency, and
-  target weight %.
-- Per-row currency support (USD, CAD, JPN, EUR, GBP, CHY/CNH) with automatic FX
-  conversion to a single reporting currency.
-- **Ticker & currency checking** — as you type, each ticker is verified and you get a
-  clear `Verified: VTI (USD)` confirmation, or a warning that explains the fix (e.g.
-  "`ISF` not found in CNY. Found as `ISF.L` (GBP). Update row currency or ticker").
-- Optional **live prices and FX rates** pulled from Yahoo Finance (internet required),
-  with safe fallback to your manually entered prices if a lookup fails.
-- Optional **Account Type** column (TFSA, RRSP, Margin, etc.) that warns when a plan
-  would quietly require moving money between account types.
-- Optional **CSV and Excel export** of the full trade plan.
+- **Holdings:** ticker exactly as your broker shows it, shares (fractions allowed),
+  target weight % and, optionally, the account type (TFSA, RRSP, Margin, …).
+- **Automatic identity and prices:** when you finish typing a ticker (Enter or Tab),
+  the program identifies the listing (exchange, currency, pence or pounds) without any
+  request, then fetches its latest price from the source you chose, with **your own
+  key**: Alpha Vantage, Marketstack, Finnhub or Alpaca. Each holding shows the price,
+  provider, price type (for example the end-of-day close), trading date and currency.
+  Prices are not called real-time unless the provider says so.
+- **Identity before price:** `YNVD.TO` (as Questrade shows it) is the NVIDIA (NVDA)
+  Yield Shares Purpose ETF on **Cboe Canada**. The program keeps your text, never
+  prices it as a Toronto Stock Exchange symbol, and says that the free sources do not
+  cover it. You can then supply its price yourself; it is labelled as user-supplied.
+- **No plan without prices:** the plan appears only when every holding with shares or
+  a target has a verified price in a confirmed currency, or a price you supplied.
+  Holdings with 0 shares and a 0% target are left out (the sample's four currency-test
+  rows, removable in one click).
+- **Two modes, three invariants:** New Money (buy only, never over budget) and
+  Rebalance (sells fund buys), with cross-account funding warnings. Optional whole
+  shares (rounded down, then topped up with leftover cash).
+- **Official exchange rates** from the Bank of Canada (ECB fallback), editable.
+- **CSV and Excel export** with the provider, symbol, price type, trading date,
+  retrieval time and currency evidence for every holding, the exchange rates and
+  their sources, warnings and a disclaimer. Excel files are written as a new
+  workbook.
+
+The same engine runs in the browser on the project page:
+<https://elmatthe.github.io/projects/portfolio-rebalancer/>. Automated tests check
+that both give the same trades and the same messages.
+
+### Keys and privacy
+
+Keys are yours. Each one is sent only to its own provider (Finnhub and Alpaca in
+request headers; Alpha Vantage and Marketstack in the request address, the only
+method they offer). A key is kept until you close the program unless you tick
+**Remember on this computer**, which saves it in `files/runtime/keys.json` in this
+folder (readable only by your user where the system supports it). Keys never appear
+in exports. Your holdings are never sent anywhere: only ticker symbols go to the
+price provider and only currency codes to the central banks. The request counts
+shown are what this computer sent; your provider counts every use of the key.
+
+Massive (formerly Polygon.io) is evaluated but not offered: its market-data terms
+restrict applications used by other people. See `_tools/PROVIDER_MATRIX.md` in the
+website repository for every provider's limits and terms.
 
 ---
 
-## What's under the hood (the tools it uses)
+## What's under the hood
 
 | Piece | Tool | Why |
 |-------|------|-----|
 | Language | **Python 3.11–3.14** | Runs the same on Windows and macOS; the launcher finds or installs it |
-| Window / GUI | **tkinter** | Built into Python — nothing extra to install |
+| Window / GUI | **tkinter** | Built into Python; DPI-aware on Windows |
+| Market data | **`scripts/market_data/`** (standard library only) | Same provider rules, identity reference and notice handling as the web app |
 | Spreadsheet export | **openpyxl** | Writes the `.xlsx` trade plan |
-| Live prices & FX | **yfinance** | Optional Yahoo Finance lookups |
 
 Everything except Python installs into a self-contained `.venv` folder inside this
 folder — nothing is installed system-wide, and you can move or delete the folder
-freely.
+freely. Earlier versions used Yahoo Finance through `yfinance`; it is no longer used
+(Yahoo's terms do not permit automated collection).
 
 ---
 
@@ -131,13 +163,14 @@ portfolio-rebalancer-tool/
     main.py                 <- entry point (opens the window)
     requirements.txt        <- pinned dependencies
     portfolio_rebalancer/   <- the program, split into focused modules
-      core.py               <- buy/sell/hold math + the three invariants
-      fx.py                 <- currencies and FX conversion
-      pricing.py            <- Yahoo Finance live price + FX lookup
-      ticker_helper.py      <- ticker checking and helpful messages
-      export.py             <- CSV / Excel export
+      core.py               <- buy/sell/hold math, three invariants, valuation gate, whole shares
+      model.py              <- holdings, prices, readiness and the plan (no GUI)
+      sample.py             <- the 10 + 4 sample portfolio (no prices)
+      export.py             <- CSV / Excel export with sources
       ui.py                 <- the tkinter window
-  files/                    <- created on first run: setup logs, temp files, state
+    market_data/            <- providers, identity reference, exchange rates (shared with the
+                               Stock tool; identical to the web app's rules)
+  files/                    <- created on first run: setup logs, runtime settings, saved keys
 ```
 
 The source repository also contains `files/tests/` (pytest suite) and `md-instructions/`

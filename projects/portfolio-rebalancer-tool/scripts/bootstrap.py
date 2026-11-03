@@ -52,7 +52,7 @@ except ModuleNotFoundError:  # pragma: no cover - hosts older than 3.11 are reje
 
 PROJECT_NAME = "Portfolio Rebalancer"
 # Import names that prove the application can run (imported, not just located).
-REQUIRED_IMPORTS: tuple[str, ...] = ('tkinter', 'openpyxl', 'yfinance', 'pandas', 'numpy')
+REQUIRED_IMPORTS: tuple[str, ...] = ('tkinter', 'openpyxl')
 # Modules a candidate base Python must provide to build this GUI project's .venv.
 REQUIRED_BASE_MODULES: tuple[str, ...] = ("tkinter", "venv", "ensurepip")
 # Offered only when no compatible Python exists (per-user installs).
