@@ -7,10 +7,14 @@
 //      (Alpha Vantage, Marketstack, Finnhub; see _tools/PROVIDER_MATRIX.md). Keys and
 //      everything fetched with them stay in this browser; each key has its own
 //      storage namespace, request pacing and request count.
-//   3. Prices the visitor deliberately enters or imports (handled by each tool), and
+//   3. The free (keyless) source through this site's own market-data gateway
+//      (./keyless.js), when the site has a gateway configured AND the gateway reports
+//      its source enabled. It is used for holdings no saved key covers (Automatic), or
+//      when the visitor chooses it; it never replaces a source the visitor chose.
+//   4. Prices the visitor deliberately enters or imports (handled by each tool), and
 //      the clearly labelled synthetic demo of the Stock tool.
-// There is no public relay or shared server in the path, and nothing here invents a
-// price: when a source cannot answer, the caller gets a DataError that explains why.
+// No public relay is used, and nothing here invents a price: when a source cannot
+// answer, the caller gets a DataError that explains why.
 
 import { DataError, createDeduper, fetchText, httpError } from "./http.js";
 import { createCache, safeStorage, memoryStorage, storageKeys } from "./cache.js";
@@ -21,12 +25,17 @@ import { PROVIDERS, PROVIDER_IDS, CATALOG_VERSION, planOf, routeInstrument, prov
 import { ADAPTERS, normalizeCurrency } from "./providers/quote-adapters.js";
 import { createInstrumentResolver, loadInstrumentReference } from "./instruments.js";
 import { AV_PROVIDER, AV_DAILY_LIMIT, createAlphaVantageClient, createUsageCounter, toAvSymbol, pickListing, parseGlobalQuote, parseSeries, validKey, redactKey } from "./providers/alphavantage.js";
+import { KEYLESS_ID, KEYLESS_NAME, KEYLESS_PROVIDER, KEYLESS_VIA, createKeylessSource, keylessSymbol } from "./keyless.js";
 
 export { DataError } from "./http.js";
 export { classifyFreshness, describeAge, FRESHNESS_LABEL, selectBasis, isoDay } from "./contract.js";
 export { AV_DAILY_LIMIT, validKey } from "./providers/alphavantage.js";
 export { fxSupported } from "./fx.js";
 export { PROVIDERS, PROVIDER_IDS, planOf, providerAvailable } from "./catalog.js";
+export { KEYLESS_ID, KEYLESS_NAME, KEYLESS_PROVIDER, KEYLESS_VIA, resolveMarketGateway, keylessSymbol } from "./keyless.js";
+
+// Display name of any price source id: a provider, or the free source.
+export const sourceName = id => (id === KEYLESS_ID ? KEYLESS_NAME : PROVIDERS[id]?.name || String(id));
 
 export const QUOTE_SCHEMA = "md.quote.v1";
 const LEGACY_SETTINGS_KEY = "md.settings.v1";
@@ -165,11 +174,13 @@ export function createMarketData({
   reference = null, // instrument reference object (tests); the site loads the shipped JSON
   platform = "browser",
   referenceFetch = (...a) => globalThis.fetch(...a),
+  gatewayUrl = "", // the site's market-data gateway (free source); "" = not configured
 } = {}) {
   // Without usable storage everything lives in memory for this page view, so request
   // counts and caches still work until the page is closed.
   const store = local || memoryStorage();
   const fx = createFxService({ fetchImpl, storage: store, now });
+  const keyless = createKeylessSource({ baseUrl: gatewayUrl, fetchImpl, now, storage: store, sleep });
   const sleeper = sleep || ((ms, signal) => new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new DataError("Request cancelled.", { kind: "aborted" })); return; }
     const timer = setTimeout(resolve, ms);
@@ -193,7 +204,7 @@ export function createMarketData({
     const saved = JSON.parse(readText(store, PREFS_KEY) || "null");
     if (saved && typeof saved === "object") prefs = { routing: typeof saved.routing === "string" ? saved.routing : "auto", fallback: saved.fallback === true, plans: saved.plans && typeof saved.plans === "object" ? saved.plans : {} };
   } catch (_) { /* defaults */ }
-  if (prefs.routing !== "auto" && !providerAvailable(prefs.routing, platform)) prefs.routing = "auto";
+  if (prefs.routing !== "auto" && prefs.routing !== KEYLESS_ID && !providerAvailable(prefs.routing, platform)) prefs.routing = "auto";
   const savePrefs = () => writeText(store, PREFS_KEY, JSON.stringify(prefs));
   const planFor = id => planOf(id, prefs.plans[id]?.id, prefs.plans[id] || {});
 
@@ -411,7 +422,7 @@ export function createMarketData({
   // Price currency and unit for a provider's answer, checked against the instrument.
   // Returns { currency, unitScale, verified, evidence, note } or throws currency_mismatch.
   function settleCurrency(id, identity, raw, listing) {
-    const name = PROVIDERS[id].name;
+    const name = id === KEYLESS_ID ? KEYLESS_PROVIDER : PROVIDERS[id].name;
     if (raw.currency) {
       if (identity.currencyEvidence === "curated_reference" && raw.currency !== identity.currency) {
         throw new DataError(`${name} reports ${identity.displayTicker} in ${raw.rawCurrency || raw.currency}, but this listing trades in ${identity.currency}. The price was not used.`, { kind: "currency_mismatch", definitive: true, provider: name });
@@ -463,6 +474,7 @@ export function createMarketData({
   // that provider (recorded with the provider's own wording until the UTC day or month
   // ends, or until "Check again").
   async function priceWith(id, identity, { signal, useCache = true } = {}) {
+    if (id === KEYLESS_ID) return priceKeyless(identity, { signal, useCache });
     const name = PROVIDERS[id].name;
     const s = session(id);
     if (!s) throw new DataError(`No ${name} key is saved.`, { kind: "not_configured", provider: name });
@@ -536,9 +548,101 @@ export function createMarketData({
     }
   }
 
+  // ---------------------------------------------------------------- free (keyless) source
+  // A quote from the site's market-data gateway, in the same md.quote.v1 contract as the
+  // key-based providers, with its tier, gateway cache age and delay note stated.
+  async function keylessRaw(identity, { signal, useCache = true } = {}) {
+    try { return await forCaller(keyless.quote(identity, { signal, useCache }), signal); }
+    catch (error) { if (error instanceof DataError && !error.instrument) error.instrument = identity.canonicalId; throw error; }
+  }
+  const priceKeyless = async (identity, options) => buildKeylessQuote(identity, await keylessRaw(identity, options));
+  function buildKeylessQuote(identity, raw) {
+    const cur = settleCurrency(KEYLESS_ID, identity, raw, null);
+    const price = Number((raw.rawPrice * cur.unitScale).toPrecision(12));
+    if (!(price > 0) || !Number.isFinite(price)) throw new DataError(`The free source returned an invalid price for ${identity.displayTicker}.`, { kind: "invalid", provider: KEYLESS_NAME });
+    const fromBrowser = raw.browserCacheAgeMs !== null && raw.browserCacheAgeMs !== undefined;
+    return {
+      schema: QUOTE_SCHEMA,
+      canonicalId: identity.canonicalId,
+      displayTicker: identity.displayTicker,
+      provider: KEYLESS_PROVIDER,
+      providerId: KEYLESS_ID,
+      sourceTier: "free",
+      via: KEYLESS_VIA,
+      providerSymbol: raw.symbol,
+      nativePriceMajorUnits: price,
+      nativeCurrency: cur.currency,
+      quoteUnit: cur.unitScale === 1 ? "major" : "minor",
+      rawPrice: raw.rawPrice,
+      rawCurrency: raw.rawCurrency,
+      priceType: raw.priceType,
+      tradingDate: raw.tradingDate,
+      asOf: raw.asOf,
+      delayMinutes: null,
+      adjusted: false,
+      retrievedAt: raw.retrievedAt, // when the gateway fetched it (a cached copy keeps its original time)
+      cacheStatus: fromBrowser ? "cached" : raw.gatewayCache.status === "hit" ? "gateway_cache" : "live",
+      cachedAgeMs: fromBrowser ? raw.browserCacheAgeMs : raw.gatewayCache.status === "hit" ? raw.gatewayCache.ageSeconds * 1000 : 0,
+      attribution: raw.attribution || `Data from ${KEYLESS_PROVIDER} through ${KEYLESS_VIA}.`,
+      entitlement: "free",
+      feed: null,
+      currencyVerified: cur.verified,
+      currencyEvidence: cur.evidence,
+      notes: [cur.note, raw.delayNote].filter(Boolean),
+    };
+  }
+
+  // Free-source history for the Stock tool: { history, provenance }.
+  async function keylessHistory(symbol, range, { signal } = {}) {
+    await ready();
+    const identity = resolve(symbol);
+    if (identity.status !== "resolved") throw new DataError(identity.reason || `${symbol} is not a supported listing.`, { kind: "not_covered", definitive: true, provider: KEYLESS_NAME });
+    const h = await forCaller(keyless.history(identity, range, { signal }), signal);
+    if (identity.currencyEvidence === "curated_reference" && h.currency !== identity.currency) {
+      throw new DataError(`${KEYLESS_PROVIDER} reports ${identity.displayTicker} in ${h.rawCurrency || h.currency}, but this listing trades in ${identity.currency}. The prices were not used.`, { kind: "currency_mismatch", definitive: true, provider: KEYLESS_NAME });
+    }
+    const k = h.keyless;
+    const gatewayAge = k.gatewayCache.status === "hit" ? k.gatewayCache.ageSeconds * 1000 : 0;
+    return {
+      history: { ...h, currencyVerified: true, identity },
+      provenance: {
+        provider: KEYLESS_PROVIDER, via: KEYLESS_VIA, sourceTier: "free", retrievedAt: k.retrievedAt,
+        cached: k.browserCacheAgeMs !== null || k.gatewayCache.status === "hit", cacheWhere: k.browserCacheAgeMs !== null ? "browser" : k.gatewayCache.status === "hit" ? "gateway" : null,
+        stale: false, ageMs: k.browserCacheAgeMs ?? gatewayAge, symbol: h.symbol, range: k.range, missing: k.missing, droppedRunningSession: k.droppedRunningSession, attribution: k.attribution,
+      },
+    };
+  }
+
+  // Free-source latest price for the Stock tool's snapshot ({ quote, provenance, freshness }).
+  async function keylessQuote(symbol, { signal } = {}) {
+    await ready();
+    const identity = resolve(symbol);
+    if (identity.status !== "resolved") throw new DataError(identity.reason || `${symbol} is not a supported listing.`, { kind: "not_covered", definitive: true, provider: KEYLESS_NAME });
+    const raw = await keylessRaw(identity, { signal });
+    const q = buildKeylessQuote(identity, raw);
+    return {
+      quote: { requestedSymbol: symbol, symbol: q.providerSymbol, price: q.nativePriceMajorUnits, currency: q.nativeCurrency, sessionDate: q.tradingDate, priceTime: q.asOf, previousClose: raw.previousClose, dayHigh: raw.dayHigh, dayLow: raw.dayLow, volume: raw.volume, name: raw.name, exchange: raw.exchangeName, instrumentType: raw.instrumentType },
+      provenance: { provider: KEYLESS_PROVIDER, via: KEYLESS_VIA, sourceTier: "free", retrievedAt: q.retrievedAt, cached: q.cacheStatus !== "live", stale: false, ageMs: q.cachedAgeMs },
+      freshness: classifyFreshness(q.asOf, now()),
+      identity,
+    };
+  }
+
   const configured = () => Object.keys(keys).filter(id => providerAvailable(id, platform));
   const allPlans = () => Object.fromEntries(PROVIDER_IDS.map(id => [id, planFor(id)]));
-  const route = (identity, mode = prefs.routing) => routeInstrument(identity, { mode, configured: configured(), plans: allPlans(), platform });
+  // Key-based providers first (they are the visitor's own choice), then the free source
+  // for listings it covers, in Automatic mode; only the free source in its own mode.
+  const route = (identity, mode = prefs.routing) => {
+    const out = mode === KEYLESS_ID ? { candidates: [], skipped: [] } : routeInstrument(identity, { mode, configured: configured(), plans: allPlans(), platform });
+    if (mode === "auto" || mode === KEYLESS_ID) {
+      const gap = keyless.coverageGap(identity);
+      if (gap) out.skipped.push({ id: KEYLESS_ID, reason: gap });
+      else out.candidates.push({ id: KEYLESS_ID, symbol: keylessSymbol(identity) });
+    }
+    return out;
+  };
+  // Whether any automatic source can be tried at all (a saved key, or the free source).
+  const hasPriceSource = () => configured().length > 0 || keyless.enabled();
 
   // Errors after which a different provider could still answer.
   const FALLBACK_KINDS = new Set(["not_found", "not_covered", "entitlement", "auth", "rate_limited", "unavailable", "network", "timeout", "http", "provider_notice", "invalid", "ambiguous"]);
@@ -550,9 +654,9 @@ export function createMarketData({
     if (!identity || identity.status !== "resolved") throw new DataError(identity?.reason || "The ticker is not resolved.", { kind: "invalid", definitive: true });
     const { candidates, skipped } = route(identity, mode);
     if (!candidates.length) {
-      const reasons = skipped.map(x => `${PROVIDERS[x.id].name}: ${x.reason}`);
-      throw new DataError(`No configured source covers ${identity.displayTicker} (${identity.venueName || identity.mic}).`, {
-        kind: configured().length ? "not_covered" : "not_configured", definitive: true, instrument: identity.canonicalId,
+      const reasons = skipped.map(x => `${sourceName(x.id)}: ${x.reason}`);
+      throw new DataError(`No available source covers ${identity.displayTicker} (${identity.venueName || identity.mic}).`, {
+        kind: hasPriceSource() ? "not_covered" : "not_configured", definitive: true, instrument: identity.canonicalId,
         hint: reasons.length ? reasons.join("; ") : "Add a key for a provider that covers this market, or enter your own price.",
       });
     }
@@ -563,7 +667,7 @@ export function createMarketData({
         return attempts.length ? { ...q, fallbackFrom: attempts } : q;
       } catch (error) {
         if (error?.kind === "aborted" || error?.kind === "key_changed") throw error;
-        attempts.push({ provider: PROVIDERS[c.id].name, kind: error?.kind, message: error?.message });
+        attempts.push({ provider: sourceName(c.id), providerId: c.id, kind: error?.kind, quotaScope: error?.quotaScope || null, message: error?.message });
         const last = index === candidates.length - 1;
         if (!fallback || last || !FALLBACK_KINDS.has(error?.kind)) {
           if (error instanceof DataError) error.attempts = attempts;
@@ -581,12 +685,16 @@ export function createMarketData({
     for (const identity of identities) {
       if (!identity || identity.status !== "resolved") { uncovered.push({ displayTicker: identity?.displayTicker, reason: identity?.reason || "not resolved" }); continue; }
       const { candidates, skipped } = route(identity, mode);
-      if (!candidates.length) { uncovered.push({ displayTicker: identity.displayTicker, reason: skipped.map(x => `${PROVIDERS[x.id].name}: ${x.reason}`).join("; ") || "no provider configured" }); continue; }
+      if (!candidates.length) { uncovered.push({ displayTicker: identity.displayTicker, reason: skipped.map(x => `${sourceName(x.id)}: ${x.reason}`).join("; ") || "no provider configured" }); continue; }
       const { id, symbol } = candidates[0];
-      const s = sessions[id];
-      const cached = s?.quotes.get(`${identity.canonicalId}|${symbol}`, { freshMs: 4 * HOUR });
-      const fresh = cached && cached.ageMs <= (QUOTE_FRESH_MS[cached.value.priceType] || 10 * MINUTE);
-      const cost = fresh ? 0 : PROVIDERS[id].requestCost(identity, { listingCached: id === "alphavantage" && avListingCached(symbol) });
+      let cost;
+      if (id === KEYLESS_ID) cost = keyless.quoteCached(identity) ? 0 : 1;
+      else {
+        const s = sessions[id];
+        const cached = s?.quotes.get(`${identity.canonicalId}|${symbol}`, { freshMs: 4 * HOUR });
+        const fresh = cached && cached.ageMs <= (QUOTE_FRESH_MS[cached.value.priceType] || 10 * MINUTE);
+        cost = fresh ? 0 : PROVIDERS[id].requestCost(identity, { listingCached: id === "alphavantage" && avListingCached(symbol) });
+      }
       perProvider[id] = perProvider[id] || { requests: 0, rows: 0 };
       perProvider[id].requests += cost;
       perProvider[id].rows += 1;
@@ -597,6 +705,9 @@ export function createMarketData({
 
   // What this browser has sent with a provider's key, against the plan's limits.
   function budget(id) {
+    // The free source has no personal allowance: the gateway limits requests per visitor
+    // and shares one budget among everyone.
+    if (id === KEYLESS_ID) return { shared: true, sentToday: null, sentMonth: null, planId: "free", planLabel: "Free source (shared, rate-limited)", remaining: null, period: null, limitRecord: null };
     const s = session(id);
     const plan = planFor(id);
     const sentToday = s?.usage.count ?? 0;
@@ -679,7 +790,7 @@ export function createMarketData({
   }
 
   function setRouting({ mode, fallback } = {}) {
-    if (mode !== undefined) prefs.routing = mode === "auto" || providerAvailable(mode, platform) ? mode : "auto";
+    if (mode !== undefined) prefs.routing = mode === "auto" || mode === KEYLESS_ID || providerAvailable(mode, platform) ? mode : "auto";
     if (fallback !== undefined) prefs.fallback = Boolean(fallback);
     savePrefs();
     return { mode: prefs.routing, fallback: prefs.fallback };
@@ -707,6 +818,18 @@ export function createMarketData({
     providerStatus,
     providers: () => PROVIDER_IDS.map(providerStatus),
     configuredProviders: configured,
+    hasPriceSource,
+    // ---- free (keyless) source
+    keyless: {
+      check: options => keyless.check(options),
+      status: () => keyless.status(),
+      enabled: () => keyless.enabled(),
+      configured: () => keyless.configured(),
+      host: () => { try { return new URL(keyless.base()).host; } catch (_) { return null; } },
+      requestsSent: () => keyless.requestsSent(),
+    },
+    keylessHistory,
+    keylessQuote,
     setKey,
     forgetAllKeys,
     setPlan,
@@ -728,7 +851,7 @@ export function createMarketData({
     setApiKey: (key, { remember = true } = {}) => setKey("alphavantage", key, { remember }),
     // Removes saved responses for every key (and saved exchange rates). Request counts
     // and limit records are kept so the provider's answers stay honoured.
-    clearCache() { return PROVIDER_IDS.reduce((n, id) => n + purgeKeyData(id, null), 0) + fx.clear(); },
-    cacheSize() { return Object.values(sessions).reduce((n, s) => n + s.quotes.size() + s.history.size(), 0); },
+    clearCache() { return PROVIDER_IDS.reduce((n, id) => n + purgeKeyData(id, null), 0) + fx.clear() + keyless.clearCache(); },
+    cacheSize() { return Object.values(sessions).reduce((n, s) => n + s.quotes.size() + s.history.size(), 0) + keyless.cacheSize(); },
   };
 }

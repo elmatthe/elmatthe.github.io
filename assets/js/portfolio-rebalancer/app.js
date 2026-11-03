@@ -15,13 +15,16 @@
 //     (labelled as such on screen and in every export).
 // Every holding is an ordinary row in one list, whatever its market or currency: the
 // same card, the same Get prices action, the same valuation gate and the same plan.
+// Price sources, in three tiers: the free source (no key; this site's market-data
+// gateway, when it is configured and reports its source on), providers with the
+// visitor's own key, and prices the visitor enters or imports.
 // Holdings are never sent anywhere or stored: only ticker symbols go to the price
-// provider, and only currency codes go to the central banks.
+// source, and only currency codes go to the central banks.
 
 import * as E from "./engine.js";
 import * as R from "./rows.js";
 import { SAMPLE_PORTFOLIO, isUnchangedInternationalExample, targetTotalBasisPoints } from "./sample.js";
-import { createMarketData, KEY_STORAGE_TEXT, PROVIDERS, providerAvailable } from "../market-data/index.js";
+import { createMarketData, KEY_STORAGE_TEXT, PROVIDERS, providerAvailable, KEYLESS_ID, KEYLESS_NAME, KEYLESS_PROVIDER, sourceName, resolveMarketGateway } from "../market-data/index.js";
 import { csvRecords } from "../market-data/csv.js";
 import { buildXlsx, toCsv, downloadBlob, timestampSlug } from "../shared/export-files.js";
 
@@ -32,6 +35,7 @@ const PRICE_TYPE = {
   eod_close: "close",
   previous_close: "previous close",
   last_trade: "last price",
+  regular_market_price: "latest regular-session price (may be delayed)",
 };
 const BROWSER_PROVIDERS = Object.keys(PROVIDERS).filter(id => providerAvailable(id, "browser"));
 const DISCLAIMER = "Illustrative planning only; not financial, investment, or trading advice. Verify prices and holdings at your broker before trading.";
@@ -41,7 +45,7 @@ if (root) init();
 
 function init() {
   const $ = id => document.getElementById(id);
-  const md = createMarketData();
+  const md = createMarketData({ gatewayUrl: resolveMarketGateway(root.dataset.marketGateway, window.location) });
   const state = {
     rows: [],
     fx: { CAD: { cadPer: 1, kind: "official", label: "Reporting base", date: null } },
@@ -92,6 +96,21 @@ function init() {
     els.status.textContent = text;
     if (tone) els.status.dataset.tone = tone; else delete els.status.dataset.tone;
   }
+  const ageText = ms => { const m = Math.round((ms || 0) / 60000); return m < 60 ? `${m} min` : `${Math.round(m / 60)} h`; };
+  const cacheText = q => (q.cacheStatus === "cached" ? ` (saved copy, ${ageText(q.cachedAgeMs)} old)` : q.cacheStatus === "gateway_cache" ? ` (gateway copy, ${ageText(q.cachedAgeMs)} old)` : "");
+  // A failure the visitor must know about even when another source then answered.
+  const seriousFailure = f => f.kind === "auth" || (f.kind === "rate_limited" && ["daily", "monthly"].includes(f.quotaScope)) || f.kind === "entitlement";
+  const problemWord = f => (f.kind === "auth" ? "key rejected" : f.kind === "rate_limited" ? (["daily", "monthly"].includes(f.quotaScope) ? `${f.quotaScope} limit reached` : "rate limited") : f.kind === "entitlement" ? "not in your plan" : f.kind === "not_covered" || f.kind === "not_found" ? "no data" : "failed");
+  // What the free source's state means for a visitor without a saved key.
+  function freeSourceLine() {
+    const st = md.keyless.status();
+    if (st.state === "enabled") return null;
+    if (st.state === "checking") return "The free source (no key) is being checked.";
+    if (st.state === "disabled") return `The free source (no key) is switched off on this site's market-data gateway${st.reason ? `: ${st.reason}` : "."}`;
+    if (st.state === "unreachable") return `${st.message}.`;
+    return "The free source (no key) is not available: this site's market-data gateway has not been set up yet.";
+  }
+  const noSourceText = () => `${freeSourceLine() || ""} Add your own key under Market data → Your API keys, or use your own price.`.trim();
 
   /* ---------------- rows ---------------- */
   const getRow = id => state.rows.find(r => r.id === id);
@@ -108,7 +127,7 @@ function init() {
     putRow(row);
     renderRow(row);
     afterChange();
-    if (identity.status === "resolved" && R.isActive(row) && md.configuredProviders().length) priceRow(id);
+    if (identity.status === "resolved" && R.isActive(row) && md.hasPriceSource()) priceRow(id);
   }
 
   // Fetches one holding's price. Every answer is checked against the request token,
@@ -119,8 +138,8 @@ function init() {
     const token = R.requestToken(row, null);
     const route = md.route(row.identity);
     if (!route.candidates.length) {
-      const why = route.skipped.map(s => `${PROVIDERS[s.id].name}: ${s.reason}`).join("; ");
-      ({ row } = R.applyError(row, token, { kind: md.configuredProviders().length ? "not_covered" : "not_configured", message: md.configuredProviders().length ? `Not covered by your saved sources${why ? ` (${why})` : ""}.` : "No price source is set up yet: add your own key under Market data, or use your own price.", retryable: false }));
+      const why = route.skipped.map(s => `${sourceName(s.id)}: ${s.reason}`).join("; ");
+      ({ row } = R.applyError(row, token, { kind: md.hasPriceSource() ? "not_covered" : "not_configured", message: md.hasPriceSource() ? `Not covered by ${md.keyless.enabled() ? "your saved sources or the free source" : "your saved sources"}${why ? ` (${why})` : ""}.` : noSourceText(), retryable: false }));
       putRow(row);
       renderRow(row);
       afterChange();
@@ -131,7 +150,7 @@ function init() {
     try {
       await ensureFx([row.identity.currency].filter(Boolean));
       const quote = await md.priceInstrument(row.identity, { useCache: !force });
-      quote.label = `${quote.provider} · ${PRICE_TYPE[quote.priceType] || quote.priceType} ${quote.tradingDate}`;
+      quote.label = `${quote.provider}${quote.sourceTier === "free" ? " (free source)" : ""} · ${PRICE_TYPE[quote.priceType] || quote.priceType} ${quote.tradingDate}`;
       const result = R.applyQuote(getRow(id), token, quote);
       if (result.applied) { putRow(result.row); await ensureFx([quote.nativeCurrency]); }
     } catch (error) {
@@ -151,10 +170,11 @@ function init() {
     if (row.identity && row.identity.status !== "resolved") return row.identity.reason || "ticker not recognised";
     if (!row.identity) return "ticker not looked up yet";
     const kind = row.error?.kind;
-    if (kind === "not_covered") return "not covered by your saved sources";
-    if (kind === "not_configured") return "no price source set up";
+    if (kind === "not_covered") return md.keyless.enabled() ? "not covered by your saved sources or the free source" : "not covered by your saved sources";
+    if (kind === "not_configured") return "no price source available";
     if (kind === "budget_withheld") return "not requested: allowance used up";
-    if (kind === "rate_limited") return "provider limit reached";
+    if (kind === "rate_limited") return row.error?.provider === KEYLESS_NAME ? "free source busy or limited" : "provider limit reached";
+    if (row.error?.provider === KEYLESS_NAME) return "free source: price unavailable";
     if (row.error) return "price unavailable";
     return "no price yet";
   }
@@ -216,9 +236,13 @@ function init() {
     const missing = [...targets.map(r => getRow(r.id) || r).filter(r => !R.effectivePrice(r)), ...notIdentified]
       .sort((a, b) => (order.get(a.id) ?? 1e9) - (order.get(b.id) ?? 1e9)); // in the order of the holdings list
     const total = targets.length + notIdentified.length;
+    // Prices that came from another source after the chosen one failed are named, with
+    // the failure, so a rejected key or a used-up allowance is never hidden.
+    const fellBack = targets.map(r => getRow(r.id)).filter(r => r?.quote?.fallbackFrom?.length);
+    const fallbackText = fellBack.length ? ` ${fellBack.length} priced by another source after the first one failed: ${fellBack.map(r => `${r.ticker} (${r.quote.fallbackFrom.map(f => `${f.provider}: ${problemWord(f)}`).join("; ")})`).join(", ")}.` : "";
     setStatus(missing.length
-      ? `${label}: ${total - missing.length} of ${total} priced. Without a usable price: ${missing.map(r => `${r.ticker} (${shortProblem(r)})`).join(", ")}. The plan stays withheld until each has a verified price or one you supply.`
-      : `${label}: all ${total} priced.`, missing.length ? "warn" : "ok");
+      ? `${label}: ${total - missing.length} of ${total} priced. Without a usable price: ${missing.map(r => `${r.ticker} (${shortProblem(r)})`).join(", ")}. The plan stays withheld until each has a verified price or one you supply.${fallbackText}`
+      : `${label}: all ${total} priced.${fallbackText}`, missing.length || fellBack.some(r => r.quote.fallbackFrom.some(seriousFailure)) ? "warn" : "ok");
     renderProviders();
     afterChange();
   }
@@ -304,26 +328,28 @@ function init() {
       const fresh = eff.source.kind === "provider" ? R.freshnessOf(eff.source.tradingDate, Date.now(), id?.timeZone || "America/New_York") : { freshness: "current" };
       const freshText = fresh.freshness === "stale" ? `older than the latest session (${fresh.missed} missed)` : fresh.freshness === "too_old" ? "too old to use" : fresh.freshness === "unknown" ? "date unknown" : "";
       const tone = eff.source.kind !== "provider" || fresh.freshness !== "current" ? (fresh.freshness === "too_old" ? "error" : "warn") : "ok";
-      return {
+      const out = {
         tone,
         price: `${moneyIn(eff.currency)(eff.price)}`,
         text: eff.source.kind === "provider"
-          ? `${row.quote.label}${row.quote.cacheStatus === "cached" ? " (saved copy)" : ""}${freshText ? ` · ${freshText}` : ""} · value ${moneyIn(eff.currency)(value)}`
+          ? `${row.quote.label}${cacheText(row.quote)}${freshText ? ` · ${freshText}` : ""} · value ${moneyIn(eff.currency)(value)}${row.quote.fallbackFrom ? ` · used because ${row.quote.fallbackFrom.map(f => `${f.provider}: ${problemWord(f)}`).join("; ")}` : ""}`
           : `${eff.source.label} · value ${moneyIn(eff.currency)(value)}`,
         state: eff.source.kind === "provider" ? (fresh.freshness === "current" ? "Verified" : "Check date") : "User-supplied",
       };
+      if (eff.source.kind === "provider" && row.quote.fallbackFrom?.some(seriousFailure) && out.tone === "ok") out.tone = "warn";
+      return out;
     }
     if (row.error) {
       const covered = row.error.kind === "not_covered" || row.error.kind === "not_configured";
       return { tone: covered || row.error.kind === "budget_withheld" ? "warn" : "error", state: covered ? "Not covered" : "Price unavailable", text: row.error.message };
     }
     if (!R.isActive(row)) return { tone: "", text: "Not priced: 0 shares and a 0% target (not part of the plan)." };
-    if (!md.configuredProviders().length) return { tone: "", text: "No price source yet: add your own key under Market data, or use your own price." };
+    if (!md.hasPriceSource()) return { tone: "", text: noSourceText() };
     const route = id?.status === "resolved" ? md.route(id) : null;
     if (route && !route.candidates.length) {
-      return { tone: "warn", state: "Not covered", text: `${route.skipped.map(x => `${PROVIDERS[x.id].name}: ${x.reason}`).join("; ")}. Use your own price, or add a source that covers ${id.venueName}.` };
+      return { tone: "warn", state: "Not covered", text: `${route.skipped.map(x => `${sourceName(x.id)}: ${x.reason}`).join("; ")}. Use your own price, or add a source that covers ${id.venueName}.` };
     }
-    return { tone: "", text: route ? `Not priced yet (source: ${PROVIDERS[route.candidates[0].id].name}).` : "Not priced yet." };
+    return { tone: "", text: route ? `Not priced yet (source: ${sourceName(route.candidates[0].id)}).` : "Not priced yet." };
   }
 
   function renderRow(row) {
@@ -391,13 +417,14 @@ function init() {
     }
     const q = row.quote;
     if (q) {
-      add("Provider", `${q.provider} (symbol ${q.providerSymbol})${q.fallbackFrom ? `; used because ${q.fallbackFrom.map(f => `${f.provider} failed: ${f.message}`).join("; ")}` : ""}`);
+      add("Provider", `${q.provider}${q.sourceTier === "free" ? `, through ${q.via}` : ", with your own key"} (symbol ${q.providerSymbol})${q.fallbackFrom ? `; used because ${q.fallbackFrom.map(f => `${f.provider} failed: ${f.message}`).join("; ")}` : ""}`);
       add("Price", `${moneyIn(q.nativeCurrency)(q.nativePriceMajorUnits)}${q.quoteUnit === "minor" ? ` (provider quoted ${q.rawPrice} ${q.rawCurrency || "pence"})` : ""}`);
-      add("Price type", `${PRICE_TYPE[q.priceType] || q.priceType}${q.feed ? `, ${q.feed.toUpperCase()} feed` : ""}; not adjusted`);
+      add("Price type", `${PRICE_TYPE[q.priceType] || q.priceType}${q.feed ? `, ${q.feed.toUpperCase()} feed` : ""}; not adjusted; not labelled real-time`);
       add("Trading date", q.tradingDate);
       add("Price time", q.asOf ? new Date(q.asOf).toLocaleString() : "not given by the provider");
       add("Currency evidence", { curated_reference: "curated reference", provider_quote: "stated in the provider's quote", provider_listing: "provider's listing search", provider_market: "provider serves only US listings (USD)" }[q.currencyEvidence] || q.currencyEvidence);
-      add("Retrieved", `${new Date(q.retrievedAt).toLocaleString()}${q.cacheStatus === "cached" ? " (saved copy in this browser)" : ""}`);
+      add("Retrieved", `${new Date(q.retrievedAt).toLocaleString()}${q.cacheStatus === "cached" ? ` (saved copy in this browser${q.cachedAgeMs ? `, ${ageText(q.cachedAgeMs)} old` : ""})` : q.cacheStatus === "gateway_cache" ? ` (the gateway's saved copy, ${ageText(q.cachedAgeMs)} old)` : ""}`);
+      if (q.sourceTier === "free") add("Source", q.attribution);
       (q.notes || []).forEach(n => add("Note", n));
     }
     if (row.error) {
@@ -503,14 +530,15 @@ function init() {
     const pending = state.rows.filter(r => r.identity?.status === "resolved" && R.isActive(r) && !R.effectivePrice(r));
     const btn = $("rbPriceAll");
     $("rbRemoveIntl").hidden = !state.rows.some(isUnchangedInternationalExample);
-    if (!md.configuredProviders().length) {
-      els.estimate.textContent = state.rows.some(r => r.ticker) ? "To get prices automatically, add your own key for at least one source under Market data → Your API keys. Without a key you can still enter your own prices." : "";
+    if (!md.hasPriceSource()) {
+      els.estimate.textContent = state.rows.some(r => r.ticker) ? `${freeSourceLine() || ""} To get prices automatically, add your own key for at least one source under Market data → Your API keys. Without a key you can still enter your own prices.`.trim() : "";
       btn.textContent = "Get prices";
       btn.disabled = !pending.length;
       return;
     }
     const est = md.estimate(pending.map(r => r.identity));
     const parts = Object.entries(est.perProvider).map(([id, e]) => {
+      if (id === KEYLESS_ID) return `about ${e.requests} free-source request${e.requests === 1 ? "" : "s"} for ${e.rows} holding${e.rows === 1 ? "" : "s"} (no key; ${KEYLESS_PROVIDER} data through this site's gateway, which limits requests per visitor and shares one budget among everyone)`;
       const limit = e.period === "day" ? `${PROVIDERS[id].name} allows ${md.providerStatus(id).plan.limits.perDay} per day on your plan; this browser sent ${e.sentToday} today`
         : e.period === "month" ? `${PROVIDERS[id].name} allows ${md.providerStatus(id).plan.limits.perMonth.toLocaleString("en-US")} per month on your plan; this browser sent ${e.sentMonth} this month`
           : `${PROVIDERS[id].name} allows ${e.perMinute} per minute`;
@@ -524,7 +552,7 @@ function init() {
     // plans often cover fewer of those exchanges, so they are named before any request.
     const abroad = pending.filter(r => !["CAD", "USD"].includes(r.identity.currency)).map(r => `${r.ticker} (${r.identity.venueName}, ${r.identity.currency})`);
     els.estimate.textContent = pending.length
-      ? `Getting ${pending.length} price${pending.length === 1 ? "" : "s"} needs ${parts.join("; ") || "no requests"}.${abroad.length ? ` Listings outside Canada and the US: ${abroad.join(", ")}; they count against the same allowances.` : ""}${uncovered.length ? ` Not covered by your saved sources: ${uncovered.join(", ")} (use your own price, or add a source that covers it).` : ""}`
+      ? `Getting ${pending.length} price${pending.length === 1 ? "" : "s"} needs ${parts.join("; ") || "no requests"}.${abroad.length ? ` Listings outside Canada and the US: ${abroad.join(", ")}; they count against the same allowances.` : ""}${uncovered.length ? ` Not covered by your saved sources${md.keyless.enabled() ? " or the free source" : ""}: ${uncovered.join(", ")} (use your own price, or add a source that covers it).` : ""}`
       : "";
     btn.textContent = pending.length ? `Get prices (about ${est.total} request${est.total === 1 ? "" : "s"})` : "Get prices";
     btn.disabled = !pending.length || est.total === 0 && !uncovered.length && !pending.length;
@@ -617,6 +645,11 @@ function init() {
     const auto = el("option", "Automatic (route by market)");
     auto.value = "auto";
     els.source.append(auto);
+    const free = md.keyless.status();
+    const freeOption = el("option", `${KEYLESS_NAME}: no key (${KEYLESS_PROVIDER})${free.state === "enabled" ? "" : free.state === "checking" ? " (checking…)" : " (not available)"}`);
+    freeOption.value = KEYLESS_ID;
+    freeOption.disabled = free.state !== "enabled" && current !== KEYLESS_ID;
+    els.source.append(freeOption);
     for (const id of BROWSER_PROVIDERS) {
       const o = el("option", `${PROVIDERS[id].name}${md.providerStatus(id).configured ? "" : " (no key saved)"}`);
       o.value = id;
@@ -625,10 +658,37 @@ function init() {
     els.source.value = current;
     els.fallback.checked = md.routing.fallback;
     const configured = md.configuredProviders().map(id => PROVIDERS[id].name);
+    const freeNote = free.state === "enabled" ? ` Then the free source (no key) for listings none of your keys covers${configured.length ? "" : ": with no key saved, every holding it covers uses it"}.` : ` The free source (no key) is not available here (${free.state === "checking" ? "still being checked" : free.state === "disabled" ? "switched off on the gateway" : free.state === "unreachable" ? "gateway unreachable" : "gateway not set up"}).`;
     $("rbSourceNote").textContent = current === "auto"
-      ? `Automatic: US listings use Finnhub, then Alpha Vantage, then Marketstack; Toronto, TSX Venture, London, Xetra and Shanghai/Shenzhen use Alpha Vantage, then Marketstack; other exchanges use Marketstack. Only sources with a saved key are used${configured.length ? ` (saved: ${configured.join(", ")})` : " (none saved yet)"}.`
-      : `${PROVIDERS[current].name} only. Holdings it does not cover are marked "Not covered".`;
+      ? `Automatic: your own keys first. US listings use Finnhub, then Alpha Vantage, then Marketstack; Toronto, TSX Venture, London, Xetra and Shanghai/Shenzhen use Alpha Vantage, then Marketstack; other exchanges use Marketstack. Only sources with a saved key are used${configured.length ? ` (saved: ${configured.join(", ")})` : " (none saved yet)"}.${freeNote}`
+      : current === KEYLESS_ID ? `${KEYLESS_NAME} only (${KEYLESS_PROVIDER} data through this site's gateway, no key). Holdings it does not cover are marked "Not covered".${free.state === "enabled" ? "" : " It is not available right now, so nothing can be fetched until you choose another source."}`
+        : `${PROVIDERS[current].name} only. Holdings it does not cover are marked "Not covered".`;
     $("rbKeysTag").textContent = configured.length ? `(${configured.join(", ")})` : "(none saved)";
+    renderFreeSource();
+  }
+
+  // The free source's state, always shown (also when it is unavailable, and why).
+  function renderFreeSource() {
+    const box = $("rbFreeSource");
+    const st = md.keyless.status();
+    root.dataset.freeSource = st.state;
+    box.dataset.state = st.state;
+    box.replaceChildren();
+    const head = el("p");
+    head.append(el("strong", `${KEYLESS_NAME} (no key): `));
+    if (st.state === "enabled") {
+      head.append(`available. ${KEYLESS_PROVIDER} chart data through this site's market-data gateway at ${md.keyless.host()}; no account or key needed.`);
+      box.append(head, el("p", `Prices may be delayed (often 15–20 minutes during trading, by exchange) and are shown with their trading date and time, never as real-time. ${KEYLESS_PROVIDER} is not an exchange's official feed; the gateway reuses an answer for up to 5 minutes and says how old it is. Only ticker symbols are sent, never your holdings.`, "rb-note"));
+    } else {
+      head.append({ checking: "checking whether this site's market-data gateway is available…", disabled: `not available. This site's market-data gateway is running, but its keyless source is switched off${st.reason ? ` (${st.reason})` : ""}.`, unreachable: `not available. ${st.message}.`, not_configured: "not available. This site's market-data gateway has not been set up, so prices need your own key (below) or your own price." }[st.state] || "not available.");
+      box.append(head);
+      if (st.state === "unreachable" || st.state === "disabled") box.append(button("Check again", async () => { await md.keyless.check({ force: true }); onFreeSourceChecked(); }));
+    }
+  }
+  function onFreeSourceChecked() {
+    renderProviders({ force: true });
+    state.rows.forEach(renderRow);
+    afterChange();
   }
 
   function renderProviders({ force = false } = {}) {
@@ -926,8 +986,10 @@ function init() {
     if (manualFx.length) attention.push(`Exchange rates you entered: ${manualFx.join(", ")}.`);
     for (const w of run.plan.warnings) (/scaled down|No sells are needed/.test(w) ? info : attention).push(w);
     info.push(...E.weightWarnings(run.positions), ...E.duplicateWarnings(run.positions));
-    const fallbacks = run.rows.filter(r => r.quote?.fallbackFrom).map(r => `${r.ticker}: priced by ${r.quote.provider} because ${r.quote.fallbackFrom.map(f => f.provider).join(", ")} could not`);
-    info.push(...fallbacks);
+    const fallbacks = run.rows.filter(r => r.quote?.fallbackFrom).map(r => `${r.ticker}: priced by ${r.quote.provider} because ${r.quote.fallbackFrom.map(f => `${f.provider} (${problemWord(f)})`).join(", ")} could not`);
+    (run.rows.some(r => r.quote?.fallbackFrom?.some(seriousFailure)) ? attention : info).push(...fallbacks);
+    const free = run.rows.filter(r => R.effectivePrice(r)?.source.kind === "provider" && r.quote?.sourceTier === "free").map(r => r.ticker);
+    if (free.length) info.push(`Priced by the free source (${KEYLESS_PROVIDER} data through this site's market-data gateway, no key; may be delayed; not an exchange's official price): ${free.join(", ")}.`);
     const pence = run.rows.filter(r => r.quote?.quoteUnit === "minor").map(r => r.ticker);
     if (pence.length) info.push(`${pence.join(", ")}: quoted in pence and converted to pounds (÷100).`);
     const cash = run.whole ? run.whole.cashLeft : run.plan.summary.cashLeft;
@@ -959,14 +1021,16 @@ function init() {
     const run = state.plan;
     const rows = run.whole ? run.whole.results : run.plan.results;
     const rc = run.reporting;
-    const header = ["Ticker (as entered)", "Listing", "Instrument", "Account type", "Currency", "Shares", "Price (local)", "Price source", "Provider symbol", "Price type", "Trading date", "Retrieved at (UTC)", "Currency evidence", `FX to ${rc}`, "FX source", `Current value (${rc})`, "Target weight", `Target value (${rc})`, "Action", `Trade value (${rc})`, "Trade value (local)", "Trade shares", "Post-trade shares"];
+    const header = ["Ticker (as entered)", "Listing", "Instrument", "Account type", "Currency", "Shares", "Price (local)", "Price source", "Provider symbol", "Price type", "Trading date", "Retrieved at (UTC)", "Currency evidence", `FX to ${rc}`, "FX source", `Current value (${rc})`, "Target weight", `Target value (${rc})`, "Action", `Trade value (${rc})`, "Trade value (local)", "Trade shares", "Post-trade shares", "Price source details"];
     const body = rows.map(r => {
       const row = run.rows[r.rowIndex];
       const q = row.useManual && row.manual ? null : row.quote;
-      const src = q ? `${q.provider} (provider)` : row.manual?.label || "";
+      const src = q ? `${q.provider} (${q.sourceTier === "free" ? "free source, no key" : "provider"})` : row.manual?.label || "";
+      const details = q ? [q.sourceTier === "free" ? `through ${q.via}` : "with your own key", q.cacheStatus === "cached" ? `saved copy in this browser, ${ageText(q.cachedAgeMs)} old` : q.cacheStatus === "gateway_cache" ? `gateway copy, ${ageText(q.cachedAgeMs)} old` : null,
+        q.fallbackFrom ? `used because ${q.fallbackFrom.map(f => `${f.provider} (${problemWord(f)})`).join(", ")} could not` : null, ...(q.notes || [])].filter(Boolean).join("; ") : row.manual ? "user-supplied" : "";
       const w = run.whole;
       return [r.ticker, row.identity?.canonicalId || "", row.identity?.name || "", r.accountType || "", r.currencyKey, r.shares, r.price, src, q?.providerSymbol || "", q ? PRICE_TYPE[q.priceType] || q.priceType : "user-supplied", q?.tradingDate || "", q?.retrievedAt || (row.manual ? new Date(row.manual.at).toISOString() : ""), q?.currencyEvidence || "user", r.fxToReporting, r.currencyKey === rc ? "reporting currency" : run.fx[r.currencyKey]?.label || "",
-        r.currentValue, r.targetWeightNorm, r.targetValue, w ? r.wholeAction : r.action, w ? r.wholeTradeValue : r.tradeValue, w ? r.wholeTradeValueLocal : r.tradeValueLocal, w ? r.wholeShares : r.tradeShares, w ? r.wholePostTradeShares : r.postTradeShares];
+        r.currentValue, r.targetWeightNorm, r.targetValue, w ? r.wholeAction : r.action, w ? r.wholeTradeValue : r.tradeValue, w ? r.wholeTradeValueLocal : r.tradeValueLocal, w ? r.wholeShares : r.tradeShares, w ? r.wholePostTradeShares : r.postTradeShares, details];
     });
     return [header, ...body];
   }
@@ -982,6 +1046,7 @@ function init() {
       ["Reporting currency", run.reporting],
       ["Share quantities", run.whole ? "Whole shares" : "Fractional shares"],
       ["Prices", manual ? `Includes ${manual} user-supplied price(s); the rest verified by providers` : "All verified by providers"],
+      ...(run.rows.some(r => r.quote?.sourceTier === "free" && !(r.useManual && r.manual)) ? [["Free source", `${KEYLESS_PROVIDER} chart data through this site's market-data gateway (no key; unofficial; may be delayed)`]] : []),
       ["Total current", s.totalCurrent], ["Target pool", s.pool],
       ["Total buys", run.whole ? run.whole.totalBuys : s.totalBuys], ["Total sells", run.whole ? run.whole.totalSells : s.totalSells],
       ...(run.mode === "new_money" ? [["New money budget", s.budget]] : []),
@@ -1128,6 +1193,8 @@ function init() {
   renderProviders();
   setStatus("Ready. Enter your holdings, or load the sample portfolio.", null);
   root.dataset.ready = "true";
+  // One health check of the site's market-data gateway, only when one is configured.
+  md.keyless.check().then(onFreeSourceChecked);
   md.ready().then(() => { resolveAll(); afterChange(); });
   ensureFx(STARTUP_FX).then(() => { root.dataset.fxReady = "true"; afterChange(); });
 }

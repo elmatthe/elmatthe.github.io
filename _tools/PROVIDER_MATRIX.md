@@ -2,7 +2,7 @@
 
 **Checked:** 2026-11-03, from official documentation, pricing pages, OpenAPI specifications and terms. Each fact was quoted from its source on that date.
 **Scope:** price providers for the Portfolio Rebalancer and the Stock Comparison tool, in the browser (GitHub Pages, static, the visitor's own key) and in the desktop apps (the user's own key, on their own computer).
-**Rule:** at most five provider choices; a provider is offered only where its coverage, terms and browser compatibility have been checked. "Automatic (route by market)" is a routing mode, not a sixth provider.
+**Rule:** at most five provider choices; a provider is offered only where its coverage, terms and browser compatibility have been checked. "Automatic (route by market)" is a routing mode, not a sixth provider. The keyless *free source* (§10) is a separate tier, not one of the five: it needs no key and runs only through the site's own gateway, which keeps it switched off until its data is licensed for that use.
 
 No API key was used to prepare this record. CORS was probed keyless (HTTP 401 responses still carry CORS headers). Free-plan coverage of individual non-US symbols on Marketstack and Finnhub still needs the owner's bounded live smoke test (see "Open verification" below).
 
@@ -80,7 +80,7 @@ Fixtures: `_tools/tests/fixtures/providers/alphavantage-notices.json` (verbatim 
 | Alpaca | `APCA-API-KEY-ID` and `APCA-API-SECRET-KEY` headers | **not offered in the browser** | Desktop only: stored in the tool's local `files/runtime/keys.json`, never in the ZIP. |
 | Massive | `Authorization: Bearer` header | not offered (deferred) | — |
 
-No shared or owner key exists anywhere in the site or the ZIPs. There is no proxy or relay. Keys never appear in exports, messages or logs (provider notices that echo a key are redacted).
+No shared or owner key exists anywhere in the site or the ZIPs. There is no public proxy or relay; the only server in a price path is the site's own market-data gateway for the free source (§10), which holds no key and is switched off. Keys never appear in exports, messages or logs (provider notices that echo a key are redacted).
 
 ## 7. Licensing summary (quoted)
 
@@ -94,7 +94,7 @@ Interpretation (owner to confirm): every enabled integration fetches with the vi
 
 ## 8. Not offered (beyond the five)
 
-EODHD and Tiingo send no CORS headers and restrict display; Twelve Data's free plan is "internal non-display"; FMP needs a display agreement for Canada; yfinance/Yahoo forbids automated collection. These are not provider choices. The desktop apps no longer use yfinance by default (see `RELEASE_NOTES.md`).
+EODHD and Tiingo send no CORS headers and restrict display; Twelve Data's free plan is "internal non-display"; FMP needs a display agreement for Canada; yfinance/Yahoo forbids automated collection (§10). These are not provider choices. The desktop apps no longer use yfinance by default (see `RELEASE_NOTES.md`).
 
 ## 9. Open verification (owner, with real keys)
 
@@ -106,8 +106,90 @@ Use the redacted procedure in `MARKET_DATA.md` §"Live smoke test". At most one 
 4. Alpaca (desktop): latest trade for `AAPL` on Basic shows feed IEX.
 5. The exact wording of the Alpha Vantage notice the owner saw on 2026-11-03 (never captured).
 
+## 10. Keyless gateway (free source): feasibility and licensing verdict (2026-11-03)
+
+Requirement: a visitor with no key should be able to try ordinary market data through one
+shared, free-tier Cloudflare Worker (`_services/market-data-gateway`), with Yahoo Finance
+chart data as the desired first source, **only if** its access and redistribution rights
+permit it.
+
+**What the proposed source is.** `https://query1.finance.yahoo.com/v8/finance/chart/{symbol}`
+is an unofficial, undocumented Yahoo Finance endpoint: no published API, documentation,
+licence or service level. It is not the `yfinance` Python library, which is an
+independent client of these endpoints; yfinance's own disclaimer says it "is intended
+for research and educational purposes", that "the Yahoo! finance API is intended for
+personal use only", and to refer to Yahoo's terms "for details on your rights to use the
+actual data downloaded". Yahoo's Developer API terms (REV 3-2022) cover only APIs Yahoo
+offers; they say APIs "may be subject to rate limits at Yahoo's absolute and sole
+discretion" and are "non-sublicenseable"; the chart endpoint is not among Yahoo's
+documented APIs.
+
+**Yahoo Terms of Service** (legal.yahoo.com/us/en/yahoo/terms/otos, read 2026-11-03):
+- §2(d)(ix): you may not "access or collect data, or attempt to access or collect data,
+  from our Services using any automated means … including but not limited to robots,
+  spiders, scrapers, data mining tools";
+- §2(e): you may not "try to access them using a method other than the interface and the
+  instructions that we provide", nor "access or reuse the Services, or any portion
+  thereof, for any commercial purpose";
+- §2(h): you "must not reproduce, modify, rent, lease, sell, trade, distribute, transmit,
+  broadcast … or exploit for any commercial purposes, any portion or use of, or access
+  to, the Services";
+- §6(a): "Our Services display some content that we did not create and do not own"
+  (market data from exchanges and data providers, each with its own licence).
+
+**Verdict: public Yahoo-to-visitor relay is not permitted on the available evidence.**
+A personal script fetching data for its own author is a different act from a public
+multi-user gateway that fetches automatically, caches, and transmits the data to
+anonymous visitors; the second is automated collection and redistribution, which the
+terms prohibit without Yahoo's express permission, and Yahoo cannot grant rights to
+exchange data it does not own without those licensors' terms. Moving the request into a
+Cloudflare Worker fixes CORS only: it does not remove Yahoo's rate limits or bot
+blocking (Cloudflare's shared IP ranges are commonly throttled; this repository's
+2026-11-02 probe of query1/query2 got HTTP 429 from a cloud IP even with an identifying
+User-Agent), and it licenses nothing. A User-Agent change, cookie/"crumb" handling or IP
+rotation would only disguise automated access and is not used.
+
+**Decision implemented.** The gateway, its contract, the browser adapter and mock-backed
+tests are complete; the Yahoo adapter is **switched off** behind an explicit gate
+(`KEYLESS_SOURCE` + `SOURCE_AUTHORIZATION`, `_services/market-data-gateway/README.md`),
+and the site points at no gateway (`_data/market_data.yml` empty). The keyless
+requirement is therefore **not delivered in production**: both tools say the free source
+is not available and keep personal-key providers, typed prices and CSV files working.
+To activate: written permission from Yahoo (and, as needed, the exchanges whose data it
+relays) covering automated retrieval and public display with caching, recorded in
+`SOURCE_AUTHORIZATION`; then the capped live smoke test in the gateway README.
+
+**Permitted no-key alternatives evaluated** (none found for equity prices):
+
+| Candidate | No key? | Public display / redistribution | Result |
+|---|---|---|---|
+| Yahoo chart endpoint | yes | prohibited (above) | gated off |
+| Stooq CSV | no longer: an API key issued through a CAPTCHA since early 2026 (pandas-datareader issue 1012; directory listings), daily hit limit | terms not found | not usable |
+| Bank of Canada Valet, ECB data API | yes | permitted with attribution | FX only, already used |
+| Statistics Canada WDS, FRED | WDS yes; FRED needs a key | open licence; FRED series owner terms | macro data, not security prices |
+| Alpha Vantage, Marketstack, Finnhub, Twelve Data, FMP, Tiingo, EODHD, Massive | keys required | personal or internal use; display needs a licence (§7, `MARKET_DATA.md` §4) | personal-key tier only |
+| Exchange-operated public data (TMX, LSE, Xetra, JPX, SSE) | not as an open API | exchange data licences | none found |
+
+No other unlicensed endpoint was substituted. The architecture is upstream-agnostic: a
+display-licensed feed bought by the owner could replace `src/yahoo-chart.js` behind the
+same contract, after its terms are recorded here.
+
+**Cloudflare Workers Free limits** (developers.cloudflare.com, pages dated 2026-10-29 and
+2026-10-21): 100,000 requests/day (error 1027 above it, no billing), 10 ms CPU per
+request, 128 MB, 50 subrequests and 6 concurrent outgoing connections per request; Cache
+API functional on custom domains (not documented for workers.dev; reported as no effect
+there); Rate Limiting binding approximate, per location, period 10 or 60 s, plan
+availability not stated on its page.
+
+**Coverage the gateway is built for** (fixture-tested only; exchange codes unconfirmed
+live): US, Toronto (.TO incl. -U units), TSX Venture, Cboe Canada (.NE, so YNVD.NE),
+London (GBp → GBP), Xetra, Euronext Paris and Amsterdam, SIX, Tokyo, Shanghai, Shenzhen,
+Hong Kong, ASX. Not served: indexes, FX pairs, futures, crypto, OTC lines, Bombay/NSE,
+CSE (.CN), Frankfurt floor (.F), Milan and every other exchange; Canadian fund codes.
+
 ## Sources
 
+Keyless gateway (§10): https://legal.yahoo.com/us/en/yahoo/terms/otos/index.html · https://legal.yahoo.com/us/en/yahoo/terms/product-atos/apiforydn/index.html · https://github.com/ranaroussi/yfinance (disclaimer) · https://help.yahoo.com/kb/SLN28256.html (adjusted close) · https://github.com/pydata/pandas-datareader/issues/1012 (Stooq key) · https://developers.cloudflare.com/workers/platform/limits/ · https://developers.cloudflare.com/workers/runtime-apis/cache/ · https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/
 Alpha Vantage: https://www.alphavantage.co/documentation/ · https://www.alphavantage.co/support/ · https://www.alphavantage.co/premium/ · https://www.alphavantage.co/terms_of_service/
 Marketstack: https://marketstack.com/pricing · https://marketstack.com/faq · https://docs.apilayer.com/marketstack/docs/getting-started · https://api.swaggerhub.com/apis/apilayer-863/MarketstackAPIv2/2.0.0/swagger.json · https://marketstack.com/download/v2_eod_tickers_finnworlds_tiingo.xlsx
 Finnhub: https://finnhub.io/docs/api/quote · https://finnhub.io/pricing · https://finnhub.io/terms-of-service

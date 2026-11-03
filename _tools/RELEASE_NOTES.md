@@ -1,5 +1,31 @@
 # Release notes: web tools on /projects/
 
+## 2026-11-03 (latest): free market-data source prepared, switched off
+
+Nothing below is investment advice. No calculation, sample or desktop app changed.
+
+### Portfolio Rebalancer and Stock Comparison (web)
+- **A free source that needs no key is built in, but not switched on.** Both pages can use
+  Yahoo Finance chart data through this site's own small Cloudflare Worker
+  (`_services/market-data-gateway`). It stays off until written permission for automated
+  retrieval and public redistribution of that data is on record: Yahoo's endpoint is
+  unofficial and its terms restrict both. The live site points at no gateway, so both pages
+  now say "Free source (no key): not available. This site's market-data gateway has not been
+  set up" and everything else works as before.
+- When it is switched on: with no key saved it is the default (Rebalancer *Automatic*, Stock
+  *Free source*); saved keys keep precedence; *Free source only* can be chosen; falling back
+  to it after a key fails stays opt-in and the key's error (for example a daily limit)
+  remains visible on the row, in the status, in the plan and in exports. Prices are labelled
+  "Yahoo Finance (free source)", "latest regular-session price (may be delayed)", with the
+  trading date, retrieval time and the age of any saved copy; never real-time. London
+  prices in pence are converted to pounds; every answer must match the listing and
+  currency asked for, or it is not used.
+- Stock Comparison: the free source gives daily prices for every horizon, with *Close*
+  (split-adjusted, dividends excluded) and *Adjusted close* (also distributions) kept
+  apart; the CSV exports and the workbook now show the source of every series.
+- Only ticker symbols (and a period for history) would be sent; never holdings, quantities,
+  targets or accounts.
+
 ## 2026-11-03 (later): unified Rebalancer sample, CPI web app
 
 Owner decisions 1A–4A. Nothing below is investment advice.

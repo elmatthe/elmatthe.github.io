@@ -10,6 +10,17 @@ const header = cells => ({ header: true, cells });
 // Shown with every live result: the free tier decides frequency and basis by window.
 export const LIVE_DATA_NOTE = "Live data (Alpha Vantage free tier): windows up to about 4 months use daily closes as traded (not adjusted for splits or dividends); longer windows use weekly closes adjusted for splits and dividends. Results for different horizons can therefore differ in sampling frequency and price basis, not only in period.";
 
+// The free (keyless) source: one label everywhere, and what its data is.
+export const FREE_SOURCE_LABEL = "Yahoo Finance (free source, no key)";
+export const FREE_DATA_NOTE = "Free source (Yahoo Finance chart data through this site's market-data gateway, no key): daily prices for every horizon. 'Close' is adjusted for splits but not for dividends (price return); 'Adjusted close' also reflects dividends and capital-gain distributions, as Yahoo Finance calculates them. Prices may be delayed, the session still trading is left out, and days the source reports without a price are skipped, never filled in. Not an exchange's official data.";
+
+// The source a series actually came from ("source (via)"), for per-row export columns.
+export function sourceOf(comparison, ticker) {
+  const p = (comparison.provenance || []).find(x => x.ticker === ticker);
+  if (!p) return comparison.source || "";
+  return p.via ? `${p.source} (${p.via})` : p.source;
+}
+
 // The price basis actually used, compared with the one requested.
 export function basisSummary(comparison) {
   const series = comparison.series || [];
@@ -54,13 +65,13 @@ export function buildWorkbookSheets({ comparison, generatedAt = new Date().toISO
     header(["Stock Comparison & Analytics Tool — browser export"]),
     ["Generated at (UTC)", generatedAt],
     ["Disclaimer", "Informational analysis only; not investment, financial, legal, or tax advice."],
-    ["Data source", comparison.source === "Synthetic demo" ? "Synthetic demo prices generated in the browser (not real market data)." : comparison.source === "Your CSV file" ? "Price files supplied by the user (read in the browser)." : "Alpha Vantage, fetched with the user's own API key (personal use)."],
+    ["Data source", comparison.source === "Synthetic demo" ? "Synthetic demo prices generated in the browser (not real market data)." : comparison.source === "Your CSV file" ? "Price files supplied by the user (read in the browser)." : comparison.source === FREE_SOURCE_LABEL ? "Yahoo Finance chart data through this site's market-data gateway, with no key (unofficial endpoint; may be delayed; not an exchange's official data)." : "Alpha Vantage, fetched with the user's own API key (personal use)."],
     ["Units", "Returns, volatility and drawdown are decimal fractions (0.05 = 5%). Prices are in the currency shown for each ticker below."],
     ["Method", `${frequency} log returns on ${basisSummary(comparison)}, aligned on identical intervals (${frequency === "daily" ? "same dates" : frequency === "weekly" ? "same ISO weeks" : "same months"}); ${P} periods per year.`],
     ["Sampling frequency", `${frequency} (${P} periods per year)`],
     ["Price basis", basisSummary(comparison)],
     ["Currency", currencySummary(comparison)],
-    ...(comparison.liveNote ? [["Live data note", comparison.liveNote]] : []),
+    ...(comparison.liveNote ? [[comparison.source === FREE_SOURCE_LABEL ? "Free source note" : "Live data note", comparison.liveNote]] : []),
     [],
     header(["Ticker", "Source", "Delivered via", "Price basis", "Retrieved at (UTC)", "Cached"]),
   ];
@@ -99,8 +110,8 @@ export function buildWorkbookSheets({ comparison, generatedAt = new Date().toISO
   risk.push([], header(["Shared return observations", ...comparison.tickers]));
   comparison.tickers.forEach(left => risk.push([left, ...comparison.tickers.map(right => comparison.counts[left][right])]));
 
-  const raw = [header(["Date", "Ticker", "Price", "Price basis", "Currency", "Native currency"])];
-  comparison.series.forEach(s => s.observations.forEach(o => raw.push([o.date.toISOString().slice(0, 10), s.ticker, o.price, s.priceBasis || "", s.currency || "unknown", s.nativeCurrency || s.currency || "unknown"])));
+  const raw = [header(["Date", "Ticker", "Price", "Price basis", "Currency", "Native currency", "Source"])];
+  comparison.series.forEach(s => { const src = sourceOf(comparison, s.ticker); s.observations.forEach(o => raw.push([o.date.toISOString().slice(0, 10), s.ticker, o.price, s.priceBasis || "", s.currency || "unknown", s.nativeCurrency || s.currency || "unknown", src])); });
 
   return [readMe, summary, model, risk, raw].map((rows, i) => ({ name: SHEETS[i], rows }));
 }

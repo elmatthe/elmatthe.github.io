@@ -1,0 +1,52 @@
+# Cloudflare Workers configuration for the shared market-data gateway (Workers Free plan).
+# Deployment, activation gate, verification and rollback: README.md in this folder.
+#
+# Uses no paid feature and no storage product: no KV, D1, R2, Durable Objects, Queues
+# or Workers Paid features. Keep the account on the Workers Free plan; Cloudflare then
+# stops serving requests above the free daily allowance (error 1027) instead of billing.
+name = "market-data-gateway"
+main = "src/worker.js"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+# Request logs are not stored by default. If you enable Workers Logs, the gateway still
+# logs only an event name, a code, a venue and an upstream status (never an IP or a URL).
+[observability]
+enabled = false
+
+[vars]
+# Exact browser origins allowed to call the data endpoints (comma separated; https, or
+# http://127.0.0.1:<port> / http://localhost:<port> for local development only).
+ALLOWED_ORIGINS = "https://elmatthe.github.io"
+
+# THE ACTIVATION GATE. The keyless source stays OFF unless BOTH are set:
+#   KEYLESS_SOURCE       = "yahoo-chart"
+#   SOURCE_AUTHORIZATION = a reference to the written permission that covers automated
+#                          retrieval AND public redistribution of this data (who granted
+#                          it, when, and where the document is kept).
+# With either empty, every data request is answered with `source_disabled` and no
+# request is sent to the data source. Do not fill these in without that permission.
+KEYLESS_SOURCE = ""
+SOURCE_AUTHORIZATION = ""
+
+# Cross-isolate rate limits, in addition to the in-memory limits in src/gateway.js.
+# Requires Wrangler 4.36.0 or later; namespace_id is any integer unique within your
+# Cloudflare account. If your account cannot use the binding, remove these two blocks:
+# the in-memory limits still apply. Limits are approximate and per Cloudflare location.
+# Per client (hashed client IP):
+[[ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "21011"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
+# Requests to the data source, all clients together (one key):
+[[ratelimits]]
+name = "UPSTREAM_LIMITER"
+namespace_id = "21012"
+
+  [ratelimits.simple]
+  limit = 60
+  period = 60

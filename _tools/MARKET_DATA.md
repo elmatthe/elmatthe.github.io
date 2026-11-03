@@ -3,9 +3,10 @@
 Maintainer reference for how the Portfolio Rebalancer and the Stock Comparison &
 Analytics web apps get prices and exchange rates, why they get them that way, and how
 to test, operate and extend that path. Not published (Jekyll ignores `_tools/`).
-Evidence in sections 1–13 was gathered on 2026-11-02. **Section 0 (2026-11-03) is the
-current design; where an older section disagrees, section 0 wins.** Provider eligibility
-and licensing: `PROVIDER_MATRIX.md`. Listing identity: `INSTRUMENT_IDENTITY.md`.
+Evidence in sections 1–13 was gathered on 2026-11-02. **Sections 0 and 0.1 (2026-11-03)
+are the current design; where an older section disagrees, they win.** Provider
+eligibility and licensing: `PROVIDER_MATRIX.md` (keyless source: §10). Listing identity:
+`INSTRUMENT_IDENTITY.md`.
 
 ## 0. Current design (2026-11-03)
 
@@ -66,7 +67,67 @@ Investigate with likely causes (different session, venue, currency or adjustment
 
 **Chart.js** is self-hosted (`assets/vendor/chart.js/4.4.2/`, SRI-pinned, `defer`); no page
 contacts a CDN. The browser test harness mocks the Bank of Canada, ECB, Alpha Vantage,
-Marketstack and Finnhub, and fails on any other host.
+Marketstack and Finnhub, runs the real market-data gateway code for `md.gateway.test`, and
+fails on any other host.
+
+## 0.1 Free (keyless) source through the site's market-data gateway (2026-11-03, later)
+
+**Source tiers**, shown the same way in both tools:
+1. *Free source (no key)*: Yahoo Finance chart data relayed by the site's own Cloudflare
+   Worker (`_services/market-data-gateway`). Offered only when `_data/market_data.yml`
+   names a gateway **and** its `/v1/health` reports the source enabled. **Today it does
+   neither**: the Worker is not deployed and its source is gated off pending written
+   permission (`PROVIDER_MATRIX.md` §10), so both pages say "not available" and why.
+2. *Your own key*: Alpha Vantage, Marketstack, Finnhub (unchanged, five-provider catalog).
+3. *Your own prices*: typed prices and CSV files (Rebalancer), CSV files and the synthetic
+   demo (Stock).
+
+**Modules.** `keyless.js` (gateway client, availability states `not_configured` /
+`checking` / `unreachable` / `disabled` / `enabled`, symbol mapping MIC → Yahoo suffix,
+re-validation of every answer, browser cache `md.keyless.v1.*`). `index.js` adds the free
+source to routing, estimates and caches without adding it to `PROVIDERS` (the Python
+catalog and its parity tests are unchanged). The gateway URL is resolved by
+`resolveMarketGateway` (site setting; a `?mdgateway=` override only on pages served from
+127.0.0.1/localhost).
+
+**Routing.** Mode *Automatic* (default): the visitor's saved keys first, by market as
+before, then the free source for listings it covers; with no key saved, the free source
+prices every holding it covers. Mode *Free source only*: only the free source. A provider
+chosen explicitly is used alone. Falling back to another source after a failure still
+happens only when the visitor ticks the fallback option; every attempt is bounded (one per
+candidate), and the failed source is named on the row, in the status line, in the plan
+(under *Needs your attention* when it was a rejected key or a daily/monthly limit) and in
+exports, while that provider's card keeps its limit record. The free source never hides a
+key's error.
+
+**Quote** (`md.quote.v1` from the free source): `provider: "Yahoo Finance"`,
+`providerId: "keyless"`, `sourceTier: "free"`, `via`, `providerSymbol` (Yahoo form, e.g.
+`YNVD.NE`, `BRK-B`, `DLR-U.TO`), `priceType: "regular_market_price"` ("latest
+regular-session price (may be delayed)"), `tradingDate` (venue time zone), `asOf`,
+`retrievedAt` (the gateway's upstream time; cached copies keep it), `cacheStatus`
+`live` / `gateway_cache` / `cached` with `cachedAgeMs`, `currencyVerified` from the
+provider's stated currency (checked against the curated reference: a different currency
+is refused), `quoteUnit` (`GBp` → GBP ÷100), `notes` (delay). Never labelled real-time.
+
+**History** (Stock): daily for every horizon (gateway ranges 1mo…5y chosen to cover the
+window), both `close` (split-adjusted, not dividend-adjusted) and `adjClose` (splits and
+distributions) kept apart; `selectBasis` uses adjusted closes only when the source has
+them and otherwise says it used closes, so mixed bases are flagged "Not comparable". The
+running session is dropped; missing days stay missing. Provenance per series (source,
+via, symbol, retrieval time, gateway or browser cache age) appears in the sources list,
+the metrics/prices CSVs ("Source" column per row), the JSON and the workbook.
+
+**Privacy.** Requests carry a symbol (and a range for history) only; tests assert that no
+shares, targets, accounts, cookies or credentials leave the page. The gateway holds no
+key; exports never contain its settings.
+
+**Caching.** Gateway: quotes 5 min, history 6 h, in memory per isolate and through the
+Cache API (functional on a custom domain). Browser: quotes 10 min, history 6 h. Ages are
+always shown; there is no stale-if-error for the free source.
+
+**Tests.** `market-gateway.test.mjs` (Worker), `keyless.test.mjs` (adapter + routing,
+against the Worker in-process), `freesource.test.js` (both pages in Chromium against the
+Worker code), fixtures `fixtures/yahoo-chart.mjs` (synthetic; nothing contacts Yahoo).
 
 ## 1. Summary
 
@@ -78,8 +139,9 @@ Marketstack and Finnhub, and fails on any other host.
 | Prices, no account | Prices the visitor types (Rebalancer) or CSV files they open (Stock tool) | none | local only | the visitor's own data |
 | Demo | Synthetic prices from a fixed seed (Stock tool) | none | local only | not market data, labelled |
 
-There is no server, no proxy, no relay and no secret anywhere in the site. The code
-is in `assets/js/market-data/`.
+There is no public proxy or relay and no secret anywhere in the site. The code is in
+`assets/js/market-data/`. (Since 0.1, the site's own market-data gateway may serve the
+free source; it is not deployed and its source is switched off.)
 
 ## 2. Why the previous design failed (root cause)
 

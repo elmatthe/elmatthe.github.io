@@ -77,7 +77,10 @@ async function download(page, id, name) {
     check(calls.boc === 1 && calls.av.length + calls.ms.length + calls.fh.length === 0, `page load: one Bank of Canada request, no price request (boc=${calls.boc})`);
     check(await page.locator("#rbRows .rb-row").count() === 1 && (await page.locator("#rbRows .rb-ticker").inputValue()) === "", "page starts with one empty holding, no sample prices");
     const sources = await page.locator("#rbSource option").allInnerTexts();
-    check(sources.length === 4 && /Automatic \(route by market\)/.test(sources[0]) && sources.some(s => /Alpha Vantage/.test(s)) && sources.some(s => /Marketstack/.test(s)) && sources.some(s => /Finnhub/.test(s)), `source selector: Automatic + three providers (${sources.join(" | ")})`);
+    check(sources.length === 5 && /Automatic \(route by market\)/.test(sources[0]) && /^Free source: no key \(Yahoo Finance\) \(not available\)$/.test(sources[1]) && sources.some(s => /Alpha Vantage/.test(s)) && sources.some(s => /Marketstack/.test(s)) && sources.some(s => /Finnhub/.test(s)), `source selector: Automatic, the free source (not available) and three providers (${sources.join(" | ")})`);
+    check(await page.locator('#rbSource option[value="keyless"]').isDisabled(), "without a configured gateway the free source cannot be chosen");
+    check(/Free source \(no key\): not available\. This site's market-data gateway has not been set up/.test(await page.locator("#rbFreeSource").innerText()) && await page.getAttribute("#rb-app", "data-free-source") === "not_configured", "production configuration (no gateway): the page says the free source is not set up");
+    check(calls.blocked.length === 0 && !net.external.some(u => /gateway/.test(u)), "no gateway is contacted when none is configured");
     check(!sources.some(s => /Alpaca|Massive/.test(s)), "Alpaca and Massive are not offered in the browser");
     check(/Alpaca \(desktop app only\)[\s\S]*Massive \(deferred\)/.test(await page.locator("#rbNotOffered").textContent()), "the reasons Alpaca and Massive are not offered are stated");
 

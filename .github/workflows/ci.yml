@@ -41,7 +41,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: _tools/tests/requirements.txt
-      - name: JavaScript unit tests (market data, providers, integrity, analytics, Monte Carlo, CPI engine, data gateway security; mocked network)
+      - name: JavaScript unit tests (market data, providers, integrity, analytics, Monte Carlo, CPI engine, both gateways, free source; mocked network)
         run: node --test _tools/tests/unit/*.test.mjs
       - name: Desktop copies of the shared market_data package match _tools/shared_py
         run: python _tools/sync_shared_py.py --check
@@ -96,8 +96,9 @@ jobs:
           echo "::error::local server did not start"; cat "$RUNNER_TEMP/http.log"; exit 1
       # Each suite prints PASS/FAIL per check and exits non-zero on any failure.
       # harness.js answers the Bank of Canada, ECB, Alpha Vantage, Marketstack,
-      # Finnhub, Statistics Canada and a stand-in data gateway with synthetic data and
-      # aborts (and fails on) every other host;
+      # Finnhub, Statistics Canada and a stand-in data gateway with synthetic data, runs
+      # the real market-data gateway code with synthetic Yahoo answers (Yahoo is never
+      # contacted), and aborts (and fails on) every other host;
       # Chart.js is self-hosted, so no CDN is contacted.
       - name: Pages (all project pages, guides, redirects, ZIP links, phone width)
         working-directory: _tools/tests/browser
@@ -115,6 +116,11 @@ jobs:
       - name: CPI Web Scraper web app
         working-directory: _tools/tests/browser
         run: node cpi.test.js
+      # The market-data gateway's Worker code runs in this job with synthetic Yahoo
+      # answers; no gateway is deployed and no live request is made.
+      - name: Free source (keyless market-data gateway) in the Rebalancer and Stock web apps
+        working-directory: _tools/tests/browser
+        run: node freesource.test.js
 
   desktop:
     name: Desktop tests on Linux (${{ matrix.tool }})

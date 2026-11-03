@@ -1,0 +1,283 @@
+// The free (keyless) market-data source: this site's shared market-data gateway
+// (_services/market-data-gateway, a Cloudflare Worker), which relays Yahoo Finance
+// chart data in one normalized contract. No account or key is needed.
+//
+// Availability is explicit and is checked, never assumed:
+//   not_configured  the site has no gateway URL (_data/market_data.yml is empty)
+//   checking        the gateway's /v1/health has not answered yet
+//   unreachable     the gateway could not be reached or refused this page
+//   disabled        the gateway runs, but its keyless source is switched off
+//                   (pending the licensing authorization described in its README)
+//   enabled         the gateway serves the keyless source
+// Until a gateway is configured AND reports the source enabled, nothing is requested
+// from it except that one health check, and the tools say why the source is unavailable.
+//
+// Requests carry only a ticker symbol and a history range. No holdings, share
+// quantities, target weights, account types or keys are ever sent.
+//
+// Every answer is checked again here (listing, venue, currency, unit, positive finite
+// prices, real calendar dates in ascending order) before a tool can use it; anything
+// that does not match the instrument that was asked for is refused, never substituted.
+
+import { DataError, fetchText, createLimiter, validateBaseUrl, parseRetryAfter, withRetry } from "./http.js";
+import { createCache, memoryStorage } from "./cache.js";
+import { isIsoDay, parseIsoDay, validateHistory } from "./contract.js";
+
+export const KEYLESS_ID = "keyless";
+export const KEYLESS_NAME = "Free source";
+export const KEYLESS_PROVIDER = "Yahoo Finance";
+export const KEYLESS_VIA = "this site's market-data gateway";
+export const KEYLESS_PRICE_TYPE = "regular_market_price";
+export const SCHEMAS = Object.freeze({ health: "md-gateway.health.v1", quote: "md-gateway.quote.v1", history: "md-gateway.history.v1", error: "md-gateway.error.v1" });
+
+// Venues the gateway serves (MIC -> exchange suffix); the gateway's src/venues.js has
+// the same list (checked by _tools/tests/unit/market-gateway.test.mjs).
+export const KEYLESS_VENUES = Object.freeze({ US: "", XTSE: ".TO", XTSX: ".V", NEOE: ".NE", XLON: ".L", XETR: ".DE", XPAR: ".PA", XAMS: ".AS", XSWX: ".SW", XTKS: ".T", XSHG: ".SS", XSHE: ".SZ", XHKG: ".HK", XASX: ".AX" });
+const US_FAMILY = ["US", "XNYS", "XNAS", "ARCX", "BATS", "XASE"];
+const venueKey = mic => (US_FAMILY.includes(mic) ? "US" : mic);
+
+// History ranges the gateway serves, with the calendar days each covers.
+export const HISTORY_BUCKETS = Object.freeze([["1mo", 31], ["3mo", 92], ["6mo", 184], ["1y", 366], ["2y", 731], ["5y", 1827]]);
+export function historyBucket(range) {
+  const days = Math.ceil((range.end.getTime() - range.start.getTime()) / 86400000) + 3;
+  return (HISTORY_BUCKETS.find(([, d]) => d >= days) || HISTORY_BUCKETS[HISTORY_BUCKETS.length - 1])[0];
+}
+
+const QUOTE_FRESH_MS = 10 * 60000;
+const HISTORY_FRESH_MS = 6 * 3600000;
+
+const SYMBOL = /^[A-Z0-9](?:[A-Z0-9]|-(?=[A-Z0-9])){0,13}(?:\.[A-Z]{1,2})?$/;
+
+// The gateway symbol for a resolved instrument, or null when the gateway does not
+// serve that listing. US class shares use a hyphen (BRK.B -> BRK-B), TSX US-dollar
+// units "-U" (DLR.U -> DLR-U.TO).
+export function keylessSymbol(identity) {
+  if (!identity || identity.status !== "resolved" || !identity.localSymbol) return null;
+  const venue = venueKey(identity.mic);
+  if (!Object.hasOwn(KEYLESS_VENUES, venue)) return null;
+  let local = identity.localSymbol;
+  if (venue === "US") local = local.replace(/\./g, "-");
+  else if (venue === "XTSE" && /\.U$/.test(local)) local = local.replace(/\.U$/, "-U");
+  else if (local.includes(".")) return null;
+  const symbol = `${local}${KEYLESS_VENUES[venue]}`;
+  return symbol.length <= 20 && SYMBOL.test(symbol) ? symbol : null;
+}
+
+// The gateway the page uses: the one configured for the site, or a `?mdgateway=`
+// override only when the page itself is served from this computer (127.0.0.1 or
+// localhost), so a link can never point production visitors at another server.
+export function resolveMarketGateway(configured, location) {
+  if (location && ["127.0.0.1", "localhost"].includes(location.hostname)) {
+    const override = new URLSearchParams(location.search || "").get("mdgateway");
+    if (override) return override;
+  }
+  return configured || "";
+}
+
+const MESSAGES = {
+  not_configured: "The free source is not available: this site's market-data gateway has not been set up yet.",
+  unreachable: "The free source is not available right now: this site's market-data gateway could not be reached.",
+  disabled: "The free source is switched off on this site's market-data gateway.",
+  checking: "The free source is still being checked.",
+};
+
+// Gateway error codes -> what the tools do with them. Messages are this page's own.
+const ERRORS = {
+  source_disabled: ["unavailable", "The free source is switched off on this site's market-data gateway.", { definitive: true }],
+  origin_not_allowed: ["unavailable", "The market-data gateway does not accept requests from this page.", { definitive: true }],
+  rate_limited: ["rate_limited", "Too many free-source requests from this browser. Wait a minute and try again.", { quotaScope: "minute" }],
+  throttled: ["rate_limited", "The free source's shared request budget is used up for the moment. Try again in a minute.", { quotaScope: "minute" }],
+  upstream_rate_limited: ["rate_limited", "Yahoo Finance is limiting the free source's requests. Try again later.", { quotaScope: "minute" }],
+  busy: ["unavailable", "The free source is busy. Try again shortly."],
+  upstream_unavailable: ["unavailable", "Yahoo Finance is unavailable to the free source right now."],
+  upstream_timeout: ["timeout", "Yahoo Finance did not answer the free source in time."],
+  upstream_blocked: ["unavailable", "Yahoo Finance refused the free source's request (it may not allow automated access)."],
+  upstream_rejected: ["unavailable", "Yahoo Finance refused the free source's request."],
+  upstream_invalid: ["invalid", "The free source returned data that failed its checks, so it was not used."],
+  symbol_not_found: ["not_found", "Yahoo Finance has no data for this symbol.", { definitive: true }],
+  no_price: ["not_found", "Yahoo Finance returned no current price for this listing.", { definitive: true }],
+  no_history: ["not_found", "Yahoo Finance returned no price history for this listing and period.", { definitive: true }],
+  listing_mismatch: ["ambiguous", "Yahoo Finance answered for a different listing or exchange; the answer was not used.", { definitive: true }],
+  currency_mismatch: ["currency_mismatch", "Yahoo Finance reported a currency this listing does not trade in; the answer was not used.", { definitive: true }],
+  currency_unknown: ["currency_mismatch", "Yahoo Finance did not state the currency; the answer was not used.", { definitive: true }],
+  unsupported_instrument: ["not_covered", "The free source does not serve this kind of instrument (index, currency, future).", { definitive: true }],
+  unsupported_listing: ["not_covered", "The free source does not serve this exchange.", { definitive: true }],
+  invalid_symbol: ["invalid", "The free source does not accept this symbol.", { definitive: true }],
+};
+
+const positive = v => typeof v === "number" && Number.isFinite(v) && v > 0;
+const short = (text, max = 300) => String(text ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
+const invalid = message => new DataError(`The free source's answer failed a check (${message}), so it was not used.`, { kind: "invalid", provider: KEYLESS_NAME });
+const localDay = (ms, timeZone) => {
+  try { return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(ms)); }
+  catch (_) { return new Date(ms).toISOString().slice(0, 10); }
+};
+
+export function createKeylessSource({ baseUrl = "", fetchImpl = (...a) => globalThis.fetch(...a), now = () => Date.now(), storage = null, timeoutMs = 10000, concurrency = 2, sleep } = {}) {
+  const base = validateBaseUrl(baseUrl);
+  const store = storage || memoryStorage();
+  const quotes = createCache({ storage: store, prefix: "md.keyless.v1.quote:", maxEntries: 150, now });
+  const histories = createCache({ storage: store, prefix: "md.keyless.v1.history:", maxEntries: 20, now });
+  const limit = createLimiter(concurrency);
+  let status = base ? { state: "checking", message: MESSAGES.checking } : { state: "not_configured", message: MESSAGES.not_configured };
+  let pending = null;
+  let requests = 0;
+
+  function setStatus(next) { status = { ...next, checkedAt: now() }; return status; }
+
+  // One GET /v1/health. Its answer decides whether the source is offered at all.
+  function check({ force = false } = {}) {
+    if (!base) return Promise.resolve(status);
+    if (pending && !force) return pending;
+    pending = (async () => {
+      try {
+        const res = await fetchText(`${base}/v1/health`, { fetchImpl, timeoutMs: 8000, provider: KEYLESS_NAME });
+        if (!res.ok) return setStatus({ state: "unreachable", message: `${MESSAGES.unreachable} (HTTP ${res.status})` });
+        let body;
+        try { body = JSON.parse(res.text); } catch (_) { body = null; }
+        if (body?.schema !== SCHEMAS.health || typeof body.keyless?.enabled !== "boolean") return setStatus({ state: "unreachable", message: `${MESSAGES.unreachable} (unexpected answer)` });
+        if (!body.keyless.enabled) return setStatus({ state: "disabled", message: MESSAGES.disabled, reason: short(body.keyless.reason) || null });
+        return setStatus({ state: "enabled", message: null, provider: KEYLESS_PROVIDER, attribution: short(body.keyless.attribution) || null, version: short(body.version, 20) });
+      } catch (_) {
+        return setStatus({ state: "unreachable", message: `${MESSAGES.unreachable} (network, CORS or timeout)` });
+      }
+    })();
+    return pending;
+  }
+
+  const enabled = () => status.state === "enabled";
+  function unavailable() {
+    return new DataError(status.state === "disabled" && status.reason ? `${status.message} ${status.reason}` : status.message || MESSAGES.not_configured, { kind: status.state === "not_configured" ? "not_configured" : "unavailable", definitive: true, provider: KEYLESS_NAME });
+  }
+
+  // Why the free source cannot price an identity, or null.
+  function coverageGap(identity) {
+    if (!enabled()) return status.state === "checking" ? MESSAGES.checking : status.state === "not_configured" ? "this site's market-data gateway is not set up" : status.state === "disabled" ? "switched off on the gateway" : "the gateway could not be reached";
+    if (!identity || identity.status !== "resolved") return "the ticker is not resolved";
+    if (!keylessSymbol(identity)) return `the free source does not cover ${identity.venueName || identity.mic}`;
+    return null;
+  }
+
+  function gatewayError(res) {
+    let code = null;
+    try { const body = JSON.parse(res.text); if (body?.schema === SCHEMAS.error) code = String(body.error?.code || ""); } catch (_) { /* not JSON */ }
+    const entry = ERRORS[code];
+    if (code === "source_disabled") setStatus({ state: "disabled", message: MESSAGES.disabled, reason: null });
+    if (code === "origin_not_allowed") setStatus({ state: "unreachable", message: `${MESSAGES.unreachable} (it does not accept this page)` });
+    if (!entry) return new DataError(`The free source answered HTTP ${res.status}.`, { kind: res.status >= 500 ? "unavailable" : "http", status: res.status, provider: KEYLESS_NAME });
+    const [kind, message, extra = {}] = entry;
+    return new DataError(message, { kind, status: res.status, provider: KEYLESS_NAME, retryAfterMs: parseRetryAfter(res.headers?.get?.("retry-after"), now()), hint: kind === "rate_limited" ? "Use your own key for another source, or your own price." : null, ...extra });
+  }
+
+  // One gateway GET, through the page's small concurrency limit. A network error or
+  // timeout is retried once; a refusal or a rate limit is not.
+  async function get(path, params, signal) {
+    if (!enabled()) throw unavailable();
+    const url = `${base}${path}?${new URLSearchParams(params)}`;
+    return limit(() => withRetry(async () => {
+      requests += 1;
+      const res = await fetchText(url, { fetchImpl, signal, timeoutMs, maxBytes: 1024 * 1024, provider: KEYLESS_NAME });
+      if (!res.ok) throw gatewayError(res);
+      try { return JSON.parse(res.text); } catch (_) { throw invalid("not JSON"); }
+    }, { retries: 1, baseMs: 800, maxDelayMs: 2000, signal, sleep, shouldRetry: e => e?.kind === "network" || e?.kind === "timeout" }));
+  }
+
+  function checkListing(body, schema, symbol, identity) {
+    if (body?.schema !== schema) throw invalid("schema");
+    if (body.listing?.symbol !== symbol) throw invalid("different symbol");
+    if (body.listing?.mic !== venueKey(identity.mic)) throw invalid("different exchange");
+    if (!/^[A-Z]{3}$/.test(String(body.currency || ""))) throw invalid("currency");
+    if (!(body.unitScale === 1 || body.unitScale === 0.01) || body.quoteUnit !== (body.unitScale === 1 ? "major" : "minor")) throw invalid("unit");
+    if (typeof body.rawCurrency !== "string" || body.rawCurrency.length > 5) throw invalid("raw currency");
+    if (!Number.isFinite(Date.parse(body.retrievedAt))) throw invalid("retrieval time");
+    const cache = body.cache && ["hit", "miss"].includes(body.cache.status) && Number.isFinite(body.cache.ageSeconds) && body.cache.ageSeconds >= 0 ? { status: body.cache.status, ageSeconds: body.cache.ageSeconds } : null;
+    if (!cache) throw invalid("cache record");
+    return cache;
+  }
+
+  // Latest regular-session price: raw fields for the md.quote.v1 contract.
+  async function quote(identity, { signal, useCache = true } = {}) {
+    const symbol = keylessSymbol(identity);
+    if (!enabled()) throw unavailable();
+    if (!symbol) throw new DataError(`The free source does not cover ${identity?.venueName || identity?.mic || "this listing"}.`, { kind: "not_covered", definitive: true, provider: KEYLESS_NAME });
+    const hit = useCache ? quotes.get(symbol, { freshMs: QUOTE_FRESH_MS }) : null;
+    if (hit?.fresh) return { ...hit.value, browserCacheAgeMs: hit.ageMs };
+    const body = await get("/v1/quote", { symbol }, signal);
+    const gatewayCache = checkListing(body, SCHEMAS.quote, symbol, identity);
+    if (!positive(body.rawPrice) || !positive(body.price) || Math.abs(body.price - body.rawPrice * body.unitScale) > 1e-9 * Math.max(1, body.price)) throw invalid("price");
+    if (!isIsoDay(body.tradingDate) || !Number.isFinite(Date.parse(body.sourceTime))) throw invalid("date");
+    if (body.priceBasis !== KEYLESS_PRICE_TYPE || body.adjusted !== false || body.delay?.realTime !== false) throw invalid("price basis");
+    const optional = v => (positive(v) ? v : null);
+    const raw = {
+      symbol, rawPrice: body.rawPrice, rawCurrency: body.rawCurrency, currency: body.currency, unitScale: body.unitScale,
+      tradingDate: body.tradingDate, asOf: new Date(Date.parse(body.sourceTime)).toISOString(), priceType: KEYLESS_PRICE_TYPE,
+      name: short(body.listing.name, 120) || null, exchangeName: short(body.listing.exchangeName, 60) || null, instrumentType: short(body.listing.instrumentType, 20) || null,
+      retrievedAt: new Date(Date.parse(body.retrievedAt)).toISOString(), gatewayCache, delayNote: short(body.delay?.note) || null,
+      previousClose: optional(body.previousClose), dayHigh: optional(body.dayHigh), dayLow: optional(body.dayLow),
+      volume: Number.isFinite(body.volume) && body.volume >= 0 ? body.volume : null,
+      missing: Array.isArray(body.missing) ? body.missing.filter(m => typeof m === "string").slice(0, 10) : [],
+      attribution: short(body.source?.attribution) || status.attribution || null,
+    };
+    quotes.set(symbol, raw);
+    return { ...raw, browserCacheAgeMs: null };
+  }
+
+  // Daily history covering `range` ({ start, end }), as md.history.v1 with both bases
+  // kept separately. The latest bar is dropped while its session may still be trading.
+  async function history(identity, range, { signal } = {}) {
+    const symbol = keylessSymbol(identity);
+    if (!enabled()) throw unavailable();
+    if (!symbol) throw new DataError(`The free source does not cover ${identity?.venueName || identity?.mic || "this listing"}.`, { kind: "not_covered", definitive: true, provider: KEYLESS_NAME });
+    const bucket = historyBucket(range);
+    const key = `${symbol}|${bucket}`;
+    const hit = histories.get(key, { freshMs: HISTORY_FRESH_MS });
+    let packed;
+    let browserCacheAgeMs = null;
+    if (hit?.fresh) { packed = hit.value; browserCacheAgeMs = hit.ageMs; }
+    else {
+      const body = await get("/v1/history", { symbol, range: bucket, interval: "1d" }, signal);
+      const gatewayCache = checkListing(body, SCHEMAS.history, symbol, identity);
+      if (body.frequency !== "daily" || body.interval !== "1d" || body.range !== bucket || !Array.isArray(body.observations) || body.observations.length > 2000) throw invalid("history shape");
+      let previous = "";
+      for (const o of body.observations) {
+        if (!Array.isArray(o) || o.length !== 3 || !isIsoDay(o[0]) || o[0] <= previous) throw invalid("dates");
+        if ((o[1] !== null && !positive(o[1])) || (o[2] !== null && !positive(o[2])) || (o[1] === null && o[2] === null)) throw invalid("prices");
+        previous = o[0];
+      }
+      packed = {
+        symbol, currency: body.currency, rawCurrency: body.rawCurrency, unitScale: body.unitScale, observations: body.observations,
+        name: short(body.listing.name, 120) || null, exchangeName: short(body.listing.exchangeName, 60) || short(body.listing.venueName, 60) || null,
+        instrumentType: short(body.listing.instrumentType, 20) || null, timeZone: short(body.listing.timeZone, 40) || identity.timeZone || "UTC",
+        adjustment: { adjCloseAvailable: body.adjustment?.adjCloseAvailable === true, close: short(body.adjustment?.close) || null, adjClose: short(body.adjustment?.adjClose) || null },
+        missing: body.missing && typeof body.missing === "object" ? { rowsWithoutPrices: Number(body.missing.rowsWithoutPrices) || 0, closes: Number(body.missing.closes) || 0, adjCloses: Number(body.missing.adjCloses) || 0, duplicateDates: Number(body.missing.duplicateDates) || 0 } : null,
+        retrievedAt: new Date(Date.parse(body.retrievedAt)).toISOString(), gatewayCache, range: bucket,
+        attribution: short(body.source?.attribution) || status.attribution || null,
+      };
+      histories.set(key, packed);
+    }
+    const today = localDay(now(), packed.timeZone);
+    const rows = packed.observations.filter(o => o[0] < today);
+    const h = validateHistory({
+      requestedSymbol: identity.displayTicker, symbol, name: packed.name, instrumentType: packed.instrumentType, exchange: packed.exchangeName,
+      currency: packed.currency, rawCurrency: packed.rawCurrency, unitScale: packed.unitScale, frequency: "daily",
+      observations: rows.map(([d, c, a]) => ({ date: parseIsoDay(d), close: c, adjClose: a })),
+      adjustment: packed.adjustment, provider: KEYLESS_PROVIDER, market: {},
+    }, KEYLESS_NAME);
+    return { ...h, keyless: { retrievedAt: packed.retrievedAt, gatewayCache: packed.gatewayCache, browserCacheAgeMs, range: packed.range, missing: packed.missing, droppedRunningSession: rows.length < packed.observations.length, attribution: packed.attribution } };
+  }
+
+  return {
+    check,
+    status: () => ({ ...status }),
+    enabled,
+    configured: () => Boolean(base),
+    base: () => base,
+    coverageGap,
+    quote,
+    history,
+    requestsSent: () => requests,
+    quoteCached: identity => { const s = keylessSymbol(identity); return Boolean(s && quotes.get(s, { freshMs: QUOTE_FRESH_MS })?.fresh); },
+    clearCache: () => quotes.clear() + histories.clear(),
+    cacheSize: () => quotes.size() + histories.size(),
+  };
+}

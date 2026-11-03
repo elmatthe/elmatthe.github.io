@@ -15,6 +15,7 @@ macOS and Excel behaviour is **not** verified by these Linux tests (see the last
 | Alpaca | **Unsupported** | Quotes and history (US, IEX feed on Basic) | The key secret is a trading credential: never in a web page. |
 | Massive | Deferred | Deferred | Needs the owner's written confirmation of Market Data Terms §1 (see `PROVIDER_MATRIX.md`). |
 | Automatic (route by market) | Yes | Yes | A routing mode, not a provider; same `ROUTES` table (`catalog.js` / `catalog.py`, parity-tested). |
+| Free source (no key, site's market-data gateway) | **Prepared, switched off** | — | Web only, by design: a separate tier outside the five-provider catalog (`keyless.js`), used after the visitor's keys in Automatic mode. Not deployed; gated off pending licensing (`PROVIDER_MATRIX.md` §10). Desktop apps use the user's own keys or CSV files and do not call the gateway. Tests: `keyless.test.mjs`, `market-gateway.test.mjs`, `freesource.test.js`. The Python catalog and routing parity are unchanged. |
 
 Never more than five providers; keys stay in the browser (session storage unless
 "remember") or on the desktop (`keys.json` only when remembered, permissions 600). No
