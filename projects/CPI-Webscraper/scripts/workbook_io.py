@@ -1,60 +1,23 @@
-"""Excel owns workbook serialization; only raw-sheet contents are assigned."""
+"""Excel owns workbook serialization; only raw-sheet contents are assigned.
+
+By default a download is MERGED into the raw sheet: months that were downloaded are
+replaced, every other month already in the sheet is kept (a single-month update no
+longer clears the history, which matters because FRED's S&P 500 window rolls forward
+and older months cannot be downloaded again). `replace=True` keeps the old behaviour:
+the sheet then holds exactly the downloaded months.
+"""
 import csv
 from datetime import date
 import gc
 import math
-import os
 from pathlib import Path
-import subprocess
-import time
 from cpi_config import SUPPORTED_IDS
+
+RECALCULATE_NOTE = ('Open the workbook in desktop Excel and press Ctrl+Alt+F9 (full recalculation), then save: '
+                    'the model sheets are not recalculated while this program writes the raw data.')
 
 class WorkbookError(ValueError):
     pass
-
-def _get_onedrive_exe() -> str | None:
-    """
-    Return the path to OneDrive.exe if it exists on this machine,
-    otherwise return None (so we silently skip pause/resume on machines
-    that don't have OneDrive installed).
-    """
-    candidate = os.path.join(
-        os.environ.get("LOCALAPPDATA", ""),
-        "Microsoft", "OneDrive", "OneDrive.exe"
-    )
-    return candidate if os.path.isfile(candidate) else None
-
-
-def onedrive_pause():
-    """
-    Pause OneDrive syncing. Safe to call even if OneDrive is not installed —
-    it will simply do nothing.
-    """
-    exe = _get_onedrive_exe()
-    if exe:
-        try:
-            subprocess.run([exe, "/pause"], check=False,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            # Give OneDrive a moment to actually pause before we touch the file
-            time.sleep(2)
-        except Exception:
-            pass  # Never let a OneDrive issue block the main task
-
-
-def onedrive_resume():
-    """
-    Resume OneDrive syncing. Safe to call even if OneDrive is not installed.
-    """
-    exe = _get_onedrive_exe()
-    if exe:
-        try:
-            subprocess.run([exe, "/resume"], check=False,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10,
-                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        except Exception:
-            pass
-
 
 def validate_rows(rows, config):
     if not rows or len(rows)+1 > 1048576:
@@ -73,7 +36,35 @@ def validate_rows(rows, config):
     return (config.headers, *(config.values(row) for row in rows))
 
 
-def write_to_workbook(rows, workbook_path, config):
+def merge_rows(existing, matrix):
+    """Existing raw-sheet values (Value2 rows, header first) + new rows -> merged rows.
+
+    `matrix` rows hold Excel date serials in column A. Returns (rows, stats) where
+    stats counts kept, updated and added months.
+    """
+    header, new_rows = matrix[0], matrix[1:]
+    width = len(header)
+    old = {}
+    for index, row in enumerate(existing[1:], start=2):
+        row = tuple(row) + (None,) * (width - len(row))
+        if all(value is None or value == '' for value in row[:width]):
+            continue
+        serial = row[0]
+        if isinstance(serial, bool) or not isinstance(serial, (int, float)) or not math.isfinite(serial) or serial != int(serial):
+            raise WorkbookError(f'Raw-data row {index} has values but no valid date in column A; workbook was not changed. '
+                                'Fix the row or use "Replace all rows".')
+        if int(serial) in old:
+            raise WorkbookError(f'Raw-data row {index} repeats a month already in the sheet; workbook was not changed.')
+        old[int(serial)] = tuple(None if value == '' else value for value in row[:width])
+    new = {int(row[0]): tuple(row) for row in new_rows}
+    stats = {'kept': sum(1 for k in old if k not in new), 'updated': sum(1 for k in new if k in old),
+             'added': sum(1 for k in new if k not in old)}
+    merged = {**old, **new}
+    return (tuple(header), *(merged[k] for k in sorted(merged))), stats
+
+
+def write_to_workbook(rows, workbook_path, config, replace=False):
+    """Write the downloaded months into the raw sheet; returns {'kept','updated','added','rows'}."""
     matrix = validate_rows(rows, config)
     path = Path(workbook_path).resolve()
     if path.suffix.lower() not in ('.xlsx','.xlsm') or not path.is_file():
@@ -83,8 +74,8 @@ def write_to_workbook(rows, workbook_path, config):
     import pythoncom
     import win32com.client
     excel = workbook = sheet = target = owned = last = model_sheet = None
+    stats = None
     pythoncom.CoInitialize()
-    onedrive_pause()
     try:
         excel = win32com.client.DispatchEx('Excel.Application')
         excel.Visible = False
@@ -106,7 +97,8 @@ def write_to_workbook(rows, workbook_path, config):
         owned = sheet.Range('A:S')
         last = owned.Find(What='*', After=sheet.Cells(1,1), LookIn=-4123,
                           LookAt=2, SearchOrder=1, SearchDirection=2, MatchCase=False)
-        height = max(len(matrix), int(last.Row) if last is not None else 1)
+        used = int(last.Row) if last is not None else 1
+        height = max(len(matrix), used)
         target = sheet.Range(sheet.Cells(1,1), sheet.Cells(height,19))
         if target.MergeCells is not False and target.MergeCells != 0:
             raise WorkbookError('Raw output area contains merged cells; workbook was not changed.')
@@ -115,6 +107,15 @@ def write_to_workbook(rows, workbook_path, config):
         # Value2 serials preserve existing number formats and respect the workbook date system.
         epoch = date(1904,1,1) if workbook.Date1904 else date(1899,12,30)
         values = tuple(tuple((value-epoch).days if type(value) is date else value for value in row) for row in matrix)
+        if replace or used < 2:
+            stats = {'kept': 0, 'updated': 0, 'added': len(values) - 1}
+        else:
+            existing = sheet.Range(sheet.Cells(1,1), sheet.Cells(used,19)).Value2
+            if not isinstance(existing, tuple) or not all(isinstance(row, tuple) for row in existing):
+                raise WorkbookError('The existing raw data could not be read; workbook was not changed.')
+            values, stats = merge_rows(existing, values)
+            height = max(height, len(values))
+            target = sheet.Range(sheet.Cells(1,1), sheet.Cells(height,19))
         # Session-only Excel calculation suppression prevents dynamic-array spills
         # from changing model cells/formatting during raw-data replacement.
         # EnableCalculation is not a workbook calculation-mode change.
@@ -125,6 +126,7 @@ def write_to_workbook(rows, workbook_path, config):
         target = sheet.Range(sheet.Cells(1,1), sheet.Cells(len(values),19))
         target.Value2 = values
         workbook.Save()
+        stats['rows'] = len(values) - 1
     except WorkbookError:
         raise
     except Exception:
@@ -143,7 +145,7 @@ def write_to_workbook(rows, workbook_path, config):
                 excel = None
                 gc.collect()
                 pythoncom.CoUninitialize()
-                onedrive_resume()
+    return stats
 
 
 def write_to_csv(rows, csv_path, config):

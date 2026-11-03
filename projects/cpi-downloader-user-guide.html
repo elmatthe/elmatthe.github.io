@@ -9,7 +9,7 @@ redirect_from:
 eyebrow: Setup & user guide
 summary: How to install, configure and run the CPI Web Scraper on Windows with desktop Excel, including FRED API key setup and troubleshooting.
 lede: Set up the CPI Web Scraper with one launcher, add your free FRED API key, and write Statistics Canada and FRED data into your Excel model.
-last_updated: 2026-09-28
+last_updated: 2026-11-03
 sections:
   - { id: before, label: Before you start }
   - { id: install, label: Install }
@@ -28,7 +28,7 @@ sections:
     <dt>Python</dt><dd>You don't need to install it yourself. The launcher uses an existing stable Python {{ p.python }} or offers to install Python 3.14 for your user account only.</dd>
     <dt>FRED API key</dt><dd>Free. <a href="https://fred.stlouisfed.org/docs/api/api_key.html">Request one from the St. Louis Fed</a>; it takes a couple of minutes.</dd>
     <dt>Administrator rights</dt><dd>Not needed.</dd>
-    <dt>Internet</dt><dd>Needed for setup and for every download (Statistics Canada, FRED, and Yahoo Finance only if you enable the optional S&amp;P 500 history).</dd>
+    <dt>Internet</dt><dd>Needed for setup and for every download (Statistics Canada and FRED; setup and repair also use the Python package index and, if you agree to install Python, winget).</dd>
   </dl>
 </section>
 
@@ -57,10 +57,12 @@ sections:
   <h2 id="use-h">Using the program</h2>
   <ol class="pj-steps">
     <li><strong>Make a working copy</strong> of <code>files/CPI.xlsx</code> (or use your own model with a <code>CPI_Downloader</code> sheet) and <strong>close it in Excel</strong>.</li>
-    <li><strong>Pick <em>Single month</em> or <em>Date range</em></strong> and enter the year and month. Data starts in January 1913; earlier dates are moved to January 1913. Current months may be incomplete or not yet released.</li>
+    <li><strong>Pick <em>Single month</em> or <em>Date range</em></strong> and enter the year and month. Data starts in January 1913; earlier dates are moved to January 1913, and an end after the current month is moved back to the current month. For the current month, the end-of-month columns (DFF, S&amp;P 500, 10Y–2Y) stay blank until it ends; other series may not be released yet.</li>
+    <li><strong>Merge or replace.</strong> By default the downloaded months are merged into the sheet and every other month is kept. Tick <em>Replace all rows</em> only if the sheet should hold exactly the downloaded months (you are asked to confirm).</li>
     <li><strong>Choose the target <code>.xlsx</code> / <code>.xlsm</code></strong> and, optionally, tick <em>Also export to CSV</em> and choose a file.</li>
-    <li><strong>Enter your FRED API key.</strong> After a successful download it's saved to <code>config.toml</code> so you don't have to type it again.</li>
-    <li><strong>Click <em>Download &amp; Write to Excel</em>.</strong> Every source is collected and validated first; if any fails, nothing is written.</li>
+    <li><strong>Enter your FRED API key.</strong> Tick <em>Remember on this computer</em> to save it in <code>config.toml</code> (plain text) after a successful download; untick it to remove a saved key.</li>
+    <li><strong>Click <em>Download &amp; Write to Excel</em>.</strong> Progress is shown and <em>Cancel</em> stops before the next request. Every source is collected and validated first; if any fails, nothing is written. A rejected FRED key or Statistics Canada's overnight update window (about 00:00–08:30 Eastern) is reported as such.</li>
+    <li><strong>Recalculate in Excel.</strong> The tool does not recalculate the model sheets: open the workbook, press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>F9</kbd> and save. The bundled <code>CPI.xlsx</code> ships without saved results and recalculates when first opened.</li>
   </ol>
   <p>The columns written, their sources and how the workbook is protected are described on the <a href="{{ p.page | relative_url }}#data">project page</a>.</p>
 </section>
@@ -75,7 +77,7 @@ sections:
         <tr><th scope="row"><code>[workbook]</code></th><td><code>sheet_name</code></td><td>Target sheet; it must already exist. Default <code>CPI_Downloader</code>.</td></tr>
         <tr><th scope="row"><code>[fred]</code></th><td><code>api_key</code></td><td>Your FRED key. Blank in the download. <strong>Private: don't share this file.</strong></td></tr>
         <tr><th scope="row"><code>[output]</code></th><td><code>columns</code></td><td>Ordered <code>{ id, header }</code> list. You may rename headers and reorder, but keep each ID exactly once. The supplied model's formulas expect the default A–S order.</td></tr>
-        <tr><th scope="row"><code>[sp500_history]</code></th><td><code>add_missing_data</code></td><td><code>false</code> (default): FRED only, about ten years. <code>true</code>: fill older months from Yahoo Finance <code>^GSPC</code>; FRED wins overlaps and a mismatch stops the download.</td></tr>
+        <tr><th scope="row"><code>[sp500_history]</code></th><td><code>add_missing_data</code></td><td>Must be <code>false</code> (the default). The earlier Yahoo Finance backfill is no longer available; <code>true</code> stops with an explanation.</td></tr>
       </tbody>
     </table>
   </div>
@@ -107,11 +109,11 @@ sections:
   </details>
   <details class="pj-details">
     <summary>The workbook can't be written</summary>
-    <div class="pj-details-body"><p>Close the workbook, confirm the target sheet exists and is unprotected, and that the A:S area has no formulas or merged cells. Files in OneDrive are supported, but a local copy is more reliable.</p></div>
+    <div class="pj-details-body"><p>Close the workbook, confirm the target sheet exists and is unprotected, and that the A:S area has no formulas or merged cells. Files in a OneDrive folder work, but a local copy is more reliable (pause syncing yourself if OneDrive reports a conflict).</p></div>
   </details>
   <details class="pj-details">
-    <summary>The S&amp;P 500 history check fails</summary>
-    <div class="pj-details-body"><p>With <code>add_missing_data = true</code>, Yahoo Finance must return enough overlap months that match FRED within 0.005 points. If Yahoo is unavailable or differs, the download stops. Retry later or set it back to <code>false</code>.</p></div>
+    <summary>The bundled workbook has no S&amp;P 500 values</summary>
+    <div class="pj-details-body"><p>S&amp;P Dow Jones Indices restricts reproduction of S&amp;P 500 data, so the public <code>CPI.xlsx</code> does not include it. Download a range with your own FRED key to fill column N for the months FRED publishes (about the last ten years); merged downloads keep those months afterwards.</p></div>
   </details>
 </section>
 
@@ -119,5 +121,5 @@ sections:
   <h2 id="developers-h">For developers</h2>
   <p>This download is packaged from the canonical <code>elmatthe/CPI-Webscraper</code> repository (version {{ p.version }}). Its launcher and <code>scripts/bootstrap.py</code> are the project's own and differ slightly from the website's other desktop tools (for example <code>--check-only</code> instead of <code>--venv-check</code>). To check the installation without opening the program, run from the tool folder:</p>
   <div class="pj-code"><pre><code id="cpi-dev-cmd">Setup_and_Run-cpi-webscraper.bat --check-only</code></pre><button type="button" data-copy-target="cpi-dev-cmd" hidden>Copy</button></div>
-  <p class="muted">The offline test suite, release gate (<code>scripts/verify.py</code>) and developer notes are in the source repository, not the ZIP.</p>
+  <p class="muted">The offline test suite and developer notes are in this website's repository (<code>projects/CPI-Webscraper/files/tests/</code>), not in the ZIP; the release gate <code>scripts/verify.py</code> is excluded from the ZIP.</p>
 </section>

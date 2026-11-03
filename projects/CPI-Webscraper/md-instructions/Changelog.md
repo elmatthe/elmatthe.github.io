@@ -1,5 +1,23 @@
 # CPI-Webscraper — Changelog
 
+## v0.4.0 — 2026-11-03 (website copy)
+- Public `files/CPI.xlsx`: removed the 121 S&P 500 values (column N) and every saved formula, spill and chart
+  result (they could be derived from them; Excel recalculates on first open), the local absolute path, the Office
+  add-in reference, printer settings and author names (`_tools/cpi_public_workbook.py`). Formulas, charts, styles
+  and sheets are unchanged.
+- Downloads are merged into the raw sheet (other months are kept); "Replace all rows" restores the old behaviour
+  after a confirmation. Rows without a valid date or with a repeated month stop the write.
+- End month clamped to the current month; invalid months rejected with a clear message. The current month's
+  end-of-month values (DFF, SP500, T10Y2Y) are left blank until the month ends.
+- HTTP 4xx other than 409/429 are not retried; distinct messages for a rejected FRED key, Statistics Canada's
+  update window (409) and rate limits (429).
+- Downloads run on a worker thread with progress and Cancel; the FRED key is saved only when "Remember on this
+  computer" is ticked; clickable key link; Statistics Canada Open Licence and FRED notices in the window.
+- Removed the undocumented OneDrive /pause and /resume calls and the 2 s sleep.
+- The optional Yahoo Finance S&P 500 backfill is no longer offered (`add_missing_data = true` stops with an
+  explanation); its isolated code and tests remain pending an owner decision.
+- After a download the window tells the user to recalculate in Excel (Ctrl+Alt+F9); see README.
+
 ## 0.3.0 final audit — approved checkpoint — 2026-09-15
 
 - Independently verified the user's corrected recession indicators (1,364 published months, zero mismatches) and FRED-only canonical S&P data (121 months, exact equality).

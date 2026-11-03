@@ -12,20 +12,20 @@ monte-carlo:
   guide: /projects/monte-carlo-guide/
   zip: /projects/monte-carlo-retirement-simulator.zip
   zip_name: monte-carlo-retirement-simulator.zip
-  zip_size: 30 KB
+  zip_size: 41 KB
   launcher_windows: Setup_and_Run-monte-carlo-retirement-simulator.bat
   launcher_macos: Setup_and_Run-monte-carlo-retirement-simulator.command
 cpi:
   name: CPI Web Scraper
   category: Research Automation Tool
-  version: 0.3.0
+  version: 0.4.0
   platforms: Windows (desktop Excel)
   python: "3.11–3.14"
   page: /projects/cpi-webscraper/
   guide: /projects/cpi-downloader-user-guide/
   zip: /projects/cpi-web-scraper.zip
   zip_name: cpi-web-scraper.zip
-  zip_size: 1.2 MB
+  zip_size: 216 KB
   launcher_windows: Setup_and_Run-cpi-webscraper.bat
 rebalancer:
   name: Portfolio Rebalancer
@@ -38,7 +38,7 @@ rebalancer:
   guide: /projects/portfolio-rebalancer-guide/
   zip: /projects/portfolio-rebalancer.zip
   zip_name: portfolio-rebalancer.zip
-  zip_size: 36 KB
+  zip_size: 79 KB
   launcher_windows: Setup_and_Run-portfolio-rebalancer.bat
   launcher_macos: Setup_and_Run-portfolio-rebalancer.command
 stock:
@@ -52,6 +52,6 @@ stock:
   guide: /projects/stock-data-dashboard-guide/
   zip: /projects/stock-data-dashboard-tool.zip
   zip_name: stock-data-dashboard-tool.zip
-  zip_size: 42 KB
+  zip_size: 81 KB
   launcher_windows: Setup_and_Run-stock-data-dashboard-tool.bat
   launcher_macos: Setup_and_Run-stock-data-dashboard-tool.command
