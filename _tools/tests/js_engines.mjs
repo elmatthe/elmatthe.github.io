@@ -131,6 +131,17 @@ if (request.tool === "monte-carlo") {
       out.push({ error: error.message });
     }
   }
+} else if (request.tool === "listing-cutoff") {
+  // cases: [listedFrom, requested start, [dates offered]]
+  const { cutToListing } = await import(pathToFileURL(path.join(site, "assets/js/market-data/instruments.js")));
+  for (const [listedFrom, start, days] of request.cases) {
+    try {
+      const h = cutToListing({ observations: days.map(d => ({ date: new Date(`${d}T00:00:00Z`), close: 10, adjClose: 9 })) }, { displayTicker: "SPCX", listedFrom }, { provider: "Test source", rangeStart: new Date(`${start}T00:00:00Z`) });
+      out.push({ days: h.observations.map(o => o.date.toISOString().slice(0, 10)), removed: h.listing?.removed ?? null, note: h.listing?.note ?? null });
+    } catch (error) {
+      out.push({ error: error.message, kind: error.kind });
+    }
+  }
 } else {
   throw new Error(`unknown tool ${request.tool}`);
 }

@@ -1,6 +1,11 @@
 # Stock Comparison & Analytics Tool - Changelog
 
 ## v0.6.0 — 2026-11-04 (candidate; not released)
+- After independent review: Windows now gets a time-zone database (`tzdata`), without which
+  every exchange's date silently fell back to UTC there. Prices from before a listing date are
+  removed where every history source is read, before resampling. The source order in the
+  export is the one at the start of the run. A pause Yahoo Finance asks for longer than two
+  hours is honoured (up to 24 hours at a time), not cut short.
 - Data source "Market data (your source list)" replaces the single provider choice: Yahoo
   Finance through the site's data gateway (no key; first by default), then Alpha Vantage,
   Marketstack and Alpaca with your own keys, in the order you set under "Sources…" (Move

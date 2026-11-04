@@ -23,7 +23,7 @@ import { createFxService } from "./fx.js";
 import { createScheduler } from "./scheduler.js";
 import { PROVIDERS, PROVIDER_IDS, CATALOG_VERSION, planOf, providerAvailable, isUsVenue } from "./catalog.js";
 import { ADAPTERS, normalizeCurrency } from "./providers/quote-adapters.js";
-import { createInstrumentResolver, loadInstrumentReference } from "./instruments.js";
+import { createInstrumentResolver, cutToListing, loadInstrumentReference } from "./instruments.js";
 import { AV_PROVIDER, AV_DAILY_LIMIT, createAlphaVantageClient, createUsageCounter, toAvSymbol, pickListing, parseGlobalQuote, parseSeries, validKey, redactKey } from "./providers/alphavantage.js";
 import { KEYLESS_ID, KEYLESS_NAME, KEYLESS_PROVIDER, KEYLESS_VIA, createKeylessSource } from "./keyless.js";
 import { SOURCE_INFO, offeredSources, capabilities, normalizePriority, migrateLegacy, moveSource, setSourceEnabled, keyChanged as priorityKeyChanged, planSources, describeSkipped, shortFailure, sourceName as sourceDisplayName } from "./sources.js";
@@ -370,7 +370,14 @@ export function createMarketData({
 
   // Price history for a window (Alpha Vantage). Daily (as traded) when the window fits
   // the free daily series, otherwise weekly adjusted closes. Returns { history, provenance }.
-  async function history(symbol, range, { signal } = {}) {
+  // Prices from before the listing's date are removed here on every read, saved copies
+  // included (./instruments.js cutToListing).
+  async function history(symbol, range, { signal, identity = null } = {}) {
+    const result = await avHistory(symbol, range, { signal });
+    const known = identity || (resolver ? resolver.resolve(symbol) : null);
+    return { ...result, history: cutToListing(result.history, known, { provider: AV_PROVIDER, rangeStart: range.start }) };
+  }
+  async function avHistory(symbol, range, { signal } = {}) {
     const avSymbol = toAvSymbol(symbol);
     const s = requireAv();
     const kind = historyKind(range);
@@ -603,7 +610,7 @@ export function createMarketData({
     await ready();
     const identity = known || resolve(symbol);
     if (identity.status !== "resolved") throw new DataError(identity.reason || `${symbol} is not a supported listing.`, { kind: "not_covered", definitive: true, provider: KEYLESS_NAME });
-    const h = await forCaller(keyless.history(identity, range, { signal }), signal);
+    const h = cutToListing(await forCaller(keyless.history(identity, range, { signal }), signal), identity, { provider: KEYLESS_PROVIDER, rangeStart: range.start });
     if (identity.currencyEvidence === "curated_reference" && h.currency !== identity.currency) {
       throw new DataError(`${KEYLESS_PROVIDER} reports ${identity.displayTicker} in ${h.rawCurrency || h.currency}, but this listing trades in ${identity.currency}. The prices were not used.`, { kind: "currency_mismatch", definitive: true, provider: KEYLESS_NAME });
     }
@@ -671,6 +678,9 @@ export function createMarketData({
 
   // The sources to try for an identity and operation ("quote" | "history"), in order.
   const route = (identity, op = "quote", { require = null } = {}) => planSources(identity, op, { priority, platform, state: states(), plans: allPlans(), require });
+  // The list in order, as words, at this moment: stored with what it was used for, because
+  // a later reorder must not rewrite the record of an earlier request.
+  const describeOrder = () => priority.order.filter(id => offeredSources(platform).includes(id)).map((id, i) => `${i + 1}. ${sourceDisplayName(id)}${priority.enabled[id] ? "" : " (off)"}`).join("; ");
   // Whether any source in the list could be asked at all.
   const hasPriceSource = (op = "quote") => priority.order.some(id => priority.enabled[id] && capabilities(id, platform).includes(op) && sourceState(id).available);
 
@@ -745,9 +755,17 @@ export function createMarketData({
   async function priceInstrument(identity, { signal, useCache = true } = {}) {
     if (!identity || identity.status !== "resolved") throw new DataError(identity?.reason || "The ticker is not resolved.", { kind: "invalid", definitive: true });
     const plan = route(identity, "quote");
-    const { value, attempts } = await trySources(identity, "quote", plan, c => priceWith(c.id, identity, { signal, useCache }), "a usable price");
+    const sourceOrder = describeOrder();
+    let found;
+    try {
+      found = await trySources(identity, "quote", plan, c => priceWith(c.id, identity, { signal, useCache }), "a usable price");
+    } catch (error) {
+      if (error instanceof DataError) error.sourceOrder = sourceOrder;
+      throw error;
+    }
+    const { value, attempts } = found;
     const skipped = plan.skipped.filter(x => x.code !== "off");
-    return { ...value, ...(attempts.length ? { fallbackFrom: attempts } : {}), ...(skipped.length ? { skippedSources: skipped } : {}) };
+    return { ...value, sourceOrder, ...(attempts.length ? { fallbackFrom: attempts } : {}), ...(skipped.length ? { skippedSources: skipped } : {}) };
   }
 
   // Requests a batch would send, per source, before anything is fetched (first source
@@ -800,9 +818,17 @@ export function createMarketData({
     const identity = resolvedOrThrow(symbol);
     const require = frequency ? id => (historyFrequency(id, range) !== frequency ? `would give ${historyFrequency(id, range)} prices for this period, and this comparison uses ${frequency} prices` : null) : null;
     const plan = route(identity, "history", { require });
-    const { value, attempts, used } = await trySources(identity, "history", plan, c => (c.id === KEYLESS_ID ? keylessHistory(symbol, range, { signal, identity }) : history(symbol, range, { signal })), "usable price history");
+    const sourceOrder = describeOrder();
+    let found;
+    try {
+      found = await trySources(identity, "history", plan, c => (c.id === KEYLESS_ID ? keylessHistory(symbol, range, { signal, identity }) : history(symbol, range, { signal, identity })), "usable price history");
+    } catch (error) {
+      if (error instanceof DataError) error.sourceOrder = sourceOrder;
+      throw error;
+    }
+    const { value, attempts, used } = found;
     const skipped = plan.skipped.filter(x => x.code !== "off");
-    return { ...value, provenance: { ...value.provenance, sourceId: used, sourceName: sourceDisplayName(used), attempts, skipped } };
+    return { ...value, provenance: { ...value.provenance, sourceId: used, sourceName: sourceDisplayName(used), attempts, skipped, sourceOrder } };
   }
   // The frequency the first usable history source in the list gives for a window (or
   // null when none can be asked), so a tool can hold every series of a run to it.
@@ -825,7 +851,7 @@ export function createMarketData({
         return { quote: q.quote, quoteProvenance: q.provenance, freshness: q.freshness, history: h.history, provenance: h.provenance };
       }
       const q = await quote(symbol, { signal });
-      const h = await history(symbol, range, { signal });
+      const h = await history(symbol, range, { signal, identity });
       return { quote: q.quote, quoteProvenance: q.provenance, freshness: q.freshness, history: h.history, provenance: h.provenance };
     }, "a snapshot (latest price and history)");
     const skipped = plan.skipped.filter(x => x.code !== "off");
@@ -965,6 +991,7 @@ export function createMarketData({
     sources: {
       list: listSources,
       order: () => [...priority.order],
+      describeOrder,
       enabledOrder: () => priority.order.filter(id => priority.enabled[id]),
       move: moveTo,
       setEnabled,

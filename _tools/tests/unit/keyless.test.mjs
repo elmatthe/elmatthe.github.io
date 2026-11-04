@@ -321,3 +321,71 @@ test("history: both price bases kept apart, running session dropped, curated cur
   await assert.rejects(md.keylessHistory("^GSPC", range), e => e.kind === "not_covered");
   await assert.rejects(md.keylessHistory("NEGHIST", range), e => e.kind === "invalid");
 });
+
+/* ---------------- B3: the browser waits as long as the data source said ---------------- */
+const quoteRequests = w => w.calls.gateway.filter(u => u.includes("/v1/quote")).length;
+
+test("B3: Retry-After 3600 from the source pauses the page for the hour, across a reload; nothing is sent at 901 s", async () => {
+  const local = memoryStorage();
+  const w = world({ mode: { limited: true, retryAfter: "3600" }, local });
+  await w.md.keyless.check();
+  await assert.rejects(w.md.priceInstrument(resolver.resolve("AAPL")), e => e.kind === "rate_limited");
+  assert.equal(w.md.keyless.pauseState().minutesLeft, 60);
+  w.upstreamMode.limited = false;
+  w.upstreamMode.retryAfter = null;
+  const sent = quoteRequests(w);
+  w.advance(901000);
+  assert.equal(w.md.keyless.pauseState().paused, true);
+  await assert.rejects(w.md.priceInstrument(resolver.resolve("MSFT")), e => /paused after a rate limit/.test(e.message));
+  assert.equal(quoteRequests(w), sent, "nothing is sent while paused");
+  const reload = world({ local });
+  await reload.md.keyless.check();
+  assert.equal(reload.md.keyless.pauseState().paused, true, "the pause outlives the page");
+  assert.equal(quoteRequests(reload), 0);
+  w.advance(2699000 - 1);
+  assert.equal(w.md.keyless.pauseState().paused, true, "still paused 1 ms before the deadline");
+  w.advance(1);
+  assert.equal(w.md.keyless.pauseState().paused, false, "ends at the deadline");
+  assert.equal((await w.md.priceInstrument(resolver.resolve("MSFT"))).provider, "Yahoo Finance");
+});
+
+test("B3: waits longer than the previous two-hour cap are honoured, not cut short", async () => {
+  const w = world({ mode: { blocked: true, retryAfter: "14400" } });
+  await w.md.keyless.check();
+  await assert.rejects(w.md.priceInstrument(resolver.resolve("AAPL")));
+  assert.equal(w.md.keyless.pauseState().minutesLeft, 240);
+  w.advance(2 * 3600000 + 1000);
+  assert.equal(w.md.keyless.pauseState().paused, true, "still paused after two hours");
+});
+
+test("B3: a stop beyond the maximum: the page pauses for the maximum, and asking again later still reaches nobody upstream", async () => {
+  const w = world({ mode: { limited: true, retryAfter: "172800" } });
+  await w.md.keyless.check();
+  await assert.rejects(w.md.priceInstrument(resolver.resolve("AAPL")));
+  assert.equal(w.md.keyless.pauseState().minutesLeft, 1440);
+  w.upstreamMode.limited = false;
+  w.advance(24 * 3600000);
+  assert.equal(w.md.keyless.pauseState().paused, false);
+  await assert.rejects(w.md.priceInstrument(resolver.resolve("MSFT")), e => e.kind === "rate_limited");
+  assert.equal(w.calls.yahoo.length, 1, "the gateway keeps the source stopped; only the first request ever reached it");
+  assert.equal(w.md.keyless.pauseState().minutesLeft, 1440);
+});
+
+test("B3: /v1/health reporting a stop pauses a fresh page before any request; a corrupted or absurd saved pause is ignored", async () => {
+  const health = upstream => async url => {
+    if (String(url).endsWith("/v1/health")) return new Response(JSON.stringify({ schema: "md-gateway.health.v1", keyless: { enabled: true }, upstream }), { status: 200 });
+    throw new Error("no request may be sent");
+  };
+  const fresh = createKeylessSource({ baseUrl: GATEWAY, now: () => NOW, locks: null, fetchImpl: health({ state: "halted", code: "upstream_rate_limited", retryAfterSeconds: 86400, manualReactivationRequired: true }) });
+  await fresh.check();
+  assert.equal(fresh.availability().code, "paused");
+  assert.equal(fresh.pauseState().minutesLeft, 1440);
+  await assert.rejects(fresh.quote(resolver.resolve("AAPL")), e => e.paused === true);
+  for (const bad of ["{oops", JSON.stringify({ until: NOW + 400 * 86400000, kind: "rate_limited" }), JSON.stringify({ until: "soon" })]) {
+    const store = memoryStorage();
+    store.setItem("md.yahoo.v1.pause", bad);
+    const s = createKeylessSource({ baseUrl: GATEWAY, now: () => NOW, locks: null, storage: store, fetchImpl: health({ state: "ok" }) });
+    await s.check();
+    assert.equal(s.pauseState().paused, false, bad);
+  }
+});

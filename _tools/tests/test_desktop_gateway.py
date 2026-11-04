@@ -231,3 +231,106 @@ def test_desktop_history_frequency_rule(server, tmp_path):
     h = hist.history_by_sources(w.md, identity, "2025-11-01", "2026-11-01", analysis_frequency="Daily")
     assert h["sourceId"] == "yahoo" and any(x["id"] == "alphavantage" and x["code"] == "incompatible" for x in h["skipped"])
     assert "would give weekly prices for this period, and this comparison uses daily prices" in next(x["reason"] for x in h["skipped"] if x["id"] == "alphavantage")
+
+
+# ---------------- B3: the desktop waits as long as the data source said ----------------
+def test_source_retry_after_is_honoured_for_the_hour_and_survives_a_restart(server, tmp_path):
+    control(server, reset=1, limited=1, retryAfter=3600)
+    w = World(server, tmp_path)
+    with pytest.raises(DataError):
+        w.md.price_instrument(w.md.resolve("AAPL"))
+    assert w.md.gateway.pause_state()["minutesLeft"] == 60
+    calls = upstream_calls(server)
+    sent = len(w.gateway_urls(server))
+    control(server, limited=0)
+    with pytest.raises(DataError) as paused:
+        w.md.price_instrument(w.md.resolve("MSFT"))
+    assert "paused after a rate limit" in paused.value.message
+    assert len(w.gateway_urls(server)) == sent
+    restarted = World(server, tmp_path)
+    assert restarted.md.gateway.pause_state()["minutesLeft"] >= 59
+    assert restarted.gateway_urls(server) == [] and upstream_calls(server) == calls
+
+
+def test_waits_above_the_previous_two_hour_cap_are_not_dropped(server, tmp_path):
+    """They used to be ignored here, which left a one-minute pause and an early retry."""
+    control(server, reset=1, blocked=1, retryAfter=14400)
+    w = World(server, tmp_path)
+    with pytest.raises(DataError):
+        w.md.price_instrument(w.md.resolve("AAPL"))
+    assert w.md.gateway.pause_state()["minutesLeft"] == 240
+
+
+def test_a_stop_beyond_the_maximum_pauses_for_the_maximum_and_nothing_reaches_the_source(server, tmp_path):
+    control(server, reset=1, limited=1, retryAfter=172800)
+    w = World(server, tmp_path)
+    with pytest.raises(DataError):
+        w.md.price_instrument(w.md.resolve("AAPL"))
+    assert w.md.gateway.pause_state()["minutesLeft"] == 1440
+    calls = upstream_calls(server)
+    control(server, limited=0)
+    (tmp_path / "yahoo-pause.json").unlink()  # even with the saved pause gone, the gateway stays stopped
+    fresh = World(server, tmp_path)
+    assert fresh.md.gateway.pause_state()["paused"] is True, "health reports the stop"
+    health = json.loads(urlrequest.urlopen(f"{server}/v1/health", timeout=5).read())  # noqa: S310 - loopback test server
+    assert health["upstream"]["state"] == "halted" and health["upstream"]["manualReactivationRequired"] is True
+    assert upstream_calls(server) == calls
+
+
+def test_pause_boundaries_and_damaged_saved_pauses_with_a_controlled_clock(tmp_path):
+    from market_data.gateway import GatewayClient, MAX_PAUSE_S
+
+    assert MAX_PAUSE_S == 86400
+    clock = {"t": 1_800_000_000.0}
+    answers = []
+
+    def http(url, headers):
+        if url.endswith("/v1/health"):
+            return 200, json.dumps({"schema": "md-gateway.health.v1", "keyless": {"enabled": True}, "upstream": {"state": "ok"}})
+        answers.append(url)
+        return 429, json.dumps({"schema": "md-gateway.error.v1", "error": {"code": "upstream_rate_limited", "message": "x", "retryAfterSeconds": 3600}})
+
+    c = GatewayClient("http://127.0.0.1:9", http, now=lambda: clock["t"], sleep=lambda s: None, runtime_dir=tmp_path, spacing_s=0)
+    c.check()
+    identity = {"status": "resolved", "localSymbol": "AAPL", "mic": "XNAS", "displayTicker": "AAPL"}
+    with pytest.raises(DataError):
+        c.quote(identity)
+    assert len(answers) == 1
+    clock["t"] += 3599.999
+    assert c.pause_state()["paused"] is True
+    with pytest.raises(DataError) as e:
+        c.quote(identity)
+    assert e.value.paused is True and len(answers) == 1
+    clock["t"] += 0.001
+    assert c.pause_state()["paused"] is False
+    for bad in ("{oops", json.dumps({"until": clock["t"] + 400 * 86400, "kind": "rate_limited"}), json.dumps({"until": "soon"})):
+        (tmp_path / "yahoo-pause.json").write_text(bad, encoding="utf-8")
+        assert GatewayClient("http://127.0.0.1:9", http, now=lambda: clock["t"], runtime_dir=tmp_path).pause_state()["paused"] is False, bad
+
+
+# ---------------- B1: a reused ticker's earlier prices ----------------
+def test_history_from_before_a_listing_date_is_never_used(server, tmp_path):
+    control(server, reset=1)
+    w = World(server, tmp_path)
+    spcx = hist.history_by_sources(w.md, w.md.resolve("SPCX"), "2025-11-01", "2026-11-01")
+    days = [r[0] for r in spcx["observations"]]
+    assert days and days[0] == "2026-06-12" and all(d >= "2026-06-12" for d in days)
+    assert spcx["listing"]["removed"] > 100
+    assert spcx["listing"]["note"] == "SPCX: listed only since 2026-06-12; earlier history under this symbol belongs to a different security and is not used."
+    aapl = hist.history_by_sources(w.md, w.md.resolve("AAPL"), "2025-11-01", "2026-11-01")
+    assert aapl["observations"][0][0] < "2026-06-12" and "listing" not in aapl, "a listing without a date on file is not cut"
+    cbrs = hist.history_by_sources(w.md, w.md.resolve("CBRS"), "2025-11-01", "2026-11-01")
+    assert cbrs["observations"][0][0] == "2026-05-14"
+    # A window entirely after the listing date loses nothing and says nothing.
+    later = hist.history_by_sources(w.md, w.md.resolve("SPCX"), "2026-07-01", "2026-11-01")
+    assert later["listing"]["removed"] == 0 and later["listing"]["note"] is None
+
+
+def test_a_source_with_only_earlier_prices_is_not_used(server, tmp_path):
+    control(server, reset=1, staleDays=200)
+    w = World(server, tmp_path)
+    with pytest.raises(DataError) as e:
+        hist.history_by_sources(w.md, w.md.resolve("SPCX"), "2025-11-01", "2026-11-01")
+    assert "listed only since 2026-06-12" in e.value.attempts[0]["message"]
+    assert "different security" in e.value.attempts[0]["message"]
+    control(server, reset=1)

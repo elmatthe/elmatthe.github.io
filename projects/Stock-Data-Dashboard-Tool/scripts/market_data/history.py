@@ -11,7 +11,9 @@ Sources (same list, catalog and pacing as quotes):
   Alpaca         /v2/stocks/{symbol}/bars, 1Day bars, adjustment=all for adjusted closes
                  or raw; US listings only (IEX feed on the Basic plan).
 Every series is checked for the symbol, exchange and currency it claims, and dates are
-strict YYYY-MM-DD trading dates. Exchange-rate history comes from the Bank of Canada.
+strict YYYY-MM-DD trading dates. Prices from before a listing's date belong to a different
+security that used the same ticker and are removed (cut_to_listing). Exchange-rate history
+comes from the Bank of Canada.
 """
 from __future__ import annotations
 
@@ -61,8 +63,39 @@ def history_by_sources(md, identity: dict, start: str, end: str, analysis_freque
     return {**h, "sourceId": used, "sourceName": src.source_name(used), "attempts": attempts, "skipped": [x for x in plan["skipped"] if x["code"] != "off"]}
 
 
+def cut_to_listing(h: dict, identity: dict | None, start: str) -> dict:
+    """Removes prices dated before the listing's `listedFrom`: they belong to a different
+    security that used the same ticker. Same rule and wording as the browser's cutToListing
+    (assets/js/market-data/instruments.js). Returns `h` unchanged when no date is on file;
+    otherwise a copy with "listing": {"listedFrom", "removed", "note"}. A series with only
+    earlier prices is refused, so the next source in the list can be asked."""
+    listed = (identity or {}).get("listedFrom")
+    if not listed:
+        return h
+    ticker = identity.get("displayTicker")
+    provider = h.get("provider")
+    try:
+        if not _DAY.match(str(listed)):
+            raise ValueError
+        dt.date.fromisoformat(listed)
+    except ValueError:
+        raise DataError(f"The instrument reference has an unreadable listing date for {ticker}; its price history was not used.", kind="invalid", definitive=True, provider=provider) from None
+    rows = [r for r in h["observations"] if r[0] >= listed]
+    removed = len(h["observations"]) - len(rows)
+    if removed and not rows:
+        raise DataError(f"{ticker} has been listed only since {listed}; {provider or 'the source'} returned only earlier prices, which belong to a different security, so they were not used.",
+                        kind="not_found", definitive=True, provider=provider)
+    note = f"{ticker}: listed only since {listed}; earlier history under this symbol belongs to a different security and is not used." if removed or start < listed else None
+    return {**h, "observations": rows, "listing": {"listedFrom": listed, "removed": removed, "note": note}}
+
+
 def fetch_history(md, pid: str, identity: dict, start: str, end: str, cancelled=lambda: False) -> dict:
-    """{"observations": [(date, close, adjClose)], "currency", "basisNote", "frequency", "provider", "symbol"}."""
+    """{"observations": [(date, close, adjClose)], "currency", "basisNote", "frequency", "provider", "symbol"},
+    without any price from before the listing's date."""
+    return cut_to_listing(_fetch_history(md, pid, identity, start, end, cancelled), identity, start)
+
+
+def _fetch_history(md, pid: str, identity: dict, start: str, end: str, cancelled=lambda: False) -> dict:
     if pid not in HISTORY_PROVIDERS:
         raise DataError(f"{PROVIDERS.get(pid, {}).get('name', pid)} does not provide price history here.", kind="not_covered", definitive=True)
     if pid == GATEWAY_ID:

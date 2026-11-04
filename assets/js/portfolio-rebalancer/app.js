@@ -1034,7 +1034,7 @@ function init() {
     const run = state.plan;
     const rows = run.whole ? run.whole.results : run.plan.results;
     const rc = run.reporting;
-    const header = ["Ticker (as entered)", "Listing", "Instrument", "Account type", "Currency", "Shares", "Price (local)", "Price source", "Provider symbol", "Price type", "Trading date", "Retrieved at (UTC)", "Currency evidence", `FX to ${rc}`, "FX source", `Current value (${rc})`, "Target weight", `Target value (${rc})`, "Action", `Trade value (${rc})`, "Trade value (local)", "Trade shares", "Post-trade shares", "Price source details", "Sources tried first", "Sources skipped"];
+    const header = ["Ticker (as entered)", "Listing", "Instrument", "Account type", "Currency", "Shares", "Price (local)", "Price source", "Provider symbol", "Price type", "Trading date", "Retrieved at (UTC)", "Currency evidence", `FX to ${rc}`, "FX source", `Current value (${rc})`, "Target weight", `Target value (${rc})`, "Action", `Trade value (${rc})`, "Trade value (local)", "Trade shares", "Post-trade shares", "Price source details", "Sources tried first", "Sources skipped", "Source order at the request"];
     const body = rows.map(r => {
       const row = run.rows[r.rowIndex];
       const q = row.useManual && row.manual ? null : row.quote;
@@ -1045,9 +1045,16 @@ function init() {
       const skipped = q ? describeSkipped(q.skippedSources || []).join("; ") : "";
       const w = run.whole;
       return [r.ticker, row.identity?.canonicalId || "", row.identity?.name || "", r.accountType || "", r.currencyKey, r.shares, r.price, src, q?.providerSymbol || "", q ? PRICE_TYPE[q.priceType] || q.priceType : "user-supplied", q?.tradingDate || "", q?.retrievedAt || (row.manual ? new Date(row.manual.at).toISOString() : ""), q?.currencyEvidence || "user", r.fxToReporting, r.currencyKey === rc ? "reporting currency" : run.fx[r.currencyKey]?.label || "",
-        r.currentValue, r.targetWeightNorm, r.targetValue, w ? r.wholeAction : r.action, w ? r.wholeTradeValue : r.tradeValue, w ? r.wholeTradeValueLocal : r.tradeValueLocal, w ? r.wholeShares : r.tradeShares, w ? r.wholePostTradeShares : r.postTradeShares, details, tried, skipped];
+        r.currentValue, r.targetWeightNorm, r.targetValue, w ? r.wholeAction : r.action, w ? r.wholeTradeValue : r.tradeValue, w ? r.wholeTradeValueLocal : r.tradeValueLocal, w ? r.wholeShares : r.tradeShares, w ? r.wholePostTradeShares : r.postTradeShares, details, tried, skipped, q?.sourceOrder || ""];
     });
     return [header, ...body];
+  }
+  // The order each price in this plan was really requested under, kept with the price: a
+  // later reorder of the list never rewrites it. Different only if the list changed between
+  // pricing runs.
+  function planSourceOrder(run) {
+    const orders = [...new Set(run.rows.filter(r => r.quote?.sourceOrder && !(r.useManual && r.manual)).map(r => r.quote.sourceOrder))];
+    return orders.length ? orders.join(" | then ") : "not applicable (no price in this plan came from your source list)";
   }
   function exportMeta() {
     const run = state.plan;
@@ -1061,7 +1068,7 @@ function init() {
       ["Reporting currency", run.reporting],
       ["Share quantities", run.whole ? "Whole shares" : "Fractional shares"],
       ["Prices", manual ? `Includes ${manual} user-supplied price(s); the rest verified by providers` : "All verified by providers"],
-      ["Source order (first tried first)", md.sources.list().map(x => `${x.position}. ${x.name}${x.enabled ? "" : " (off)"}`).join("; ")],
+      ["Source order (first tried first)", planSourceOrder(run)],
       ...(run.rows.some(r => r.quote?.sourceTier === "free" && !(r.useManual && r.manual)) ? [["Yahoo Finance", `${KEYLESS_PROVIDER} data through this site's data gateway (no key; briefly cached; may be delayed; not official exchange data)`]] : []),
       ["Total current", s.totalCurrent], ["Target pool", s.pool],
       ["Total buys", run.whole ? run.whole.totalBuys : s.totalBuys], ["Total sells", run.whole ? run.whole.totalSells : s.totalSells],

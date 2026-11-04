@@ -65,7 +65,13 @@ venue.
   returns no symbol and is `not_covered` for it (for example every provider for TSX `-U`
   units on the free plans).
 - A response whose symbol, exchange or currency differs from the request is not used.
-- Recent listings carry `listedFrom`; history before it is discarded.
+- Recent listings carry `listedFrom`; history before it belongs to a different security
+  and is discarded at one shared boundary each time a series is read, on the website
+  (`cutToListing` in `assets/js/market-data/instruments.js`) and on the desktop
+  (`cut_to_listing` in `_tools/shared_py/market_data/history.py`): so it cannot reach a
+  calculation, a chart, a saved copy's use or an export. A source with only earlier prices
+  is reported as failed and the next source is asked. Prices the user imports from their
+  own CSV file are their own data and are not cut, in either version.
 
 ## 4. `YNVD.NE` and `YNVD.TO` (one Cboe Canada ETF, two spellings)
 

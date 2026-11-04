@@ -1,6 +1,10 @@
 # Portfolio Rebalancer — Changelog
 
 ## v1.4.0 — 2026-11-04 (candidate; not released)
+- After independent review: Windows now gets a time-zone database (`tzdata`), without which
+  every exchange's date silently fell back to UTC there. Exports state the source order each
+  price was requested under, which a later reorder no longer rewrites. A pause Yahoo Finance
+  asks for longer than two hours is honoured (up to 24 hours at a time), not cut short.
 - Market data now follows one ordered list of sources, the same as on the website:
   Yahoo Finance through the site's data gateway (no key; first by default) and the
   providers you add with your own key. "Sources…" shows the list: move a source with Move

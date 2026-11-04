@@ -130,11 +130,13 @@ README, "Deployment status").
 **Technical and operational safeguards** (README, "Protecting the data source"): fixed
 upstream URL and allowlisted listings; every answer checked for symbol, exchange,
 currency, unit and values, refused rather than repaired; honest User-Agent, no cookie,
-crumb or address tricks; upstream requests spaced (1 s), queued (15 s max), budgeted (20
-per minute per isolate, 40 per minute per location), coalesced and cached (10 min quotes,
-12 h history, 30 min refusals); a circuit breaker that stops all upstream requests for
-15 minutes after HTTP 429 and 30 minutes after 401/403; clients that send one request at
-a time and pause after any slow-down answer. Requests carry only a symbol and a range —
+crumb or address tricks; actual upstream starts spaced (1 s per isolate), a hard 15 s
+wait, budgeted (20 started per minute per isolate, 40 per minute per location), coalesced
+and cached (10 min quotes, 12 h history, 30 min refusals); a circuit breaker that stops all
+upstream requests for 15 minutes after HTTP 429 and 30 minutes after 401/403, or for
+Yahoo's own `Retry-After` when longer, with a stop until the owner reactivates when that
+exceeds 24 hours (code 1.2.0, effective when deployed); clients that send one request at a
+time and pause after any slow-down answer. Requests carry only a symbol and a range —
 never keys, holdings or account data.
 
 **Display.** Quotes are labelled "latest regular-session price (may be delayed)", with

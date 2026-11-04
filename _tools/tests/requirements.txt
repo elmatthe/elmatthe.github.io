@@ -7,3 +7,5 @@ pytest==9.1.1
 # The CPI parity test imports the desktop downloader (projects/CPI-Webscraper/scripts).
 requests==2.34.2
 python-dateutil==2.9.0.post0
+# The exchanges' time zones on Windows, as in the Rebalancer and Stock tools' requirements.
+tzdata==2026.6

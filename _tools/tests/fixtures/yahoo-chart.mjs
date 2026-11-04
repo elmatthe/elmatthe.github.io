@@ -19,8 +19,9 @@
 //   NOADJ       history without adjusted closes
 // `mode` (mutable): down (HTTP 503), downFor (array of symbols answered with HTTP 503),
 // limited (HTTP 429), blocked (HTTP 403), redirect (HTTP 302), huge (a body over the
-// gateway's size cap), staleDays (answers dated that many days in the past), calls
-// (array: every URL).
+// gateway's size cap), staleDays (answers dated that many days in the past), retryAfter
+// (a Retry-After header on the 429, 403 and 503 answers), alwaysRetryAfter (the same on
+// every answer, even a successful one), calls (array: every URL).
 
 const DAY = 86400000;
 
@@ -115,9 +116,10 @@ export function yahooChartResponse(url, { now = Date.now(), mode = {} } = {}) {
   const u = new URL(url);
   mode.calls?.push(url);
   if (u.origin !== "https://query1.finance.yahoo.com" || !u.pathname.startsWith("/v8/finance/chart/")) return { status: 404, body: "not the chart endpoint" };
-  if (mode.down) return { status: 503, body: "<html>Service unavailable</html>" };
-  if (mode.limited) return { status: 429, body: "Too Many Requests" };
-  if (mode.blocked) return { status: 403, body: "<html>Forbidden</html>" };
+  const wait = mode.retryAfter !== undefined && mode.retryAfter !== null ? { headers: { "retry-after": String(mode.retryAfter) } } : {};
+  if (mode.down) return { status: 503, body: "<html>Service unavailable</html>", ...wait };
+  if (mode.limited) return { status: 429, body: "Too Many Requests", ...wait };
+  if (mode.blocked) return { status: 403, body: "<html>Forbidden</html>", ...wait };
   if (mode.redirect) return { status: 302, body: "", headers: { location: "https://consent.yahoo.com/" } };
   const symbol = decodeURIComponent(u.pathname.slice("/v8/finance/chart/".length));
   if (symbol === "BADJSON") return { status: 200, body: "<html><body>Please enable JavaScript</body></html>" };
@@ -139,6 +141,7 @@ export function yahooFetch({ now = () => Date.now(), mode = {} } = {}) {
     }
     if (mode.networkError) throw new TypeError("fetch failed");
     const { status, body, headers = {} } = yahooChartResponse(String(url), { now: now(), mode });
-    return new Response(body, { status, headers: { "content-type": status === 200 && body.startsWith("{") ? "application/json" : "text/html", ...headers } });
+    const always = mode.alwaysRetryAfter ? { "retry-after": String(mode.alwaysRetryAfter) } : {};
+    return new Response(body, { status, headers: { "content-type": status === 200 && body.startsWith("{") ? "application/json" : "text/html", ...always, ...headers } });
   };
 }

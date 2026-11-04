@@ -54,6 +54,8 @@ Quotes are never presented as real time.
 | FX normalization | BoC (ECB fallback) | BoC, ≤ 7-day-old fixing, no back-fill | Equivalent principle |
 | Offline / demo | CSV import, synthetic demo | Offline CSV folder | Comparable |
 | Exports | XLSX/CSV/JSON | Excel (Prices, Returns, Settings), CSV, PNG charts | Comparable |
+| Provenance in CSVs | Core rows unchanged, then a `#provenance` section: order at the request, source, failures, skips and reasons per ticker | Settings sheet of the Excel export and logs | Web CSVs carry more; desktop states the same in Excel |
+| History from before a listing date | Removed at every read (`cutToListing`) | Removed at every read (`cut_to_listing`) | Identical — `test_listing_cutoff_identical` |
 
 ## Monte Carlo Retirement Simulator
 

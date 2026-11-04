@@ -80,6 +80,7 @@ website repository for every provider's limits and terms.
 | Window / GUI | **tkinter** | Built into Python; DPI-aware on Windows |
 | Market data | **`scripts/market_data/`** (standard library only) | Same provider rules, identity reference and notice handling as the web app |
 | Spreadsheet export | **openpyxl** | Writes the `.xlsx` trade plan |
+| Exchange dates | **tzdata** | Time zones of the exchanges; Windows has no database of its own |
 
 Everything except Python installs into a self-contained `.venv` folder inside this
 folder — nothing is installed system-wide, and you can move or delete the folder

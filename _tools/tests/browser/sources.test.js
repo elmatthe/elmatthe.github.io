@@ -22,6 +22,8 @@ const fs = require("fs");
 const os = require("os");
 const { SITE_URL, MD_GATEWAY, TEST_KEY, FH_KEY, MS_KEY, launch, mockMarketData, watchNetwork, checker } = require("./harness");
 
+const { pathToFileURL } = require("url");
+const { execFileSync } = require("child_process");
 const Q = `?mdgateway=${encodeURIComponent(MD_GATEWAY)}`;
 const RB = `${SITE_URL}/projects/portfolio-rebalancer/${Q}`;
 const SD = `${SITE_URL}/projects/stock-data-dashboard-tool/${Q}`;
@@ -250,6 +252,103 @@ const quotes = calls => calls.gateway.filter(c => /\/v1\/quote\?/.test(c.url));
     check(/^1\. Alpha Vantage; 2\. Yahoo Finance/.test(json.comparison.sourceOrder), "JSON export: the source order");
     check(/Several sources \(Alpha Vantage \(your key\), Yahoo Finance \(no key\)\)/.test(json.comparison.source), "the comparison's source says several sources");
     check(!JSON.stringify(json).includes(TEST_KEY) && !JSON.stringify(json).includes(FH_KEY), "no key in the export");
+    check(net.errors.length === 0, `no page errors (${net.errors.join("; ")})`);
+    await context.close();
+  }
+
+  /* ---------- 8. Stock CSVs: source, request-time order, failures and skips, per ticker ---------- */
+  {
+    const mode = { yahoo: { downFor: ["MSFT"] } }; // one Yahoo Finance failure for one ticker
+    const rb = await openRb(browser, mode);
+    await saveKey(rb.page, "Alpha Vantage", TEST_KEY);
+    await saveKey(rb.page, "Finnhub", FH_KEY); // on, but latest prices only: skipped for history
+    const { context, page, net } = await openSd(browser, mode, { context: rb.context, calls: rb.calls });
+    while ((await page.locator("#sddTickerList .sdd-ticker-row").count()) < 3) await page.click("#sddAddTicker");
+    for (const [i, t] of ["AAPL", "MSFT", "ZZZQ"].entries()) await page.locator("#sddTickerList input").nth(i).fill(t);
+    await page.selectOption("#sddHorizon", "3M");
+    await page.click("#sddRunCompare");
+    await page.waitForFunction(() => /Comparison complete|could not|failed/i.test(document.querySelector("#sddCompareStatus").textContent) && !document.querySelector("#sddRunCompare").disabled, null, { timeout: 120000 });
+    const finished = await page.locator("#sddCompareStatus").innerText();
+    check(/Comparison complete: 2 securities, 3M, daily prices\. 1 ticker skipped/.test(finished), `CSV run: two used, one failed (${finished})`);
+    await page.click("#sddTab-export");
+    const { parseCsv } = await import(pathToFileURL(path.resolve(__dirname, "../../../assets/js/market-data/csv.js")).href);
+    const get = async selector => {
+      const [file] = await Promise.all([page.waitForEvent("download"), page.click(selector)]);
+      return { name: file.suggestedFilename(), text: fs.readFileSync(await file.path(), "utf8") };
+    };
+    const ORDER = "1. Yahoo Finance; 2. Alpha Vantage; 3. Marketstack (off); 4. Finnhub";
+    const parsed = {};
+    for (const [kind, selector] of [["metrics", "#sddExportMetrics"], ["correlation", "#sddExportCorrelation"], ["prices", "#sddExportPrices"]]) {
+      const { name, text } = await get(selector);
+      check(new RegExp(`^stock-comparison-${kind}-.*\\.csv$`).test(name), `CSV ${kind}: file name (${name})`);
+      check(text.endsWith("\r\n") && !/(^|[^\r])\n/.test(text), `CSV ${kind}: CRLF line endings throughout`);
+      check(![TEST_KEY, FH_KEY].some(k => text.includes(k)), `CSV ${kind}: no key`);
+      const rows = parseCsv(text);
+      const firstMark = rows.findIndex(r => r[0] === "#provenance");
+      check(firstMark > 0 && rows.slice(firstMark).every(r => r[0] === "#provenance"), `CSV ${kind}: one marked section, last`);
+      const section = rows.slice(firstMark);
+      const header = section.find(r => r[1] === "Ticker");
+      check(section.some(r => r[1] === "Source order at the request (first tried first)" && r[2] === ORDER), `CSV ${kind}: the source order at the request`);
+      const by = Object.fromEntries(section.filter(r => r !== header && r.length === header.length).map(r => [r[1], Object.fromEntries(header.slice(1).map((h, i) => [h, r[i + 1]]))]));
+      check(by.AAPL?.Status === "used" && /^Yahoo Finance/.test(by.AAPL["Source used"]) && by.AAPL["Sources tried first"] === "" && /Finnhub: /.test(by.AAPL["Sources skipped"]) && by.AAPL["Source order at the request"] === ORDER, `CSV ${kind}: AAPL from the first source, Finnhub skipped`);
+      check(by.MSFT?.Status === "used" && /^Alpha Vantage/.test(by.MSFT["Source used"]) && /^Yahoo Finance: /.test(by.MSFT["Sources tried first"]) && /Finnhub: /.test(by.MSFT["Sources skipped"]) && by.MSFT["Retrieved at (UTC)"] !== "", `CSV ${kind}: MSFT after Yahoo Finance's failure, with the reason`);
+      check(by.ZZZQ?.Status === "not used" && by.ZZZQ["Source used"] === "" && /ZZZQ/.test(by.ZZZQ["Reason not used"]) && /Yahoo Finance: /.test(by.ZZZQ["Sources tried first"]), `CSV ${kind}: ZZZQ not used, with what was tried and why`);
+      const core = rows.slice(0, firstMark);
+      if (kind === "prices") check(core.slice(1).length > 40 && core.slice(1).every(r => /^\d{4}-\d{2}-\d{2}$/.test(r[0]) && Number(r[2]) > 0 && Number.isFinite(Number(r[2]))), `CSV prices: every core row has a date and a positive number (${core.length - 1} rows)`);
+      if (kind === "correlation") check(core[0].join() === "Ticker,AAPL,MSFT" && Number(core[1][1]) === 1 && Number(core[2][2]) === 1 && core.some(r => r[0] === "Shared returns"), "CSV correlation: the matrix and counts are intact");
+      if (kind === "metrics") check(core[0][0] === "Ticker" && core[0].at(-1) === "Native currency" && Number.isFinite(Number(core[1][4])), "CSV metrics: the table is intact");
+      parsed[kind] = by;
+    }
+    const json = JSON.parse((await get("#sddExportJson")).text);
+    check(json.comparison.sourceOrder === ORDER && json.comparison.sourceAudit.map(a => `${a.ticker}:${a.status}`).join() === "AAPL:used,MSFT:used,ZZZQ:not used", "JSON: the same record as the CSVs");
+    check(JSON.stringify(json.comparison.sourceAudit.find(a => a.ticker === "MSFT").triedFirst.join("; ")) === JSON.stringify(parsed.metrics.MSFT["Sources tried first"]), "JSON and CSV give the same reasons");
+    const xlsx = (await get("#sddExportXlsx"));
+    check(/^stock-comparison-.*\.xlsx$/.test(xlsx.name), "XLSX: file name");
+    try {
+      const [file] = await Promise.all([page.waitForEvent("download"), page.click("#sddExportXlsx")]);
+      const workbook = path.join(OUT, "provenance.xlsx"); // openpyxl goes by the file's extension
+      await file.saveAs(workbook);
+      const out = execFileSync(process.env.PYTHON || "python3", ["-c",
+        "import sys,openpyxl;ws=openpyxl.load_workbook(sys.argv[1])['Read Me & Sources'];cells=[str(c.value) for r in ws.iter_rows() for c in r if c.value is not None];print('Tickers not used' in cells, 'ZZZQ' in cells, sys.argv[2] in cells, any(c.startswith('Yahoo Finance: ') for c in cells))",
+        workbook, ORDER], { encoding: "utf8" }).trim();
+      check(out === "True True True True", `XLSX: tickers not used, order and reasons (${out})`);
+    } catch (error) { check(false, `XLSX validation: ${String(error.message).slice(0, 160)}`); }
+    // Reordering afterwards does not rewrite the record of what was requested.
+    await page.click("#sddTab-settings");
+    await item(page, "alphavantage", "#sddSources").locator(".ms-handle").focus();
+    await page.keyboard.press("Home");
+    await page.click("#sddTab-export");
+    const again = parseCsv((await get("#sddExportMetrics")).text).filter(r => r[0] === "#provenance");
+    check(again.some(r => r[2] === ORDER) && !again.some(r => /^1\. Alpha Vantage/.test(r[2] || "")), "after a reorder the CSV still states the order at the request");
+    check(net.errors.length === 0, `no page errors (${net.errors.join("; ")})`);
+    await context.close();
+  }
+
+  /* ---------- 9. Rebalancer export: the order at the request, kept with the prices ---------- */
+  {
+    const mode = {};
+    const { context, page, net } = await openRb(browser, mode);
+    await saveKey(page, "Finnhub", FH_KEY);
+    await holdings(page, ["MSFT,1,50,", "AAPL,1,50,"]);
+    await page.click("#rbPriceAll");
+    await idle(page);
+    await page.click("#rbRun");
+    await page.waitForSelector("#rbResults .pj-tile");
+    const csv = async () => {
+      const [file] = await Promise.all([page.waitForEvent("download"), page.click("#rbExportCsv")]);
+      return fs.readFileSync(await file.path(), "utf8");
+    };
+    const ORDER = /Source order \(first tried first\),1\. Yahoo Finance; 2\. Alpha Vantage \(off\); 3\. Marketstack \(off\); 4\. Finnhub/;
+    const before = await csv();
+    check(ORDER.test(before), "Rebalancer CSV: the source order the prices were requested under");
+    check(/Source order at the request/.test(before), "Rebalancer CSV: per holding as well");
+    await item(page, "finnhub").locator(".ms-handle").focus();
+    await page.keyboard.press("Home");
+    const plan = await page.locator("#rbRun");
+    await plan.click();
+    await page.waitForSelector("#rbResults .pj-tile");
+    const after = await csv();
+    check(ORDER.test(after) && !/Source order \(first tried first\),1\. Finnhub/.test(after), "a reorder after pricing does not rewrite which order those prices were requested under");
     check(net.errors.length === 0, `no page errors (${net.errors.join("; ")})`);
     await context.close();
   }

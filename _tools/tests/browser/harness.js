@@ -64,7 +64,7 @@ function hash(text) {
 const iso = ms => new Date(ms).toISOString().slice(0, 10);
 
 // CAD per unit, gently varying by day.
-const CAD_PER = { USD: 1.39, EUR: 1.56, JPY: 0.0089, GBP: 1.87, CNY: 0.21, CHF: 1.6, AUD: 0.98 };
+const CAD_PER = { USD: 1.39, EUR: 1.56, JPY: 0.0089, GBP: 1.87, CNY: 0.21, CHF: 1.6, AUD: 0.98, HKD: 0.18 };
 function cadPer(code, ms) {
   const base = CAD_PER[code];
   if (!base) return null;
@@ -274,7 +274,7 @@ async function mockMarketData(context, mode = {}) {
   });
   await context.route(url => {
     const u = new URL(url);
-    return u.protocol.startsWith("http") && !/^(127\.0\.0\.1|localhost)$/.test(u.hostname)
+    return u.protocol.startsWith("http") && !/^(127\.0\.0\.1|localhost)$/.test(u.hostname) && u.origin !== SITE_GATEWAY
       && !/^(www\.bankofcanada\.ca|data-api\.ecb\.europa\.eu|www\.alphavantage\.co|api\.marketstack\.com|finnhub\.io|md\.gateway\.test)$/.test(u.hostname);
   }, route => { calls.blocked.push(route.request().url()); return route.abort("blockedbyclient"); });
   await context.route(/favicon\.ico/, r => r.fulfill({ status: 204 }));
@@ -365,6 +365,17 @@ async function mockCpiSources(context, mode = {}) {
   return calls;
 }
 
+// For suites that need no market data at all: every request that leaves this computer is
+// aborted and recorded, so a page can never reach a real host while a test only counts.
+async function blockExternal(context) {
+  const blocked = [];
+  await context.route(url => {
+    const u = new URL(url);
+    return u.protocol.startsWith("http") && !/^(127\.0\.0\.1|localhost)$/.test(u.hostname);
+  }, route => { blocked.push(route.request().url()); return route.abort("blockedbyclient"); });
+  return blocked;
+}
+
 async function launch() {
   const args = (process.env.CHROMIUM_ARGS || "").split(/\s+/).filter(Boolean);
   const options = { args };
@@ -394,4 +405,4 @@ function checker() {
   return { check, done };
 }
 
-module.exports = { SITE_URL, TEST_KEY, MS_KEY, FH_KEY, CPI_KEY, CPI_GATEWAY, MD_GATEWAY, SITE_GATEWAY, GATEWAY_ROUTE, launch, mockMarketData, mockCpiSources, watchNetwork, checker, disallowedRequests };
+module.exports = { SITE_URL, TEST_KEY, MS_KEY, FH_KEY, CPI_KEY, CPI_GATEWAY, MD_GATEWAY, SITE_GATEWAY, GATEWAY_ROUTE, launch, mockMarketData, mockCpiSources, blockExternal, watchNetwork, checker, disallowedRequests };

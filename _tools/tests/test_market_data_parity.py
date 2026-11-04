@@ -45,7 +45,7 @@ TICKERS = [r["ticker"] for r in SAMPLE_PORTFOLIO["rows"]] + [
 
 
 def run_js(tool: str, cases: list) -> list:
-    result = subprocess.run(["node", str(RUNNER)], input=json.dumps({"tool": tool, "cases": cases}), capture_output=True, text=True, timeout=120, check=False)
+    result = subprocess.run(["node", str(RUNNER)], input=json.dumps({"tool": tool, "cases": cases}), capture_output=True, text=True, encoding="utf-8", timeout=120, check=False)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 
@@ -436,3 +436,52 @@ def test_valuation_gate_identical():
     cases = [{"op": "valuation", "rows": rows, "acceptStale": accept} for rows in sets for accept in (False, True)]
     for c, browser in zip(cases, run_js("rebalancer-extras", cases)):
         assert core.assess_valuation(c["rows"], c["acceptStale"]) == browser, c
+
+
+LISTING_CASES = [
+    # [listedFrom, requested start, dates offered]
+    ["2026-06-12", "2025-11-01", ["2026-06-10", "2026-06-11", "2026-06-12", "2026-06-15"]],
+    ["2026-06-12", "2026-07-01", ["2026-07-01", "2026-07-02"]],
+    ["2026-06-12", "2025-11-01", ["2026-06-10", "2026-06-11"]],
+    ["2026-06-12", "2025-11-01", []],
+    [None, "2025-11-01", ["2026-06-10", "2026-06-12"]],
+    ["soon", "2025-11-01", ["2026-06-12"]],
+]
+
+
+def test_listing_cutoff_identical():
+    """The same rule, the same rows and the same words in the browser and on the desktop."""
+    from market_data.history import cut_to_listing
+
+    expected = run_js("listing-cutoff", LISTING_CASES)
+    for case, js in zip(LISTING_CASES, expected):
+        listed, start, days = case
+        identity = {"displayTicker": "SPCX", "listedFrom": listed}
+        h = {"observations": [(d, 10.0, 9.0) for d in days], "provider": "Test source"}
+        try:
+            out = cut_to_listing(h, identity, start)
+            py = {"days": [r[0] for r in out["observations"]], "removed": (out.get("listing") or {}).get("removed"), "note": (out.get("listing") or {}).get("note")}
+        except DataError as error:
+            py = {"error": error.message, "kind": error.kind}
+        assert py == js, case
+
+
+def test_time_zones_are_available_to_the_desktop_apps():
+    """Windows has no time-zone database. Without tzdata, zoneinfo fails there and every
+    exchange date silently falls back to UTC, so both tools that use market_data pin it."""
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    from market_data.adapters import date_in
+    from market_data.freshness import missed_sessions
+
+    for tool in ("portfolio-rebalancer-tool", "Stock-Data-Dashboard-Tool"):
+        text = (ROOT / "projects" / tool / "scripts" / "requirements.txt").read_text(encoding="utf-8")
+        assert any(line.startswith("tzdata==") for line in text.splitlines()), tool
+    assert str(ZoneInfo("Asia/Tokyo")) == "Asia/Tokyo"
+    # 2026-11-03 15:00 UTC is already 2026-11-04 in Tokyo, and still 2026-11-03 in New York.
+    at = dt.datetime(2026, 11, 3, 15, 0, tzinfo=dt.timezone.utc).timestamp()
+    assert date_in(at * 1000, "Asia/Tokyo") == "2026-11-04"
+    assert date_in(at * 1000, "America/New_York") == "2026-11-03"
+    assert missed_sessions("2026-11-02", at, "Asia/Tokyo") == 1
+    assert missed_sessions("2026-11-02", at, "America/New_York") == 0

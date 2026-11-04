@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
 from market_data.service import MarketData  # noqa: E402
 from portfolio_rebalancer.export import write_csv_export, write_excel_export  # noqa: E402
-from portfolio_rebalancer.model import Row, Settings, action_lines, build_plan, rows_from_sample  # noqa: E402
+from portfolio_rebalancer.model import Row, Settings, action_lines, build_plan, plan_source_order, rows_from_sample  # noqa: E402
 from portfolio_rebalancer.sample import SAMPLE_PORTFOLIO, target_total_basis_points  # noqa: E402
 
 AV_KEY, FH_KEY = "AVKEY1234567", "FHKEY1234567890ABCDEF"
@@ -218,7 +218,9 @@ def test_exports_carry_sources_and_no_keys(tmp_path):
     rows[8].set_manual("44.21", "CAD")
     rows[10].set_manual("2850", "JPY")
     run = build_plan(rows, Settings(), fx_table(md, ["USD", "EUR", "GBP", "JPY", "CNY"]), now=NOW)
-    run["sourceOrder"] = "; ".join(f"{x['position']}. {x['name']}{'' if x['enabled'] else ' (off)'}" for x in md.sources_list())
+    run["sourceOrder"] = plan_source_order(rows)
+    md.move_source("alphavantage", 0)  # after pricing: must not rewrite the record of what was requested
+    assert plan_source_order(rows).startswith("1. Yahoo Finance; 2. Finnhub")
     write_csv_export(tmp_path / "plan.csv", run)
     text = (tmp_path / "plan.csv").read_text(encoding="utf-8")
     assert "YNVD.NE,NEOE:YNVD" in text and "Entered by you (user-supplied)" in text and "Includes 2 user-supplied price" in text

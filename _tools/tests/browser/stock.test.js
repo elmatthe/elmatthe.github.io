@@ -130,7 +130,7 @@ function sampleCsv() {
   check(fs.readFileSync(csvPath, "utf8").startsWith("Ticker,Currency,Price basis,Frequency,Total return"), "metrics CSV downloaded with basis and frequency");
   try {
     const out = execFileSync(process.env.PYTHON || "python3", ["-c",
-      "import sys,openpyxl,warnings;warnings.simplefilter('error');wb=openpyxl.load_workbook(sys.argv[1]);ws=wb['Read Me & Sources'];print('|'.join(wb.sheetnames));print(' '.join(str(c.value) for r in ws.iter_rows() for c in r if c.value))", xlsxPath]).toString().trim().split("\n");
+      "import sys,openpyxl,warnings;warnings.simplefilter('error');wb=openpyxl.load_workbook(sys.argv[1]);ws=wb['Read Me & Sources'];print('|'.join(wb.sheetnames));print(' '.join(str(c.value) for r in ws.iter_rows() for c in r if c.value))", xlsxPath]).toString().trim().split(/\r?\n/);
     check(out[0] === "Read Me & Sources|Executive Summary|Model & Calculations|Portfolio Risk|Raw Data Ingestion", `XLSX opens cleanly with five sheets (${out[0]})`);
     check(/Alpha Vantage, fetched with the user's own API key/.test(out[1]) && /weekly log returns/.test(out[1]) && /52 periods per year/.test(out[1]), "workbook read-me states source, frequency and annualization");
     check(/Data note/.test(out[1]) && /windows up to about 4 months use daily closes as traded/.test(out[1]) && /Native currency/.test(out[1]) && /Converted from CAD/.test(out[1]), "workbook read-me states the live-data basis note and each ticker's currency conversion");

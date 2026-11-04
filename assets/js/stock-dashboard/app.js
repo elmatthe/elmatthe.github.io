@@ -22,7 +22,7 @@ import { buildFxAligner, normalizeSeries } from "../market-data/fx-align.js";
 import { parsePriceCsv } from "../market-data/price-import.js";
 import * as A from "./analytics.js";
 import { DEMO_SECURITIES, demoSeries, demoFxRates } from "./demo.js";
-import { buildWorkbookSheets, basisSummary, currencySummary, LIVE_DATA_NOTE, FREE_DATA_NOTE, FREE_SOURCE_LABEL, AV_SOURCE_LABEL, sourceOf } from "./export.js";
+import { buildWorkbookSheets, buildCsvRows, basisSummary, currencySummary, BASIS_LABEL, LIVE_DATA_NOTE, FREE_DATA_NOTE, FREE_SOURCE_LABEL, AV_SOURCE_LABEL } from "./export.js";
 import { buildXlsx, toCsv, downloadBlob, timestampSlug } from "../shared/export-files.js";
 
 const app = document.getElementById("sdd-app");
@@ -120,7 +120,6 @@ function init() {
   const hideNotice = node => { node.hidden = true; node.replaceChildren(); };
   const describeError = error => (error instanceof DataError || error instanceof SymbolError || error?.kind)
     ? error.message : "Unexpected error. Please try again.";
-  const BASIS_LABEL = { adjusted_close: "Adjusted close (dividends included)", close: "Close (price only)", synthetic: "Synthetic" };
 
   /* ================= theme ================= */
   const THEME_KEY = "sdd.theme";
@@ -448,6 +447,8 @@ function init() {
     // Every series of one run has the same frequency: the one the first usable history
     // source gives for this window. A source that would give another is skipped.
     const runFrequency = source === "market" ? md.expectedHistoryFrequency(range) : null;
+    // The order as it stands now: a later reorder must not rewrite this run's record.
+    const requestOrder = source === "market" ? md.sources.describeOrder() : null;
 
     const seriesByTicker = {};
     const provenance = [];
@@ -485,12 +486,13 @@ function init() {
               providerSymbol: prov.symbol || null,
               triedFirst: (prov.attempts || []).map(a => `${a.provider}: ${a.message}`),
               skipped: describeSkipped(prov.skipped || []),
+              sourceOrder: prov.sourceOrder || requestOrder,
             };
           }
           const chosen = selectBasis(history, basis);
           seriesByTicker[symbol] = {
             ticker: symbol, currency: history.currency, observations: chosen.observations, priceBasis: chosen.priceBasis,
-            frequency: history.frequency || "daily", basisWarning: chosen.warning,
+            frequency: history.frequency || "daily", basisWarning: chosen.warning, listingNote: history.listing?.note || null,
             identity: { name: history.name, instrumentType: history.instrumentType, exchange: history.exchange, unitScale: history.unitScale, rawCurrency: history.rawCurrency },
             adjustmentNote: chosen.priceBasis === "adjusted_close" ? history.adjustment?.adjClose : history.adjustment?.close,
             currencyVerified: history.currencyVerified !== false,
@@ -520,6 +522,7 @@ function init() {
         const prepared = A.prepareHistory(series, horizon, range, now);
         warnings.push(...prepared.warnings);
         if (series.basisWarning) warnings.push(series.basisWarning);
+        if (series.listingNote) warnings.push(series.listingNote);
         if (series.identity?.unitScale && series.identity.unitScale !== 1) warnings.push(`${symbol}: prices quoted in ${series.identity.rawCurrency} (minor units) were converted to ${series.currency}.`);
         if (!series.currencyVerified) warnings.push(`${symbol}: the provider did not confirm the listing currency; it is treated as unknown.`);
         if (prepared.observations.length >= 2) histories[symbol] = prepared;
@@ -595,11 +598,25 @@ function init() {
       if (source === "market" && usedSources.length > 1) warnings.push(`This comparison combines sources: ${usedSources.map(src => `${src} for ${usedProv.filter(p => p.source === src).map(p => p.ticker).join(", ")}`).join("; ")}. Their prices are calculated differently, so compare like with like where it matters.`);
       for (const p of usedProv) if (p.triedFirst?.length) warnings.push(`${p.ticker}: ${p.source} was used because ${p.triedFirst.join("; ")}.`);
       const allWarnings = [...new Set([...result.warnings, ...warnings])];
+      // One record per ticker requested, used or not, for every export.
+      const sourceAudit = symbols.map(symbol => {
+        const p = provenance.find(x => x.ticker === symbol);
+        const used = usable.includes(symbol);
+        const failed = failures.find(f => f.symbol === symbol);
+        return {
+          ticker: symbol, status: used ? "used" : "not used", source: p ? (p.via ? `${p.source} (${p.via})` : p.source) : "",
+          sourceOrder: p?.sourceOrder || failed?.error?.sourceOrder || requestOrder,
+          triedFirst: p?.triedFirst || (failed?.error?.attempts || []).map(a => `${a.provider}: ${a.message}`),
+          skipped: p?.skipped || describeSkipped(failed?.error?.skipped || []),
+          retrievedAt: p?.retrievedAt || "", cached: p ? (p.stale ? "saved copy (refresh failed)" : p.cached ? (p.cacheWhere === "gateway" ? "yes (data gateway copy)" : "yes") : "no") : "",
+          reason: used ? "" : failed?.message || "not used in this comparison",
+        };
+      });
       state.comparison = {
         tickers: usable, horizon, riskFree, normalizedTo, excludedForCurrency, fxSources, basis, frequency: result.frequency, periodsPerYear: result.periodsPerYear,
         mixedCurrencies: result.mixedCurrencies, mixedBases: result.mixedBases,
         liveNote: source === "market" ? [usedProv.some(p => p.sourceId === KEYLESS_ID) ? FREE_DATA_NOTE : null, usedProv.some(p => p.sourceId === "alphavantage") ? LIVE_DATA_NOTE : null].filter(Boolean).join(" ") || null : null,
-        sourceOrder: source === "market" ? md.sources.list().map(x => `${x.position}. ${x.name}${x.enabled ? "" : " (off)"}`).join("; ") : null,
+        sourceOrder: requestOrder, sourceAudit,
         requestedStart: A.isoDate(range.start), requestedEnd: A.isoDate(range.end),
         completedAt: new Date().toISOString(), source: demo ? "Synthetic demo" : source === "csv" ? "Your CSV file" : usedSources.length === 1 ? usedSources[0] : `Several sources (${usedSources.join(", ")})`,
         series: usable.map(s => histories[s]), metrics: result.metrics, matrix: result.matrix, counts: result.counts,
@@ -902,7 +919,7 @@ function init() {
         source = {
           source: free ? FREE_SOURCE_LABEL : AV_SOURCE_LABEL, via: free ? KEYLESS_VIA : snap.provenance.via, retrievedAt: snap.quoteProvenance.retrievedAt,
           cached: snap.quoteProvenance.cached && snap.provenance.cached, stale: Boolean(snap.provenance.stale || snap.quoteProvenance.stale), delayed: free,
-          triedFirst: snap.attempts.map(a => `${a.provider}: ${a.message}`), skipped: describeSkipped(snap.skipped),
+          triedFirst: snap.attempts.map(a => `${a.provider}: ${a.message}`), skipped: describeSkipped(snap.skipped), listingNote: history.listing?.note || null,
         };
       }
       state.snapshot = { series, provenance: source };
@@ -953,7 +970,7 @@ function init() {
       ["1Y volatility", metrics ? pct(metrics.annualizedVolatility) : "—"],
       ["1Y max drawdown", metrics ? pct(metrics.maxDrawdown) : "—"],
     ]);
-    $("sddSnapshotSource").textContent = `${provenance.source}${provenance.via ? ` (${provenance.via})` : ""}${provenance.retrievedAt ? ` · retrieved ${localTime(provenance.retrievedAt)}` : ""}${provenance.cached ? " (cached)" : ""}${provenance.stale ? " · saved copy; the latest refresh failed" : ""}${provenance.delayed ? " · may be delayed" : ""}.${provenance.triedFirst?.length ? ` Tried first: ${provenance.triedFirst.join("; ")}.` : ""}${provenance.skipped?.length ? ` Skipped: ${provenance.skipped.join("; ")}.` : ""}`;
+    $("sddSnapshotSource").textContent = `${provenance.source}${provenance.via ? ` (${provenance.via})` : ""}${provenance.retrievedAt ? ` · retrieved ${localTime(provenance.retrievedAt)}` : ""}${provenance.cached ? " (cached)" : ""}${provenance.stale ? " · saved copy; the latest refresh failed" : ""}${provenance.delayed ? " · may be delayed" : ""}.${provenance.triedFirst?.length ? ` Tried first: ${provenance.triedFirst.join("; ")}.` : ""}${provenance.skipped?.length ? ` Skipped: ${provenance.skipped.join("; ")}.` : ""}${provenance.listingNote ? ` ${provenance.listingNote}` : ""}`;
     const points = series.observations;
     makeChart("snapshot", "sddChartSnapshot", lineConfig(points.map(p => A.isoDate(p.date)), [{
       label: series.ticker, data: points.map(p => p.price), borderColor: PALETTE[0], backgroundColor: PALETTE[0], pointRadius: 0, borderWidth: 2, tension: 0.1,
@@ -983,18 +1000,8 @@ function init() {
   function csvExport(kind) {
     const c = state.comparison;
     if (!c) return;
-    let rows;
-    if (kind === "metrics") {
-      rows = [["Ticker", "Currency", "Price basis", "Frequency", "Total return", "Annualized return", "Annualized volatility", "Sharpe ratio", "Max drawdown", "Return observations", "Actual start", "Actual end", "Source", "Native currency"],
-        ...c.metrics.map(m => [m.ticker, m.currency || "unknown", BASIS_LABEL[m.priceBasis] || "", m.frequency, m.totalReturn, m.annualizedReturn, m.annualizedVolatility, m.sharpe, m.maxDrawdown, m.returnObservations, m.actualStart, m.actualEnd, sourceOf(c, m.ticker), m.nativeCurrency || "unknown"]),
-        [], ["Price basis", basisSummary(c)], ["Currency", currencySummary(c)], ...(c.liveNote ? [["Note", c.liveNote]] : [])];
-    } else if (kind === "correlation") {
-      rows = [["Ticker", ...c.tickers], ...c.tickers.map(l => [l, ...c.tickers.map(r => c.matrix[l][r])]), [], ["Shared returns", ...c.tickers], ...c.tickers.map(l => [l, ...c.tickers.map(r => c.counts[l][r])])];
-    } else {
-      rows = [["Date", "Ticker", "Price", "Price basis", "Currency", "Source", "Native currency"], ...c.series.flatMap(s => { const src = sourceOf(c, s.ticker); return s.observations.map(o => [A.isoDate(o.date), s.ticker, o.price, BASIS_LABEL[s.priceBasis] || "", s.currency || "unknown", src, s.nativeCurrency || s.currency || "unknown"]); })];
-    }
     const name = `stock-comparison-${kind}-${timestampSlug()}.csv`;
-    downloadBlob(new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" }), name);
+    downloadBlob(new Blob([toCsv(buildCsvRows(kind, c))], { type: "text/csv;charset=utf-8" }), name);
     exported(name);
   }
   $("sddExportMetrics").addEventListener("click", () => csvExport("metrics"));

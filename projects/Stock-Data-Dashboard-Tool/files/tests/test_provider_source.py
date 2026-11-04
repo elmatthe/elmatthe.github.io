@@ -23,7 +23,7 @@ def gateway_history(q):
     """A minimal stand-in for the gateway's history contract (the real Worker is tested in
     _tools/tests/test_desktop_gateway.py)."""
     sym = q["symbol"]
-    listing = {"AAPL": ("US", "USD", 1), "VOD.L": ("XLON", "GBp", 0.01)}.get(sym)
+    listing = {"AAPL": ("US", "USD", 1), "SPCX": ("US", "USD", 1), "VOD.L": ("XLON", "GBp", 0.01)}.get(sym)
     if not listing:
         return 404, json.dumps({"schema": "md-gateway.error.v1", "error": {"code": "symbol_not_found", "message": "x", "retryable": False, "definitive": True}})
     mic, raw, scale = listing
@@ -135,3 +135,21 @@ def test_yahoo_first_then_fallback_and_the_desktop_frequency_rule():
     assert weekly.tried == ["Yahoo Finance: has no data for this listing", "Alpha Vantage: has no data for this listing"] and weekly.source == "Marketstack"
     with pytest.raises(DataSourceError, match="market indexes are not available"):
         source(md).fetch_prices("^GSPC", "2026-01-01", "2026-10-30", "Close", "Daily")
+
+
+def test_reused_ticker_history_excludes_the_older_security_at_every_frequency(monkeypatch):
+    """SPCX reused an older security's ticker. Even with no bar on the listing date itself,
+    no price of the older security survives into daily or weekly series."""
+    days = DAYS[DAYS != pd.Timestamp("2026-06-12")]
+    monkeypatch.setitem(globals(), "DAYS", days)
+    calls = []
+    src = source(market(calls, first="yahoo", gateway_url=GATEWAY))
+    daily = src.fetch_prices("SPCX", "2026-01-05", "2026-10-30", "Adjusted Close", "Daily")
+    assert daily.prices.index.min() >= pd.Timestamp("2026-06-12")
+    assert any("listed only since 2026-06-12" in w for w in daily.warnings)
+    weekly = src.fetch_prices("SPCX", "2026-01-05", "2026-10-30", "Adjusted Close", "Weekly")
+    old_prices = {198.0 + i for i, d in enumerate(days) if d < pd.Timestamp("2026-06-12")}
+    assert not (set(weekly.prices["Adj Close"]) & old_prices), "no price of the earlier security survives resampling"
+    assert weekly.prices.index.min() >= pd.Timestamp("2026-06-12")
+    # Another listing is untouched.
+    assert src.fetch_prices("AAPL", "2026-01-05", "2026-10-30", "Adjusted Close", "Daily").prices.index.min() == days[0]

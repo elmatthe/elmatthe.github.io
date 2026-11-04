@@ -179,6 +179,17 @@ class Settings:
     accept_stale: bool = False
 
 
+def plan_source_order(rows: list[Row]) -> str:
+    """The order each price in a plan was really requested under, kept with the price: a later
+    reorder of the list never rewrites it. Different only if the list changed between runs."""
+    orders: list[str] = []
+    for row in rows:
+        order = (row.quote or {}).get("sourceOrder")
+        if order and not row.manual and row.status == "priced" and order not in orders:
+            orders.append(order)
+    return " | then ".join(orders) or "not applicable (no price in this plan came from your source list)"
+
+
 def build_plan(rows: list[Row], settings: Settings, fx: dict[str, dict], now: float | None = None) -> dict:
     """Readiness, and the plan when ready. fx: {CODE: {"cadPer", "kind", "label"}} with CAD = 1.
 

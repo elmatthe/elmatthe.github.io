@@ -4,7 +4,7 @@
 // the synthetic fixtures in ../fixtures/yahoo-chart.mjs, so nothing leaves this process.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createGateway, sourceState, parseOrigins, LIMITS, CACHE_TTL_SECONDS, COOLDOWN_SECONDS, OWNER_ATTESTATION_VALUE } from "../../../_services/market-data-gateway/src/gateway.js";
+import { createGateway, sourceState, parseOrigins, LIMITS, CACHE_TTL_SECONDS, COOLDOWN_SECONDS, MAX_COOLDOWN_SECONDS, OWNER_ATTESTATION_VALUE } from "../../../_services/market-data-gateway/src/gateway.js";
 import { VENUES, parseSymbol } from "../../../_services/market-data-gateway/src/venues.js";
 import { chartUrl, HISTORY_RANGES } from "../../../_services/market-data-gateway/src/yahoo-chart.js";
 import { yahooFetch } from "../fixtures/yahoo-chart.mjs";
@@ -69,7 +69,8 @@ test("off by default: the source runs only with KEYLESS_SOURCE and the exact own
 
 test("wrangler.toml: fresh top-level settings are off; only [env.production] carries the owner's activation", async () => {
   const { readFile } = await import("node:fs/promises");
-  const toml = await readFile(new URL("../../../_services/market-data-gateway/wrangler.toml", import.meta.url), "utf8");
+  // A Windows checkout may hold this file with CRLF line endings.
+  const toml = (await readFile(new URL("../../../_services/market-data-gateway/wrangler.toml", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
   const split = toml.indexOf("\n[env.production]\n");
   assert.ok(split > 0);
   const top = toml.slice(0, split);
@@ -523,4 +524,462 @@ test("no credentials or holdings: the upstream request carries only the symbol; 
   await get(quote("AAPL"), { headers: { Authorization: "Bearer SECRETKEY123", "X-Api-Key": "SECRETKEY123" } });
   assert.equal(calls.length, 1);
   assert.ok(!JSON.stringify(calls).includes("SECRETKEY123"));
+});
+
+/* ---------------- B2: actual upstream starts, hard queue expiry, cancellation ---------------- */
+// A virtual clock: a timer fires only when the test moves time past it, in time order.
+function virtualClock(start = NOW) {
+  let t = start;
+  const timers = [];
+  const turn = () => new Promise(resolve => setTimeout(resolve, 1));
+  const clock = {
+    now: () => t,
+    pending: () => timers.length,
+    sleep: ms => new Promise(resolve => { timers.push({ at: t + Math.max(0, ms), resolve }); }),
+    async advance(ms) {
+      const target = t + ms;
+      for (;;) {
+        await turn();
+        timers.sort((a, b) => a.at - b.at);
+        if (!timers.length || timers[0].at > target) break;
+        const next = timers.shift();
+        t = Math.max(t, next.at);
+        next.resolve();
+      }
+      t = target;
+      await turn();
+    },
+  };
+  return clock;
+}
+// Waits (in real time, briefly) for something the gateway does asynchronously.
+async function until(condition, label) {
+  const giveUp = Date.now() + 3000;
+  while (Date.now() < giveUp) {
+    if (condition()) return;
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+  assert.ok(condition(), `timed out waiting for: ${label}`);
+}
+// A gateway whose upstream answers only when the test releases each request.
+function heldGateway({ limits = {}, env = ON, cache = null, ignoreAbort = false } = {}) {
+  const clock = virtualClock();
+  const held = [];
+  const starts = [];
+  let inFlight = 0;
+  let peak = 0;
+  const answer = yahooFetch({ now: clock.now });
+  const fetchImpl = async (url, init) => {
+    const symbol = decodeURIComponent(new URL(String(url)).pathname.split("/").pop());
+    starts.push({ at: clock.now() - NOW, symbol });
+    inFlight += 1;
+    peak = Math.max(peak, inFlight);
+    try {
+      return await new Promise((resolve, reject) => {
+        held.push({ symbol, resolve, reject, ok: () => resolve(answer(url, init)), status: (status, headers = {}) => resolve(new Response("x", { status, headers })) });
+        if (!ignoreAbort) init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
+      });
+    } finally { inFlight -= 1; }
+  };
+  const gw = createGateway({ fetchImpl, now: clock.now, sleep: clock.sleep, log: () => {}, cache, limits: { upstreamTimeoutMs: 600000, ...limits } });
+  let client = 0;
+  const ask = (symbol, { signal, ctx } = {}) => {
+    client += 1;
+    return gw.handle(new Request(`${BASE}${quote(symbol)}`, { signal, headers: { Origin: ORIGIN, "CF-Connecting-IP": `10.50.0.${client}` } }), env, ctx);
+  };
+  return { clock, held, starts, ask, gw, peak: () => peak };
+}
+const gaps = starts => starts.slice(1).map((s, i) => s.at - starts[i].at);
+
+test("B2: requests released together never start together: actual starts stay 1 s apart (was [0, 1000, 7000, 7000])", async () => {
+  const { clock, held, starts, ask, peak } = heldGateway();
+  const answers = ["AAPL", "MSFT", "SPY", "VST"].map(s => ask(s));
+  await until(() => starts.length === 1, "first start");
+  assert.equal(starts[0].at, 0);
+  await clock.advance(1000);
+  await until(() => starts.length === 2, "second start");
+  assert.equal(starts[1].at, 1000);
+  await clock.advance(6000); // t = 7000: two in flight, two waiting past their reserved turns
+  assert.equal(starts.length, 2, "nothing starts while both places are taken");
+  held.splice(0).forEach(h => h.ok()); // both places free up at the same instant
+  await Promise.all(answers.slice(0, 2));
+  await clock.advance(LIMITS.upstreamQueuePollMs);
+  assert.ok(starts.length <= 3, `at most one request may start at that moment; starts ${JSON.stringify(starts)}`);
+  await clock.advance(LIMITS.upstreamMinSpacingMs + LIMITS.upstreamQueuePollMs);
+  await until(() => starts.length === 4, "all four started");
+  assert.ok(starts[2].at >= 7000, JSON.stringify(starts));
+  assert.ok(starts[2].at <= 7000 + LIMITS.upstreamQueuePollMs, `prompt after capacity frees up: ${JSON.stringify(starts)}`);
+  assert.ok(gaps(starts).every(g => g >= LIMITS.upstreamMinSpacingMs), `gaps ${gaps(starts).join(",")}`);
+  assert.deepEqual(starts.map(s => s.symbol), ["AAPL", "MSFT", "SPY", "VST"], "first come, first served");
+  assert.ok(peak() <= LIMITS.upstreamInFlight, `at most ${LIMITS.upstreamInFlight} in flight, saw ${peak()}`);
+  held.splice(0).forEach(h => h.ok());
+  assert.ok((await Promise.all(answers)).every(r => r.status === 200));
+});
+
+test("B2: many staggered completions keep spacing, the in-flight limit and order", async () => {
+  const { clock, held, starts, ask, peak } = heldGateway();
+  const symbols = ["AAPL", "MSFT", "SPY", "VST", "SAP.DE", "VOD.L", "7203.T", "VEQT.TO"];
+  const answers = symbols.map(s => ask(s));
+  await until(() => starts.length === 1, "first start");
+  for (let round = 0; round < 40 && starts.length < symbols.length; round += 1) {
+    await clock.advance(700);
+    held.splice(0, round % 3 === 0 ? 2 : 1).forEach(h => h.ok()); // sometimes two free up together
+  }
+  await until(() => starts.length === symbols.length, "all started");
+  held.splice(0).forEach(h => h.ok());
+  await clock.advance(10);
+  assert.ok(gaps(starts).every(g => g >= LIMITS.upstreamMinSpacingMs), `gaps ${gaps(starts).join(",")}`);
+  assert.deepEqual(starts.map(s => s.symbol), symbols);
+  assert.ok(peak() <= LIMITS.upstreamInFlight);
+  assert.ok((await Promise.all(answers)).every(r => r.status === 200));
+});
+
+test("B2: a request waits at most 15 s for capacity, then is refused and never sent", async () => {
+  const { clock, held, starts, ask } = heldGateway();
+  const first = [ask("AAPL"), ask("MSFT")];
+  await until(() => starts.length === 1, "first start");
+  await clock.advance(1000);
+  await until(() => starts.length === 2, "second start");
+  let settled = null;
+  const queued = ask("SPY").then(r => { settled = r; return r; });
+  await until(() => clock.pending() > 0, "the third request is waiting");
+  await clock.advance(LIMITS.upstreamQueueMaxWaitMs - 1);
+  assert.equal(settled, null, "still within its 15 s");
+  await clock.advance(2);
+  await until(() => settled !== null, "the wait to end at 15 s");
+  assert.equal(settled.status, 429);
+  const body = JSON.parse(await settled.text());
+  assert.equal(body.error.code, "throttled");
+  assert.ok(Number(settled.headers.get("retry-after")) > 0);
+  assert.equal(starts.length, 2, "the refused request reached no one");
+  await queued;
+  held.splice(0).forEach(h => h.ok());
+  assert.ok((await Promise.all(first)).every(r => r.status === 200));
+  await clock.advance(LIMITS.upstreamMinSpacingMs);
+  const later = ask("VST");
+  await until(() => starts.length === 3, "capacity is usable again after an expiry");
+  held.splice(0).forEach(h => h.ok());
+  assert.equal((await later).status, 200);
+});
+
+test("B2: failed upstream requests give their place back", async () => {
+  const { clock, held, starts, ask } = heldGateway({ limits: { upstreamInFlight: 1, upstreamMinSpacingMs: 100 } });
+  const a = ask("AAPL");
+  const b = ask("MSFT");
+  await until(() => starts.length === 1, "first start");
+  held.shift().reject(new TypeError("fetch failed"));
+  assert.equal((await a).status, 502);
+  await clock.advance(500);
+  await until(() => starts.length === 2, "the next request starts after a failure");
+  held.shift().ok();
+  assert.equal((await b).status, 200);
+});
+
+test("B2: a place held by a request that can never finish (its context ended) is reclaimed", async () => {
+  const { clock, starts, ask, held } = heldGateway({ limits: { upstreamInFlight: 1, upstreamMinSpacingMs: 100, upstreamTimeoutMs: 1000 }, ignoreAbort: true });
+  ask("AAPL").catch(() => {}); // never answered
+  await until(() => starts.length === 1, "first start");
+  held.shift(); // nothing will ever settle this request, and it ignores its abort
+  assert.equal(clock.pending(), 0);
+  await clock.advance(LIMITS.upstreamQueueMaxWaitMs - 1000);
+  const next = ask("MSFT");
+  await until(() => starts.length === 2, "the lost place to be reclaimed");
+  held.shift().ok();
+  assert.equal((await next).status, 200);
+});
+
+test("B2: a client that goes away while queued leaves the queue at once; no upstream request is sent for it", async () => {
+  const { clock, held, starts, ask } = heldGateway();
+  const first = [ask("AAPL"), ask("MSFT")];
+  await until(() => starts.length === 1, "first start");
+  await clock.advance(1000);
+  await until(() => starts.length === 2, "second start");
+  const gone = new AbortController();
+  let settled = null;
+  ask("SPY", { signal: gone.signal }).then(r => { settled = r; });
+  const stays = ask("VST");
+  await until(() => clock.pending() >= 2, "both are waiting");
+  gone.abort();
+  await until(() => settled !== null, "the cancelled request to end");
+  assert.equal(settled.status, 499);
+  assert.equal(JSON.parse(await settled.text()).error.code, "cancelled");
+  held.splice(0).forEach(h => h.ok());
+  await clock.advance(LIMITS.upstreamMinSpacingMs + LIMITS.upstreamQueuePollMs);
+  await until(() => starts.length === 3, "the next in line starts");
+  assert.deepEqual(starts.map(s => s.symbol), ["AAPL", "MSFT", "VST"], "the cancelled request reached no one");
+  held.splice(0).forEach(h => h.ok());
+  assert.equal((await stays).status, 200);
+  await Promise.all(first);
+});
+
+test("B2: shared (coalesced) work is cancelled only when every client has gone; an in-flight request is aborted without counting as an outage", async () => {
+  const { clock, held, starts, ask, gw } = heldGateway();
+  const blockers = [ask("AAPL"), ask("MSFT")];
+  await until(() => starts.length === 1, "first start");
+  await clock.advance(1000);
+  await until(() => starts.length === 2, "second start");
+  const a = new AbortController();
+  const b = new AbortController();
+  let aDone = null;
+  ask("SPY", { signal: a.signal }).then(r => { aDone = r; });
+  const stays = ask("SPY", { signal: b.signal });
+  await until(() => clock.pending() > 0, "SPY is waiting");
+  a.abort();
+  await until(() => aDone !== null, "the first client to end");
+  held.splice(0).forEach(h => h.ok());
+  await clock.advance(LIMITS.upstreamMinSpacingMs + LIMITS.upstreamQueuePollMs);
+  await until(() => starts.length === 3, "SPY still starts for the client that stayed");
+  held.shift().ok();
+  assert.equal((await stays).status, 200);
+  await Promise.all(blockers);
+
+  // Everyone leaves an in-flight request: it is aborted and the source is not blamed.
+  await clock.advance(LIMITS.upstreamMinSpacingMs);
+  for (let i = 0; i < 4; i += 1) {
+    const c = new AbortController();
+    const r = ask(["VST", "SAP.DE", "VOD.L", "7203.T"][i], { signal: c.signal });
+    await clock.advance(LIMITS.upstreamMinSpacingMs + LIMITS.upstreamQueuePollMs);
+    await until(() => starts.length === 4 + i, "in-flight");
+    c.abort();
+    assert.equal((await r).status, 499);
+  }
+  const h = await gw.handle(new Request(`${BASE}/v1/health`, { headers: { Origin: ORIGIN } }), ON);
+  assert.equal((await h.json()).upstream.state, "ok", "client cancellations are not upstream failures");
+});
+
+test("B2: a cooldown that starts while requests are queued stops them; none of them is sent", async () => {
+  const { clock, held, starts, ask } = heldGateway();
+  const answers = ["AAPL", "MSFT", "SPY", "VST"].map(s => ask(s));
+  await until(() => starts.length === 1, "first start");
+  held.shift().status(429);
+  await clock.advance(LIMITS.upstreamMinSpacingMs + LIMITS.upstreamQueuePollMs);
+  const all = await Promise.all(answers);
+  assert.equal(starts.length, 1, "nothing more reached the source");
+  assert.ok(all.every(r => r.status === 429), JSON.stringify(all.map(r => r.status)));
+  for (const r of all) assert.ok(Number(r.headers.get("retry-after")) > 0);
+});
+
+test("B2: the upstream budget counts requests actually started, so a cancelled wait does not use it up", async () => {
+  const { clock, held, starts, ask } = heldGateway({ limits: { upstreamPerMinute: 3 } });
+  const blockers = [ask("AAPL"), ask("MSFT")];
+  await until(() => starts.length === 1, "first start");
+  await clock.advance(1000);
+  await until(() => starts.length === 2, "second start");
+  const gone = new AbortController();
+  const cancelled = ask("SPY", { signal: gone.signal });
+  await until(() => clock.pending() > 0, "waiting");
+  gone.abort();
+  assert.equal((await cancelled).status, 499);
+  held.splice(0).forEach(h => h.ok());
+  await Promise.all(blockers);
+  await clock.advance(LIMITS.upstreamMinSpacingMs);
+  const third = ask("VST");
+  await until(() => starts.length === 3, "the third budgeted request");
+  held.shift().ok();
+  assert.equal((await third).status, 200, "the cancelled request did not use the budget");
+  await clock.advance(LIMITS.upstreamMinSpacingMs);
+  const fourth = await ask("SAP.DE");
+  assert.equal(fourth.status, 429, "the budget still stops the fourth start");
+  assert.equal(starts.length, 3);
+});
+
+test("B2: wrangler.toml turns on the request signal, so a client leaving really cancels its queued request", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const toml = (await readFile(new URL("../../../_services/market-data-gateway/wrangler.toml", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
+  assert.match(toml.split("\n[env.production]\n")[0], /^compatibility_flags = \["enable_request_signal"\]$/m);
+});
+
+/* ---------------- B3: the data source's own Retry-After ---------------- */
+function retryAfterSetup(extra = {}) {
+  const mode = {};
+  const s = setup({ mode, ...extra });
+  return { ...s, mode };
+}
+const RA = (r, seconds) => {
+  assert.equal(r.headers["retry-after"], String(seconds));
+  assert.equal(r.body.error.retryAfterSeconds, seconds);
+};
+
+test("B3: 429 with Retry-After 3600 is honoured for the full hour, not 15 minutes (was a new upstream call at 901 s)", async () => {
+  const { get, calls, advance, mode } = retryAfterSetup();
+  mode.limited = true;
+  mode.retryAfter = "3600";
+  const first = await get(quote("AAPL"));
+  assert.equal(first.status, 429);
+  assert.equal(first.body.error.code, "upstream_rate_limited");
+  RA(first, 3600);
+  mode.limited = false;
+  mode.retryAfter = null;
+  const sent = calls.length;
+  advance(901000);
+  const at901 = await get(quote("MSFT"), { ip: "b" });
+  assert.equal(at901.body.error.code, "upstream_rate_limited");
+  RA(at901, 3600 - 901);
+  assert.equal(calls.length, sent, "no upstream request at 901 s");
+  const h = await get("/v1/health", { ip: "c" });
+  assert.deepEqual(h.body.upstream, { state: "cooling_down", code: "upstream_rate_limited", retryAfterSeconds: 3600 - 901 });
+  advance((3600 - 901) * 1000 - 1);
+  RA(await get(quote("MSFT"), { ip: "d" }), 1);
+  assert.equal(calls.length, sent, "still nothing 1 ms before the deadline");
+  advance(1);
+  assert.equal((await get(quote("MSFT"), { ip: "e" })).status, 200, "resumes exactly at the deadline");
+  assert.equal(calls.length, sent + 1);
+});
+
+test("B3: 403, the HTTP-date form, and a 5xx carrying Retry-After", async () => {
+  const blocked = retryAfterSetup();
+  blocked.mode.blocked = true;
+  blocked.mode.retryAfter = "7200";
+  RA(await blocked.get(quote("AAPL")), 7200);
+  blocked.mode.blocked = false;
+  blocked.advance(1801000);
+  assert.equal((await blocked.get(quote("AAPL"), { ip: "b" })).body.error.code, "upstream_blocked", "beyond the 30-minute minimum");
+  assert.equal(blocked.calls.length, 1);
+
+  const dated = retryAfterSetup();
+  dated.mode.limited = true;
+  dated.mode.retryAfter = new Date(NOW + 5400000).toUTCString();
+  RA(await dated.get(quote("AAPL")), 5400);
+  dated.mode.limited = false;
+  dated.advance(5399000);
+  RA(await dated.get(quote("MSFT"), { ip: "b" }), 1);
+  dated.advance(1000);
+  assert.equal((await dated.get(quote("MSFT"), { ip: "c" })).status, 200);
+
+  // One 503 that names its own wait is honoured although three failures are not reached.
+  const down = retryAfterSetup();
+  down.mode.down = true;
+  down.mode.retryAfter = "300";
+  RA(await down.get(quote("AAPL")), 300);
+  down.mode.down = false;
+  down.advance(299000);
+  assert.equal((await down.get(quote("MSFT"), { ip: "b" })).body.error.code, "upstream_unavailable");
+  assert.equal(down.calls.length, 1);
+  down.advance(1000);
+  assert.equal((await down.get(quote("MSFT"), { ip: "c" })).status, 200);
+});
+
+test("B3: an invalid, negative, past or short Retry-After never shortens the minimum cooldown", async () => {
+  const invalid = ["soon", "-5", "3600.5", "1e5", "+60", "", "12 34", "Tue, 99 Foo 2026 00:00:00 GMT", "Tue, 31 Feb 2026 00:00:00 GMT", "2026-11-03T16:00:00Z", new Date(NOW - 60000).toUTCString(), "0", "60"];
+  for (const value of invalid) {
+    const { get, calls, advance, mode } = retryAfterSetup();
+    mode.limited = true;
+    mode.retryAfter = value;
+    RA(await get(quote("AAPL")), COOLDOWN_SECONDS.upstream_rate_limited);
+    mode.limited = false;
+    advance(COOLDOWN_SECONDS.upstream_rate_limited * 1000 - 1);
+    assert.equal((await get(quote("MSFT"), { ip: "b" })).body.error.code, "upstream_rate_limited", JSON.stringify(value));
+    assert.equal(calls.length, 1, JSON.stringify(value));
+    advance(1);
+    assert.equal((await get(quote("MSFT"), { ip: "c" })).status, 200, JSON.stringify(value));
+  }
+});
+
+test("B3: a successful answer's Retry-After is ignored, and no client ever sees an upstream header", async () => {
+  const { get, calls, mode } = retryAfterSetup();
+  mode.alwaysRetryAfter = "3600";
+  const ok = await get(quote("AAPL"));
+  assert.equal(ok.status, 200);
+  assert.equal(ok.headers["retry-after"], undefined);
+  assert.equal((await get(quote("MSFT"), { ip: "b" })).status, 200);
+  assert.equal(calls.length, 2);
+});
+
+test("B3: concurrent refusals keep the longest deadline; repeated refusals extend it", async () => {
+  const { clock, held, starts, ask } = heldGateway({ limits: { upstreamMinSpacingMs: 0 } });
+  const a = ask("AAPL");
+  const b = ask("MSFT");
+  await until(() => starts.length === 2, "both in flight");
+  held[0].status(429, { "Retry-After": "3600" });
+  held[1].status(429, { "Retry-After": "60" });
+  const [ra, rb] = await Promise.all([a, b]);
+  assert.equal(ra.status, 429);
+  assert.equal(rb.status, 429);
+  await clock.advance(1000);
+  const r = await ask("SPY");
+  assert.equal(r.headers.get("retry-after"), "3599", "the shorter answer does not replace the longer wait");
+  assert.equal(starts.length, 2);
+
+  const s = retryAfterSetup();
+  s.mode.limited = true;
+  s.mode.retryAfter = "1000";
+  await s.get(quote("AAPL"));
+  s.advance(1000000);
+  s.mode.retryAfter = "2000";
+  RA(await s.get(quote("MSFT"), { ip: "b" }), 2000);
+  s.mode.limited = false;
+  s.advance(1999000);
+  RA(await s.get(quote("SPY"), { ip: "c" }), 1);
+  assert.equal(s.calls.length, 2);
+});
+
+function memoryCache() {
+  const store = new Map();
+  return { store, match: async key => (store.has(key) ? new Response(store.get(key)) : undefined), put: async (key, response) => { store.set(key, await response.text()); }, delete: async key => store.delete(key) };
+}
+
+test("B3: the absolute deadline survives a new isolate through the Cache API, with the time really left", async () => {
+  const cache = memoryCache();
+  const a = retryAfterSetup({ cache });
+  a.mode.limited = true;
+  a.mode.retryAfter = "3600";
+  await a.get(quote("AAPL"));
+  const b = setup({ cache });
+  b.advance(1000000);
+  const r = await b.get(quote("MSFT"));
+  assert.equal(r.body.error.code, "upstream_rate_limited");
+  RA(r, 3600 - 1000);
+  assert.equal(b.calls.length, 0, "the other isolate stays away too");
+  const c = setup({ cache });
+  c.advance(3600000);
+  assert.equal((await c.get(quote("MSFT"))).status, 200, "the entry expires at the deadline, not later");
+  // Corrupted entries are not honoured.
+  const key = [...cache.store.keys()].find(k => /\/state\/cooldown/.test(k));
+  const bad = [{ code: "upstream_rate_limited", startedAt: "x", until: NOW + 3600000 }, { code: "upstream_rate_limited", startedAt: NOW, until: NOW + 1000 }, { code: "upstream_rate_limited", startedAt: NOW + 7200000, until: NOW + 9000000 }, { code: "upstream_rate_limited", startedAt: NOW, until: NOW + 90000000 }, { code: "upstream_rate_limited", startedAt: NOW, halted: "yes" }];
+  for (const [i, entry] of bad.entries()) {
+    cache.store.set(key, JSON.stringify(entry));
+    const fresh = setup({ cache });
+    assert.equal((await fresh.get(quote(["SPY", "VST", "SAP.DE", "VOD.L", "7203.T"][i]))).status, 200, JSON.stringify(entry));
+    assert.equal(fresh.calls.length, 1, "the corrupted entry did not stop this request");
+  }
+});
+
+test("B3: a wait beyond the permitted maximum stops the source until the owner reactivates it; it is never retried early", async () => {
+  assert.equal(MAX_COOLDOWN_SECONDS, 86400);
+  for (const value of ["172800", "99999999999999999999999", new Date(NOW + 30 * 86400000).toUTCString()]) {
+    const cache = memoryCache();
+    const { get, calls, advance, mode } = retryAfterSetup({ cache });
+    mode.limited = true;
+    mode.retryAfter = value;
+    const first = await get(quote("AAPL"));
+    assert.equal(first.body.error.code, "upstream_rate_limited", value);
+    RA(first, MAX_COOLDOWN_SECONDS);
+    assert.equal(first.body.error.manualReactivationRequired, true);
+    mode.limited = false;
+    const h = await get("/v1/health", { ip: "h" });
+    assert.deepEqual(h.body.upstream, { state: "halted", code: "upstream_rate_limited", retryAfterSeconds: MAX_COOLDOWN_SECONDS, manualReactivationRequired: true });
+    advance(60 * 86400000); // long after any date the source named
+    RA(await get(quote("MSFT"), { ip: "b" }), MAX_COOLDOWN_SECONDS);
+    assert.equal(calls.length, 1, "no automatic retry, however long it has been");
+    // Another isolate restores the stop from the cache, whatever the clock says.
+    const other = setup({ cache });
+    other.advance(60 * 86400000);
+    assert.equal((await other.get(quote("MSFT"))).body.error.code, "upstream_rate_limited");
+    assert.equal(other.calls.length, 0);
+    // The owner's explicit reactivation (a new UPSTREAM_REACTIVATION_ID) clears it.
+    const env = { ...ON, UPSTREAM_REACTIVATION_ID: "2026-11-05" };
+    assert.equal((await get(quote("MSFT"), { ip: "c", e: env })).status, 200, value);
+    assert.equal(calls.length, 2);
+    const reactivated = setup({ cache, env });
+    reactivated.advance(60 * 86400000);
+    assert.equal((await reactivated.get(quote("SPY"))).status, 200, "a new isolate with the new id is not stopped by the old entry");
+  }
+  // Exactly the maximum is still an ordinary cooldown that ends by itself.
+  const edge = retryAfterSetup();
+  edge.mode.limited = true;
+  edge.mode.retryAfter = String(MAX_COOLDOWN_SECONDS);
+  RA(await edge.get(quote("AAPL")), MAX_COOLDOWN_SECONDS);
+  edge.mode.limited = false;
+  edge.advance(MAX_COOLDOWN_SECONDS * 1000);
+  assert.equal((await edge.get(quote("MSFT"), { ip: "b" })).status, 200);
 });

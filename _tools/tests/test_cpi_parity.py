@@ -47,7 +47,7 @@ TODAY = date(2026, 11, 3)
 
 
 def js(payload: dict):
-    result = subprocess.run(["node", str(RUNNER)], input=json.dumps(payload), capture_output=True, text=True, timeout=120, check=False)
+    result = subprocess.run(["node", str(RUNNER)], input=json.dumps(payload), capture_output=True, text=True, encoding="utf-8", timeout=120, check=False)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 

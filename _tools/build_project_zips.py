@@ -89,6 +89,12 @@ SPECS = {
 }
 
 
+def sort_key(rel: str) -> list[str]:
+    """Entry order: path components, case-sensitively. (Path objects compare without regard to
+    case on Windows, which would order a ZIP differently there.)"""
+    return rel.split("/")
+
+
 def matches(rel: str, patterns: list[str]) -> bool:
     for pattern in patterns:
         if fnmatch.fnmatchcase(rel, pattern):
@@ -101,12 +107,13 @@ def matches(rel: str, patterns: list[str]) -> bool:
 def collect(spec: Spec) -> list[str]:
     base = PROJECTS / spec.source
     files = []
-    for path in sorted(base.rglob("*")):
+    for path in base.rglob("*"):
         if not path.is_file() or path.is_symlink():
             continue
         rel = path.relative_to(base).as_posix()
         if matches(rel, spec.include) and not matches(rel, ALWAYS_EXCLUDE + spec.exclude):
             files.append(rel)
+    files.sort(key=sort_key)
     missing = [r for r in spec.required if r not in files]
     if missing:
         raise SystemExit(f"{spec.zip_name}: required files missing: {', '.join(missing)}")
@@ -117,6 +124,10 @@ def content_for(rel: str, data: bytes) -> bytes:
     if rel.endswith(".bat"):  # cmd.exe parses labels/goto reliably only with CRLF
         return data.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
     if rel.endswith(".command"):
+        return data.replace(b"\r\n", b"\n")
+    # A Windows checkout may hold text with CRLF (core.autocrlf); the ZIP holds the
+    # repository's form, LF, so it is the same whichever computer builds it.
+    if Path(rel).suffix.lower() in TEXT_SUFFIXES:
         return data.replace(b"\r\n", b"\n")
     return data
 

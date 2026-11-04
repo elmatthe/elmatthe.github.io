@@ -503,6 +503,8 @@ class StockAnalyticsApp(tk.Tk):
             warnings: list[str] = []
             failed_tickers: dict[str, str] = {}
             series_sources: dict[str, str] = {}
+            # The order as it stands now: a later reorder must not rewrite this run's record.
+            request_order = self.market.describe_order() if self.market else ""
             for ticker_info in settings["tickers"]:
                 ticker = ticker_info["ticker"]
                 try:
@@ -638,7 +640,7 @@ class StockAnalyticsApp(tk.Tk):
                 used = sorted(set(v.split(";")[0] for v in series_sources.values()))
                 if len(used) > 1:
                     warnings.append(f"This comparison combines sources ({', '.join(used)}); their prices are calculated differently, so compare like with like where it matters.")
-                settings["source_order"] = "; ".join(f"{x['position']}. {x['name']}{'' if x['enabled'] else ' (off)'}" for x in self.market.sources_list())
+                settings["source_order"] = request_order
                 settings["series_sources"] = " | ".join(f"{t}: {v}" for t, v in series_sources.items())
             self.current_results = {
                 "settings": {k: v for k, v in settings.items() if k not in ("export_folder",)},

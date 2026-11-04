@@ -56,6 +56,9 @@ const HISTORY_FRESH_MS = 12 * 3600000;
 export const REQUEST_SPACING_MS = 350;
 // The shortest pause after a "slow down" answer, whatever Retry-After says.
 const MIN_PAUSE_MS = { rate_limited: 60000, unavailable: 30000, timeout: 30000 };
+// The longest pause kept here: the gateway's own maximum (MAX_COOLDOWN_SECONDS). A longer
+// wait is cut to this, never ignored; the gateway keeps Yahoo Finance stopped regardless.
+const MAX_PAUSE_MS = 24 * 3600000;
 const PAUSE_KEY = "md.yahoo.v1.pause";
 
 const SYMBOL = /^[A-Z0-9](?:[A-Z0-9]|-(?=[A-Z0-9])){0,13}(?:\.[A-Z]{1,2})?$/;
@@ -147,13 +150,13 @@ export function createKeylessSource({ baseUrl = "", fetchImpl = (...a) => global
   function readPause() {
     try {
       const p = JSON.parse(store.getItem(PAUSE_KEY) || "null");
-      if (p && Number.isFinite(p.until) && p.until > now() && p.until - now() <= 2 * 3600000) return p;
+      if (p && Number.isFinite(p.until) && p.until > now() && p.until - now() <= MAX_PAUSE_MS) return p;
     } catch (_) { /* unreadable: no pause */ }
     return null;
   }
   function pause(kind, retryAfterMs, message) {
     const ms = Math.max(MIN_PAUSE_MS[kind] || 5000, Number.isFinite(retryAfterMs) ? retryAfterMs : 0);
-    const until = now() + Math.min(ms, 2 * 3600000);
+    const until = now() + Math.min(ms, MAX_PAUSE_MS);
     const current = readPause();
     if (current && current.until >= until) return;
     try { store.setItem(PAUSE_KEY, JSON.stringify({ until, kind, message: short(message, 200) })); } catch (_) { /* this page only */ }
@@ -184,7 +187,7 @@ export function createKeylessSource({ baseUrl = "", fetchImpl = (...a) => global
         if (body?.schema !== SCHEMAS.health || typeof body.keyless?.enabled !== "boolean") return setStatus({ state: "unreachable", message: `${MESSAGES.unreachable} (unexpected answer)` });
         if (!body.keyless.enabled) return setStatus({ state: "disabled", message: MESSAGES.disabled, reason: short(body.keyless.reason) || null });
         // The gateway is leaving Yahoo alone after a refusal: so does this page.
-        if (body.upstream?.state === "cooling_down" && Number.isFinite(body.upstream.retryAfterSeconds)) pause("rate_limited", body.upstream.retryAfterSeconds * 1000, "the data gateway is pausing Yahoo Finance requests");
+        if (["cooling_down", "halted"].includes(body.upstream?.state) && Number.isFinite(body.upstream.retryAfterSeconds)) pause("rate_limited", body.upstream.retryAfterSeconds * 1000, "the data gateway is pausing Yahoo Finance requests");
         return setStatus({ state: "enabled", message: null, provider: KEYLESS_PROVIDER, attribution: short(body.keyless.attribution) || null, version: short(body.version, 20) });
       } catch (_) {
         return setStatus({ state: "unreachable", message: `${MESSAGES.unreachable} (network, CORS or timeout)` });
@@ -217,7 +220,7 @@ export function createKeylessSource({ baseUrl = "", fetchImpl = (...a) => global
       if (body?.schema === SCHEMAS.error) {
         code = String(body.error?.code || "");
         const sec = Number(body.error?.retryAfterSeconds);
-        if (Number.isFinite(sec) && sec >= 0 && sec <= 7200) bodyAfterMs = sec * 1000;
+        if (Number.isFinite(sec) && sec >= 0) bodyAfterMs = Math.min(sec * 1000, MAX_PAUSE_MS);
       }
     } catch (_) { /* not JSON */ }
     const entry = GATEWAY_ERRORS[code];
@@ -285,6 +288,19 @@ export function createKeylessSource({ baseUrl = "", fetchImpl = (...a) => global
     return { ...raw, browserCacheAgeMs: null };
   }
 
+  // Rows as the gateway's answers have them. A saved copy that no longer has this shape
+  // is damaged: it is treated as absent, never repaired.
+  function validRows(rows) {
+    if (!Array.isArray(rows) || rows.length > 2000) return false;
+    let previous = "";
+    for (const o of rows) {
+      if (!Array.isArray(o) || o.length !== 3 || !isIsoDay(o[0]) || o[0] <= previous) return false;
+      if ((o[1] !== null && !positive(o[1])) || (o[2] !== null && !positive(o[2])) || (o[1] === null && o[2] === null)) return false;
+      previous = o[0];
+    }
+    return true;
+  }
+
   // Daily history covering `range` ({ start, end }), as md.history.v1 with both bases
   // kept separately. The latest bar is dropped while its session may still be trading.
   async function history(identity, range, { signal } = {}) {
@@ -296,7 +312,7 @@ export function createKeylessSource({ baseUrl = "", fetchImpl = (...a) => global
     const hit = histories.get(key, { freshMs: HISTORY_FRESH_MS });
     let packed;
     let browserCacheAgeMs = null;
-    if (hit?.fresh) { packed = hit.value; browserCacheAgeMs = hit.ageMs; }
+    if (hit?.fresh && validRows(hit.value?.observations)) { packed = hit.value; browserCacheAgeMs = hit.ageMs; }
     else {
       const body = await get("/v1/history", { symbol, range: bucket, interval: "1d" }, signal);
       const gatewayCache = checkListing(body, SCHEMAS.history, symbol, identity);
@@ -304,7 +320,7 @@ export function createKeylessSource({ baseUrl = "", fetchImpl = (...a) => global
       let previous = "";
       for (const o of body.observations) {
         if (!Array.isArray(o) || o.length !== 3 || !isIsoDay(o[0]) || o[0] <= previous) throw invalid("dates");
-        if ((o[1] !== null && !positive(o[1])) || (o[2] !== null && !positive(o[2])) || (o[1] === null && o[2] === null)) throw invalid("prices");
+        if (!validRows([o])) throw invalid("prices");
         previous = o[0];
       }
       packed = {

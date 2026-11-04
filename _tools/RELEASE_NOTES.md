@@ -4,6 +4,26 @@
 
 Nothing below is investment advice. No calculation engine changed.
 
+### Corrections after independent review (still candidate on PR 46)
+- **A reused ticker no longer mixes two securities (website).** SPCX and CBRS have a recorded
+  listing date. Prices from before it belong to a different security that used the symbol
+  earlier; the website now removes them from every comparison, snapshot and export, as the
+  desktop already did, and says so. A comparison involving SPCX over 1Y now starts at its
+  listing date, so its figures differ from earlier candidates of this page.
+- **Exports state what was asked and what happened.** The three Stock CSVs keep their rows
+  exactly as they were and add a marked `#provenance` section: the source order at the moment
+  of the request, the source used, and what failed or was skipped, with reasons, per ticker,
+  including tickers left out. The workbook and JSON carry the same record. Portfolio
+  Rebalancer exports now state the order each price was requested under; reordering the list
+  afterwards no longer rewrites it.
+- **Windows desktop: exchange dates.** Windows has no time-zone database of its own, so the
+  desktop apps silently treated every exchange's date as UTC there. They now install one
+  (`tzdata`); Tokyo and Shanghai sessions and stale-price warnings are dated correctly.
+- **Gentler on Yahoo Finance when it asks (takes effect when the gateway is next deployed).**
+  The gateway now keeps Yahoo's own `Retry-After` when longer than its minimum, spaces real
+  request starts one second apart, and limits any wait to 15 seconds. The tools wait as long
+  as the gateway says, up to 24 hours at a time.
+
 ### Portfolio Rebalancer and Stock Comparison (web and desktop)
 - **Yahoo Finance — Free Market Data.** Prices come from Yahoo Finance through this site's
   data gateway with no account or key, briefly cached; quotes may be delayed, incomplete or

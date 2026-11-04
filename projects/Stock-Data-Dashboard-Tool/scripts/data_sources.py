@@ -447,9 +447,9 @@ class SourceListHistorySource(BaseDataSource):
             warnings.append(f"{identity['displayTicker']}: adjusted closes are not available from {h['provider']} for this window; plain closes (price return) are used.")
         frame = frame.dropna(how="all")
         frame = _resample_prices(frame, frequency)
-        if identity.get("listedFrom") and start_date < identity["listedFrom"]:
-            warnings.append(f"{identity['displayTicker']}: listed only since {identity['listedFrom']}; earlier history under this symbol belongs to a different security and is not used.")
-            frame = frame.loc[pd.to_datetime(identity["listedFrom"]):]
+        # history_by_sources has already removed prices from before the listing's date.
+        if (h.get("listing") or {}).get("note"):
+            warnings.append(h["listing"]["note"])
         currency = h["currency"] if h["currencyVerified"] else None
         if currency:
             frame["Currency"] = currency

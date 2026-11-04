@@ -502,6 +502,51 @@ async function noHorizontalScroll(page, widths) {
     await first.context.close();
   }
 
+  /* ---------- S3. a reused ticker: prices from before the listing date appear nowhere ---------- */
+  {
+    const LISTED = "2026-06-12"; // SPCX's listedFrom: an older security used the ticker before that
+    const mode = {};
+    const { context, page, net } = await open(browser, SD + WITH_GATEWAY, mode);
+    await setTickers(page, ["SPCX", "AAPL"]);
+    await page.selectOption("#sddHorizon", "1Y");
+    const status = await run(page);
+    check(/Comparison complete: 2 securities, 1Y, daily prices\./.test(status), `S3 comparison completes (${status})`);
+    const ranges = await metricCells(page, 9);
+    check(ranges[0].slice(0, 10) >= LISTED && ranges[1].slice(0, 10) < LISTED, `S3 metrics: SPCX starts at its listing, AAPL keeps its window (${ranges.join(" | ")})`);
+    const warned = await page.locator("#sddCompareWarnings").innerText();
+    check(/SPCX: listed only since 2026-06-12; earlier history under this symbol belongs to a different security and is not used\./.test(warned), "S3 the page says why the history is shorter");
+    const chartFirst = await page.evaluate(() => {
+      const chart = window.Chart.getChart("sddChartIndexed");
+      const set = chart.data.datasets.find(d => d.label.startsWith("SPCX"));
+      return chart.data.labels[set.data.findIndex(v => v !== null)];
+    });
+    check(chartFirst >= LISTED, `S3 chart: SPCX's first point is on or after the listing (${chartFirst})`);
+    await page.click("#sddTab-export");
+    const pricesCsv = fs.readFileSync(await download(page, "#sddExportPrices", "spcx-prices.csv"), "utf8");
+    const spcxDays = pricesCsv.split(/\r?\n/).filter(l => /^\d{4}-\d{2}-\d{2},SPCX,/.test(l)).map(l => l.slice(0, 10));
+    check(spcxDays.length > 50 && spcxDays.every(d => d >= LISTED), `S3 prices CSV: ${spcxDays.length} SPCX rows, first ${spcxDays[0]}`);
+    const json = JSON.parse(fs.readFileSync(await download(page, "#sddExportJson", "spcx.json"), "utf8"));
+    const series = json.comparison.series.find(s => s.ticker === "SPCX");
+    check(series.observations.every(o => o[0] >= LISTED), "S3 JSON: no earlier SPCX price");
+    check(json.comparison.warnings.some(w => /listed only since 2026-06-12/.test(w)), "S3 JSON: the reason is recorded");
+    try {
+      const out = execFileSync(process.env.PYTHON || "python3", ["-c",
+        "import sys,openpyxl;wb=openpyxl.load_workbook(sys.argv[1]);raw=wb['Raw Data Ingestion'];days=[r[0].value for r in raw.iter_rows(min_row=2) if r[1].value=='SPCX'];print(len(days)>50, min(days)>=sys.argv[2])",
+        await download(page, "#sddExportXlsx", "spcx.xlsx"), LISTED], { encoding: "utf8" }).trim();
+      check(out === "True True", `S3 workbook: no earlier SPCX price (${out})`);
+    } catch (error) { check(false, `S3 workbook validation: ${String(error.message).slice(0, 160)}`); }
+    // Snapshot: chart and text.
+    await page.click("#sddTab-snapshot");
+    await page.fill("#sddSnapshotTicker", "SPCX");
+    await page.click("#sddSnapshotRun");
+    await page.waitForFunction(() => /SPCX loaded/.test(document.querySelector("#sddSnapshotStatus").textContent));
+    const snapFirst = await page.evaluate(() => window.Chart.getChart("sddChartSnapshot").data.labels[0]);
+    check(snapFirst >= LISTED, `S3 snapshot chart starts on or after the listing (${snapFirst})`);
+    check(/listed only since 2026-06-12/.test(await page.locator("#sddSnapshotSource").innerText()), "S3 snapshot says why the history is shorter");
+    check(net.errors.length === 0, `S3 no page errors (${net.errors.join("; ")})`);
+    await context.close();
+  }
+
   await browser.close();
   process.exit(done() ? 1 : 0);
 })().catch(error => { console.error(error); process.exit(1); });

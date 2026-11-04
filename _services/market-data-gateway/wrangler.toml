@@ -14,6 +14,9 @@
 name = "market-data-gateway"
 main = "src/worker.js"
 compatibility_date = "2026-10-01"
+# Lets a request see its client disconnect (request.signal), so a queued upstream request
+# nobody is waiting for is cancelled. Effective from the next deployment.
+compatibility_flags = ["enable_request_signal"]
 workers_dev = true
 
 # Request logs are not stored by default. If you enable Workers Logs, the gateway still

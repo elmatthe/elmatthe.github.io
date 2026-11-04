@@ -18,7 +18,7 @@ bindings accepted):
 | | |
 |---|---|
 | Address | <https://market-data-gateway.elmatthe.workers.dev> (`workers.dev` subdomain; no custom domain, DNS record or route) |
-| Version | `76998e2b-205d-4645-8f85-7a6fdf0dbad7` (gateway code 1.1.0) |
+| Version | `76998e2b-205d-4645-8f85-7a6fdf0dbad7` (gateway code 1.1.0). **The code in this folder is 1.2.0 and is not deployed**: the rules below marked 1.2.0 take effect only when the owner deploys it |
 | Health | `keyless.enabled: true`, `source: yahoo-chart`, `activation: owner_attestation`, `upstream.state: ok`; caches 600 s (quotes) / 43,200 s (history) |
 
 The website reads the address from `_data/market_data.yml`; the desktop apps from
@@ -112,12 +112,15 @@ Every limit fails closed: when in doubt, nothing is sent to Yahoo.
 
 | Layer | Rule |
 |---|---|
-| Spacing | at most one upstream request start per **1 s** in each isolate; requests queue for their turn, and a request that would wait more than **15 s** is refused (`throttled`, `Retry-After`) |
-| Concurrency | at most **2** upstream requests in flight per isolate (others wait in the same queue) |
-| Budget | **20** upstream requests per minute per isolate, and **40** per minute per Cloudflare location through the `UPSTREAM_LIMITER` binding (one shared key) |
+| Spacing (1.2.0) | at least **1 s** between the actual starts of two upstream requests in each isolate, first come first served. A request waits at most **15 s**, then is refused and never sent (`throttled`, `Retry-After`). Per isolate only: this is not a worldwide guarantee |
+| Concurrency | at most **2** upstream requests in flight per isolate (others wait in the same queue). A place held by a request whose context ended is reclaimed after its timeout |
+| Cancellation (1.2.0) | a client that disconnects leaves the queue at once; shared work is cancelled only when no client is left. Needs the `enable_request_signal` compatibility flag (in `wrangler.toml`) |
+| Budget | **20** upstream requests started per minute per isolate, and **40** per minute per Cloudflare location through the `UPSTREAM_LIMITER` binding (one shared key) |
 | Coalescing | identical concurrent requests in an isolate share **one** upstream request |
 | Caching | quotes reused **10 min**, history **12 h** (per symbol and range); definitive refusals (unknown symbol, other listing or currency) remembered **30 min** |
 | Circuit breaker | after Yahoo answers **429**, no upstream request for **15 min**; after **401/403**, **30 min**; after **3 consecutive** 5xx/timeouts/network errors, **2 min**. Cached answers are still served. The cooldown is shared with other isolates of the data center through the Cache API (best effort; a corrupted entry is ignored) and reported in `/v1/health` (`upstream.state: "cooling_down"`) |
+| Yahoo's own wait (1.2.0) | a valid `Retry-After` on a refusal (delta seconds or an HTTP date) is honoured when it is longer than the minimum above; it is kept as an absolute deadline, and the `Retry-After` sent to clients is the time really left. Malformed, negative, past or shorter values never shorten the minimum. A **single** 5xx that names a wait is honoured for that wait |
+| Longer than 24 h (1.2.0) | a wait above `MAX_COOLDOWN_SECONDS` (**24 h**) stops Yahoo requests until the owner reactivates them (next section); it is never turned into an early retry. `/v1/health` shows `upstream.state: "halted"`, refusals carry `manualReactivationRequired: true` and `Retry-After: 86400` |
 | Per client | **30** requests per minute and **2** in flight per client (hashed IP) per isolate, plus the `RATE_LIMITER` binding (30/min per location) |
 | No retries | the Worker never retries Yahoo; the pages and desktop apps retry only a network error reaching the gateway, once |
 
@@ -126,13 +129,25 @@ The clients add their own restraint (`assets/js/market-data/keyless.js`,
 (across all tabs of the site in a browser), copies reused (10 min quotes, 12 h history),
 and after any "slow down" answer — or an outage while the breaker is open — **nothing
 more is sent until `Retry-After` has passed**, a pause remembered across page loads and
-program restarts. The next source in the user's list is used meanwhile.
+program restarts. The next source in the user's list is used meanwhile. Clients keep a
+pause of at most 24 hours; a longer wait is cut to that, never ignored, and the gateway
+stays stopped either way.
+
+**Reactivating after a stop (owner only).** Set the non-sensitive variable
+`UPSTREAM_REACTIVATION_ID` to a new value (for example today's date) in `[env.production]`
+or the dashboard. That ends the stop and leaves the stored one behind. Only a stop is
+cleared: an ordinary cooldown still runs to its deadline.
+
+**What a stop cannot guarantee.** The Workers Free design has no durable storage. A stop
+lives in the isolate's memory and, best effort, in the Cache API, which may not be shared
+on a `workers.dev` address and can be evicted. An isolate that starts without either may
+send one more request; a refusal then stops it again.
 
 Expected volume: the Rebalancer's 14-holding sample costs at most 14 requests (about 14 s
 with the 1 s spacing when nothing is cached); a Stock comparison one per ticker. The free
 daily allowance of 100,000 Worker requests is far above that.
 
-Honest identity: the Worker sends `User-Agent: market-data-gateway/1.1.0
+Honest identity: the Worker sends `User-Agent: market-data-gateway/1.2.0
 (+https://elmatthe.github.io/projects/portfolio-rebalancer/)`. It never imitates a
 browser, obtains cookies or "crumbs", rotates addresses or otherwise works around a
 refusal. If Yahoo refuses, the gateway reports it and stops (circuit breaker).
@@ -149,7 +164,7 @@ Yahoo's raw value and unit alongside.
 | `GET /v1/quote?symbol=VEQT.TO` | `md-gateway.quote.v1`: `source`, `listing {symbol, mic, venueName, exchangeCode, exchangeName, instrumentType, name, timeZone}`, `currency`, `rawCurrency`, `quoteUnit`, `unitScale`, `price`, `rawPrice`, `priceBasis: "regular_market_price"`, `adjusted:false`, `tradingDate` (venue time zone), `sourceTime`, `delay {realTime:false, note}`, `dayHigh`, `dayLow`, `volume`, `previousClose` (each `null` when absent, listed in `missing`), `retrievedAt`, `cache {status, ageSeconds, ttlSeconds}` |
 | `GET /v1/history?symbol=SAP.DE&range=1y&interval=1d` | `md-gateway.history.v1`: same identity fields, `range`, `interval`, `frequency:"daily"`, `adjustment {close, adjClose, adjCloseAvailable}`, `observations: [[date, close, adjClose], …]` (ascending, one per trading date, `null` where Yahoo gave none), `count`, `firstDate`, `lastDate`, `lastBarMayBeIncomplete`, `missing {…}`, `retrievedAt`, `cache` |
 | `OPTIONS` on the data paths | 204 for an allowed origin asking for `GET` (exposes `Retry-After`); 403 otherwise |
-| any refusal | `md-gateway.error.v1`: `{error: {code, message, retryable, definitive, retryAfterSeconds?}}` with a fixed message; `Retry-After` header when retryable |
+| any refusal | `md-gateway.error.v1`: `{error: {code, message, retryable, definitive, retryAfterSeconds?, manualReactivationRequired?}}` with a fixed message; `Retry-After` header when retryable. A client that disconnected gets `cancelled` (499) |
 
 Error codes: `invalid_request`, `invalid_symbol`, `unsupported_listing`, `invalid_range`,
 `origin_not_allowed`, `https_required`, `not_found`, `method_not_allowed`,
@@ -358,9 +373,11 @@ cd _tools/tests && python3 -m pytest -q test_desktop_gateway.py
 `market-gateway.test.mjs` covers the activation settings (including `wrangler.toml`),
 the fixed upstream URL and headers, the seven smoke listings and DLR-U.TO, history bases,
 refused symbols and parameters, mismatched/malformed answers, HTTP 429/403/503,
-redirects, oversize bodies, timeouts, CORS, per-client and shared limits, spacing and the
-15 s queue, coalescing, remembered refusals, the circuit breaker (and its Cache API
-sharing), no-Origin clients, caching and logs. `keyless.test.mjs` runs the browser
+redirects, oversize bodies, timeouts, CORS, per-client and shared limits, actual-start
+spacing, the in-flight limit and the hard 15 s wait on a virtual clock, cancellation, the
+source's `Retry-After` (seconds, HTTP date, invalid values, longest deadline, new
+isolates, the stop above 24 h and its reactivation), coalescing, remembered refusals, the
+circuit breaker (and its Cache API sharing), no-Origin clients, caching and logs. `keyless.test.mjs` runs the browser
 adapter against this Worker (pauses, fallback, order). `test_desktop_gateway.py` runs the
 desktop package against this Worker served on 127.0.0.1 by `gateway_server.mjs`.
 `_tools/tests/browser/freesource.test.js` and `sources.test.js` drive both web apps

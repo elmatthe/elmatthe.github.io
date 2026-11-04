@@ -610,14 +610,20 @@ class MarketData:
         error.attempts, error.skipped = attempts, plan["skipped"]
         raise error
 
+    def describe_order(self) -> str:
+        """The list in order, as words, at this moment: stored with what it was used for,
+        because a later reorder must not rewrite the record of an earlier request."""
+        return "; ".join(f"{x['position']}. {x['name']}{'' if x['enabled'] else ' (off)'}" for x in self.sources_list())
+
     def price_instrument(self, identity: dict, use_cache: bool = True, cancelled: Callable[[], bool] = lambda: False) -> dict:
         """Latest price from the first source in the list that can give a usable one."""
         if not identity or identity.get("status") != "resolved":
             raise DataError((identity or {}).get("reason") or "The ticker is not resolved.", kind="invalid", definitive=True)
         plan = self.route(identity, "quote")
+        source_order = self.describe_order()
         quote, attempts, _used = self.try_sources(identity, "quote", plan, lambda c: self.price_with(c["id"], identity, use_cache, cancelled), "a usable price")
         skipped = [x for x in plan["skipped"] if x["code"] != "off"]
-        return {**quote, **({"fallbackFrom": attempts} if attempts else {}), **({"skippedSources": skipped} if skipped else {})}
+        return {**quote, "sourceOrder": source_order, **({"fallbackFrom": attempts} if attempts else {}), **({"skippedSources": skipped} if skipped else {})}
 
     def check_again(self, pid: str) -> dict:
         s = self._session(pid)

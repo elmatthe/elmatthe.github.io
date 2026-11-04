@@ -38,7 +38,7 @@ from market_data.sources import describe_skipped, short_failure, source_name
 from market_data.sources_tk import SourceListDialog, order_summary
 from portfolio_rebalancer import core
 from portfolio_rebalancer.export import write_csv_export, write_excel_export
-from portfolio_rebalancer.model import (ACCOUNT_TYPES, REPORTING, Row, Settings, action_lines, build_plan, money, qty, quote_label,
+from portfolio_rebalancer.model import (ACCOUNT_TYPES, REPORTING, Row, Settings, action_lines, build_plan, money, plan_source_order, qty, quote_label,
                                          rows_from_sample)
 from portfolio_rebalancer.sample import SAMPLE_PORTFOLIO, target_total_basis_points
 
@@ -716,7 +716,7 @@ class RebalancerApp:
     def _calculate(self, quiet: bool = False) -> None:
         self.plan_requested = True
         run = build_plan(self.rows, self._settings(), self.fx, now=self.md.now())  # the clock the quotes were dated with
-        run["sourceOrder"] = "; ".join(f"{x['position']}. {x['name']}{'' if x['enabled'] else ' (off)'}" for x in self.md.sources_list())
+        run["sourceOrder"] = plan_source_order(self.rows)
         self._clear_plan()
         v = run["valuation"]
         if not run["plan"]:

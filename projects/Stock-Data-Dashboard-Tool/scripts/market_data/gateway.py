@@ -53,7 +53,9 @@ QUOTE_FRESH_S = 600
 HISTORY_FRESH_S = 12 * 3600
 REQUEST_SPACING_S = 0.35
 MIN_PAUSE_S = {"rate_limited": 60, "unavailable": 30, "timeout": 30}
-MAX_PAUSE_S = 2 * 3600
+# The longest pause kept here: the gateway's own maximum (MAX_COOLDOWN_SECONDS). A longer
+# wait is cut to this, never ignored; the gateway keeps Yahoo Finance stopped regardless.
+MAX_PAUSE_S = 24 * 3600
 _SYMBOL = re.compile(r"^[A-Z0-9](?:[A-Z0-9]|-(?=[A-Z0-9])){0,13}(?:\.[A-Z]{1,2})?$")
 _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -254,7 +256,7 @@ class GatewayClient:
             self.status = {"state": "disabled", "message": MESSAGES["disabled"], "reason": _short(keyless.get("reason")) or None}
         else:
             upstream = body.get("upstream") or {}
-            if upstream.get("state") == "cooling_down" and isinstance(upstream.get("retryAfterSeconds"), (int, float)):
+            if upstream.get("state") in ("cooling_down", "halted") and isinstance(upstream.get("retryAfterSeconds"), (int, float)):
                 self._pause("rate_limited", upstream["retryAfterSeconds"], "the data gateway is pausing Yahoo Finance requests")
             self.status = {"state": "enabled", "message": None, "attribution": _short(keyless.get("attribution")) or None, "version": _short(body.get("version"), 20)}
         return dict(self.status)
@@ -281,8 +283,8 @@ class GatewayClient:
             if isinstance(body, dict) and body.get("schema") == SCHEMAS["error"]:
                 code = str((body.get("error") or {}).get("code") or "")
                 sec = (body.get("error") or {}).get("retryAfterSeconds")
-                if isinstance(sec, (int, float)) and 0 <= sec <= MAX_PAUSE_S:
-                    after_s = float(sec)
+                if isinstance(sec, (int, float)) and not isinstance(sec, bool) and sec >= 0:
+                    after_s = float(min(sec, MAX_PAUSE_S))
         except ValueError:
             pass
         if code == "source_disabled":

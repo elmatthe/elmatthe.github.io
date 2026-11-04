@@ -60,6 +60,16 @@ def rendered_files(key: str, spec: dict) -> dict[Path, tuple[bytes, bool]]:
     }
 
 
+def same_content(path: Path, current: bytes | None, content: bytes) -> bool:
+    """Launchers must match byte for byte. Other text may hold CRLF in a Windows checkout
+    (core.autocrlf); the repository's form of that text is LF, which is what is compared."""
+    if current == content:
+        return True
+    if current is None or path.suffix in (".bat", ".command"):
+        return False
+    return current.replace(b"\r\n", b"\n") == content
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--check", action="store_true", help="verify only; do not write")
@@ -70,7 +80,7 @@ def main() -> int:
         for path, (content, executable) in rendered_files(key, spec).items():
             current = path.read_bytes() if path.is_file() else None
             exec_ok = not executable or os.name == "nt" or (path.is_file() and path.stat().st_mode & stat.S_IXUSR)
-            if current == content and exec_ok:
+            if same_content(path, current, content) and exec_ok:
                 continue
             if args.check:
                 stale.append(path.relative_to(ROOT).as_posix())

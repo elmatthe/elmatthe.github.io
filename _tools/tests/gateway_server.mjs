@@ -7,7 +7,8 @@
 // The gateway runs with the owner's production settings (source on by attestation,
 // clients without an Origin header allowed) plus ALLOW_HTTP for loopback. A test can
 // change the fixtures' behaviour with GET /__mode?<flag>=1 (down, limited, blocked,
-// hang, staleDays=<n>, downFor=<SYM,SYM>, off=1 for a switched-off source, reset=1),
+// hang, staleDays=<n>, downFor=<SYM,SYM>, retryAfter=<header value>, off=1 for a switched-off
+// source, reset=1),
 // and read the upstream request count with GET /__calls. These two paths exist only
 // in this test server.
 import http from "node:http";
@@ -33,6 +34,7 @@ const server = http.createServer(async (req, res) => {
       if (k === "off") off = v === "1";
       else if (k === "downFor") mode.downFor = v.split(",").filter(Boolean);
       else if (k === "staleDays") mode.staleDays = Number(v);
+      else if (k === "retryAfter") mode.retryAfter = v;
       else mode[k] = v === "1";
     }
     mode.calls = calls;
