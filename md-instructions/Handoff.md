@@ -1,5 +1,49 @@
 # Handoff — Yahoo Finance gateway activation and ordered source list (2026-11-04)
 
+## Current state: corrections after independent review
+
+An independent review of `9c88a8b` returned FAIL with four blockers. All four are corrected on this
+branch, with regressions that fail on `9c88a8b` and pass now:
+
+| | Defect | Correction |
+|---|---|---|
+| B1 | The website used prices from before a listing date (SPCX, CBRS): a different security under the same ticker | `cutToListing` at every read of a series (`assets/js/market-data/instruments.js`), same rule as the desktop's `cut_to_listing` (`_tools/shared_py/market_data/history.py`) |
+| B2 | Gateway requests could start together after waiting for capacity; a wait for capacity had no limit | First-come queue: decision and start in one step, timers per waiter, hard 15 s wait, budget counted at the start, expiring in-flight places, cancellation |
+| B3 | Yahoo's `Retry-After` was discarded: a one-hour wait became a retry at 901 s | Absolute deadline, shared with new isolates and clients. Above 24 h the source stops until the owner sets a new `UPSTREAM_REACTIVATION_ID` |
+| B4 | The Stock CSVs omitted source order, failures and skips | Rows unchanged, then a marked `#provenance` section per ticker, with XLSX and JSON parity |
+
+**The gateway corrections take effect only when the owner deploys.** The code is 1.2.0; the live Worker
+is still 1.1.0 and was not touched. Until then the live gateway keeps the old spacing and discards
+`Retry-After`, though the clients now honour whatever it sends for up to 24 hours.
+
+Also corrected: Rebalancer exports state the order each price was requested under; browser suites can no
+longer reach a real host; ZIP and workbook builds give the same bytes on Windows and Linux; test runners
+read UTF-8 on Windows.
+
+New defect found while testing on Windows and corrected: Windows has no time-zone database, so desktop
+exchange dates silently fell back to UTC. `tzdata` is now pinned for the Rebalancer and Stock tools.
+
+Testing on Windows: the desktop apps were exercised on Windows with real mouse and keyboard input for
+the first time, using a private local verification gate that is not part of this repository. Not tested:
+macOS, and Windows display scaling at 125% or 150%.
+
+**Open, for the owner (not changed here; these tools are outside this PR's change set):**
+
+- CPI Web Scraper, writing through real Excel: failed in testing with a raw COM error,
+  `Call was rejected by callee`, and left a hidden Excel running. The cause is not isolated (product or
+  test environment). Reproduce with `CPI_EXCEL_REGRESSION=1 python -m pytest files/tests/test_workbook_regression.py`.
+- Monte Carlo desktop: a target path that cannot be read (a folder, an exclusive lock) raises in the Tk
+  callback, so Run Simulation silently does nothing. A workbook open in Excel is handled correctly.
+- Accessibility (axe-core): link-in-text-block on three pages and color-contrast on the Stock tabs.
+
+**Next action:** an independent re-review of this branch. Then the owner decides whether to merge and,
+separately, whether to deploy gateway 1.2.0.
+
+---
+
+The sections below describe the earlier state of this branch and remain accurate except where the table
+above says otherwise.
+
 Repository `elmatthe/elmatthe.github.io`, branch `claude/loving-brown-48hctl`, PR
 <https://github.com/elmatthe/elmatthe.github.io/pull/46> (draft, **not merged**). Base:
 `main` at `153c4c936c31e0cc5ff384d70628baaa068a5847`. No release or tag created; no paid
@@ -101,8 +145,9 @@ assertions unchanged).
 
 ## Next action
 
-1. **Codex:** independent review of PR 46 at its final head (see the PR description).
-2. **Owner, after the review:** decide whether to merge PR 46. Until it is merged the live
+1. **Codex:** independent re-review of PR 46 at its final head (see the PR description).
+2. **Owner, after the review:** decide whether to merge PR 46, and separately whether to deploy
+   gateway 1.2.0 (`npx wrangler@4 deploy --env production`). Until it is merged the live
    site keeps the previous version. Optional: compare two or three of the recorded prices
    with a broker; watch Workers & Pages → market-data-gateway → Metrics.
 3. **Switch off, if ever needed:** delete `OWNER_ATTESTATION` in the Worker's settings (or
