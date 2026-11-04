@@ -20,7 +20,8 @@ accepts that (ALLOW_NO_ORIGIN). No browser, extension or local web server is nee
 
 The gateway address is DEFAULT_GATEWAY_URL (kept equal to the website's
 _data/market_data.yml by _tools/tests/test_market_data_parity.py), or the
-MD_GATEWAY_URL environment variable; empty means "not set up".
+MD_GATEWAY_URL environment variable; empty means "not set up" (MD_GATEWAY_URL="" switches
+Yahoo Finance off for one run, which the tests use so they never reach the live gateway).
 """
 from __future__ import annotations
 
@@ -36,7 +37,7 @@ from urllib.parse import urlencode, urlsplit
 
 from .errors import DataError
 
-DEFAULT_GATEWAY_URL = ""
+DEFAULT_GATEWAY_URL = "https://market-data-gateway.elmatthe.workers.dev"
 GATEWAY_ID = "yahoo"
 GATEWAY_NAME = "Yahoo Finance"
 GATEWAY_VIA = "this site's data gateway"

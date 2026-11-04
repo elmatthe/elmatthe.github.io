@@ -24,6 +24,8 @@ def test_offline_csv_analysis_and_export(tmp_path, monkeypatch):
         monkeypatch.setattr(messagebox, name, lambda *a, **k: None)
     monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: True)
     monkeypatch.setattr(main, "RUNTIME_DIR", tmp_path / "runtime")
+    # The window checks the gateway at start-up; a unit test never reaches the live one.
+    monkeypatch.setenv("MD_GATEWAY_URL", "")
     try:
         app = main.StockAnalyticsApp()
     except tk.TclError as error:

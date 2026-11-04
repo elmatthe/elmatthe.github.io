@@ -394,4 +394,4 @@ function checker() {
   return { check, done };
 }
 
-module.exports = { SITE_URL, TEST_KEY, MS_KEY, FH_KEY, CPI_KEY, CPI_GATEWAY, MD_GATEWAY, launch, mockMarketData, mockCpiSources, watchNetwork, checker, disallowedRequests };
+module.exports = { SITE_URL, TEST_KEY, MS_KEY, FH_KEY, CPI_KEY, CPI_GATEWAY, MD_GATEWAY, SITE_GATEWAY, GATEWAY_ROUTE, launch, mockMarketData, mockCpiSources, watchNetwork, checker, disallowedRequests };
