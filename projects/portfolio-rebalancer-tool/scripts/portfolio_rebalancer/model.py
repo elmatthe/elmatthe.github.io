@@ -45,10 +45,6 @@ class Row:
     shares: str = ""
     target: str = ""
     account: str = ""
-    # Provenance for "Remove international examples" only (no pricing or plan rule):
-    # set for rows loaded from the sample, with the ticker as loaded.
-    sample_tag: str | None = None
-    sample_ticker: str | None = None
     id: str = field(default_factory=lambda: f"r{next(_ids)}")
     revision: int = 0
     status: str = "empty"
@@ -62,8 +58,6 @@ class Row:
         self.ticker = str(self.ticker or "").strip().upper()
         self.shares = "" if self.shares is None else str(self.shares)
         self.target = "" if self.target is None else str(self.target)
-        if self.sample_tag and self.sample_ticker is None:
-            self.sample_ticker = self.ticker
         if self.ticker and self.status == "empty":
             self.status = "draft"
 
@@ -170,7 +164,7 @@ def quote_label(q: dict) -> str:
 
 
 def rows_from_sample(sample: dict) -> list[Row]:
-    return [Row(r["ticker"], str(r["shares"]), str(r["targetWeight"]), r.get("accountType", ""), r.get("sampleTag")) for r in sample["rows"]]
+    return [Row(r["ticker"], str(r["shares"]), str(r["targetWeight"]), r.get("accountType", "")) for r in sample["rows"]]
 
 
 @dataclass

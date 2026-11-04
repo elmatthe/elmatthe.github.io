@@ -16,7 +16,7 @@ export const DEFAULT_MAX_BYTES = 4 * 1024 * 1024;
 // A burst or per-minute throttle is transient; only a daily or monthly limit stops a
 // provider until its reset, and only when the provider's own wording says so.
 export class DataError extends Error {
-  constructor(message, { kind = "network", status = null, definitive = false, provider = null, retryAfterMs = null, attempts = [], quotaScope = null, notice = null, hint = null, instrument = null, retryable = null } = {}) {
+  constructor(message, { kind = "network", status = null, definitive = false, provider = null, retryAfterMs = null, attempts = [], quotaScope = null, notice = null, hint = null, instrument = null, retryable = null, paused = false, gatewayCode = null } = {}) {
     super(message);
     this.name = "DataError";
     this.kind = kind;
@@ -30,6 +30,8 @@ export class DataError extends Error {
     this.hint = hint; // what the user can do about it
     this.instrument = instrument;
     this.explicitRetryable = retryable;
+    this.paused = Boolean(paused); // nothing was sent: the source is pausing after a "slow down" or an outage
+    this.gatewayCode = gatewayCode; // the data gateway's own error code, when it answered
   }
 
   get retryable() { return this.explicitRetryable ?? isRetryable(this); }

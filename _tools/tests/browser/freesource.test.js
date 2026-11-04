@@ -1,5 +1,5 @@
-// Browser test: the free (keyless) market-data source in the Portfolio Rebalancer and
-// the Stock Comparison web apps, end to end in Chromium.
+// Browser test: Yahoo Finance through this site's data gateway (no key) in the Portfolio
+// Rebalancer and the Stock Comparison web apps, end to end in Chromium.
 //
 // The pages are opened with ?mdgateway=https://md.gateway.test (honoured only on a page
 // served from 127.0.0.1). harness.js answers that host with the REAL gateway code from
@@ -7,14 +7,15 @@
 // synthetic Yahoo fixtures (_tools/tests/fixtures/yahoo-chart.mjs). Yahoo Finance is
 // never contacted, no real key is used, and every other host is mocked or blocked.
 //
-// Covers: a new browser profile with no keys (free source chosen by default), the
-// production configuration (no gateway), a gateway whose source is switched off, an
-// unreachable gateway, one quote and the fourteen-holding sample across seven markets
-// and currencies (exact listing, GBp -> GBP), malformed, mismatched and missing data,
-// rate limits, a timeout and an outage, gateway and browser caches, personal-key
-// precedence and opt-in fallback, privacy of the requests, exports without secrets,
-// Stock Comparison history (1D..5Y, both price bases, FX normalization, exports),
-// narrow layouts, console errors and basic accessibility structure.
+// Covers: a new browser profile with no keys (Yahoo Finance first and on by default),
+// no gateway configured, a gateway whose source is switched off, an unreachable gateway,
+// the fourteen-holding sample across seven markets and currencies (exact listing,
+// GBp -> GBP), malformed, mismatched and missing data, rate limits (requests stop and
+// pause, never loop), a timeout and an outage (the gateway's breaker pauses requests),
+// gateway and browser caches, the order of Yahoo Finance and personal-key providers,
+// privacy of the requests, exports without secrets, Stock Comparison history (1D..5Y,
+// both price bases, FX normalization, exports), narrow layouts, console errors and
+// basic accessibility structure. The fallback chain itself is in sources.test.js.
 "use strict";
 const path = require("path");
 const fs = require("fs");
@@ -32,7 +33,7 @@ const SAMPLE = [
   ["VFV.TO", "8", "0.9"], ["SPCX", "1", "0.9"], ["CBRS", "4", "0.9"], ["YNVD.NE", "4", "1.8"], ["VST", "1", "0.9"],
   ["7203.T", "1", "2.5"], ["SAP.DE", "1", "2.5"], ["VOD.L", "1", "2.5"], ["600519.SS", "1", "2.5"],
 ];
-const AUTHORIZATION_TEXT = "browser test fixture"; // the harness's SOURCE_AUTHORIZATION: must never reach a page
+const ATTESTATION_TEXT = "owner-confirms-yahoo-permission"; // the gateway's activation value: never echoed to a page
 
 async function open(browser, url, mode, opts = {}) {
   const context = opts.context || await browser.newContext({ acceptDownloads: true, viewport: { width: 1280, height: 900 }, ...opts.contextOptions });
@@ -67,10 +68,11 @@ async function importHoldings(page, name, lines) {
   await page.waitForFunction(n => new RegExp(`Imported ${n} holdings`).test(document.querySelector("#rbStatus").textContent), lines.length);
   await page.waitForFunction(n => document.querySelectorAll("#rbRows .rb-row").length === n, lines.length);
 }
-async function saveKey(page, provider, key) {
+async function saveKey(page, provider, key, remember = false) {
   if ((await page.locator("#rbKeysPanel").getAttribute("open")) === null) await page.click("#rbKeysPanel > summary");
   const card = page.locator(`#rbProviders section[aria-label="${provider}"]`);
   await card.locator('input[type="password"]').fill(key);
+  if (remember) await card.locator('input[type="checkbox"]').check();
   await card.locator('button[type="submit"]').click();
 }
 async function download(page, selector, name) {
@@ -119,13 +121,14 @@ async function noHorizontalScroll(page, widths) {
     const { context, page, calls, net } = await open(browser, RB + WITH_GATEWAY, mode);
     check(await page.getAttribute("#rb-app", "data-free-source") === "enabled", "R1 new profile: the free source is available");
     const panel = await page.locator("#rbFreeSource").innerText();
-    check(/Free source \(no key\): available\. Yahoo Finance chart data through this site's market-data gateway at md\.gateway\.test/.test(panel) && /never as real-time/.test(panel) && /never your holdings/.test(panel), `R1 the free-source panel names the source, delay and privacy (${panel.slice(0, 120)})`);
+    check(/Yahoo Finance — Free Market Data/.test(panel) && /briefly cached/.test(panel) && /Quotes may be delayed, incomplete, or differ from official exchange data/.test(panel) && /not financial advice/.test(panel) && /Available, and position 1 in your list/.test(panel), `R1 the Yahoo Finance panel explains the source, delay and caching (${panel.slice(0, 160)})`);
+    check(!/Cloudflare|Worker|licen[cs]|authori[sz]ation|open.source|Python|yfinance/i.test(panel), "R1 the explanation has no technical or licensing detail");
     check(calls.gateway.length === 1 && /\/v1\/health$/.test(calls.gateway[0].url) && calls.yahoo.length === 0, `R1 page load: one gateway health check, no price request (${calls.gateway.map(c => c.url).join(", ")})`);
-    check(!(await page.locator('#rbSource option[value="keyless"]').isDisabled()) && await page.locator("#rbSource").inputValue() === "auto", "R1 Automatic is selected and the free source can be chosen");
-    check(/Then the free source \(no key\)[^.]*: with no key saved, every holding it covers uses it/.test(await page.locator("#rbSourceNote").innerText()), "R1 the routing note says the free source is used when no key is saved");
+    const list = await page.$$eval("#rbSources .ms-item", n => n.map(i => `${i.querySelector(".ms-pos").textContent}:${i.dataset.source}:${i.dataset.status}`));
+    check(JSON.stringify(list) === JSON.stringify(["1:yahoo:on", "2:alphavantage:needs_key", "3:marketstack:needs_key", "4:finnhub:needs_key"]), `R1 zero keys: Yahoo Finance on at position 1, the providers waiting for keys (${list.join(" ")})`);
     await loadSample(page);
     check(JSON.stringify(await rowValues(page)) === JSON.stringify(SAMPLE), "R1 sample: the fourteen holdings, exact shares and targets, YNVD.NE kept");
-    check(/about 14 free-source requests for 14 holdings/.test(await page.locator("#rbEstimate").innerText()) && /no key/.test(await page.locator("#rbEstimate").innerText()), "R1 estimate: 14 free-source requests, no key");
+    check(/about 14 Yahoo Finance requests for 14 holdings/.test(await page.locator("#rbEstimate").innerText()) && /no key/.test(await page.locator("#rbEstimate").innerText()) && /one at a time/.test(await page.locator("#rbEstimate").innerText()), "R1 estimate: 14 Yahoo Finance requests, no key, one at a time");
     check(calls.gateway.length === 1, "R1 loading the sample sends nothing");
     await page.click("#rbPriceAll");
     await rbIdle(page);
@@ -138,12 +141,12 @@ async function noHorizontalScroll(page, widths) {
     check(await page.locator("#rbRows .rb-row[data-tone='ok']").count() === 14, "R1 all fourteen holdings verified");
     check(/^Holdings: all 14 priced\.$/.test(await page.locator("#rbStatus").innerText()), "R1 status: all 14 priced");
     const lines = await Promise.all(SAMPLE.map((_, i) => lineOf(page, i)));
-    check(/Verified[\s\S]*C\$[\d,.]+[\s\S]*Yahoo Finance \(free source\) · latest regular-session price \(may be delayed\) \d{4}-\d{2}-\d{2}/.test(lines[0]), `R1 VEQT.TO: provider, tier, price basis and trading date shown (${lines[0]})`);
+    check(/Verified[\s\S]*C\$[\d,.]+[\s\S]*Yahoo Finance · latest regular-session price \(may be delayed\) \d{4}-\d{2}-\d{2}/.test(lines[0]), `R1 VEQT.TO: source, price basis and trading date shown (${lines[0]})`);
     check(/US\$[\d,.]+/.test(lines[4]) && /€[\d,.]+/.test(lines[11]) && /£[\d,.]+/.test(lines[12]) && /CN¥[\d,.]+/.test(lines[13]) && /(JP)?¥[\d,.]+/.test(lines[10]) && /C\$[\d,.]+/.test(lines[8]), "R1 USD, EUR, GBP, CNY, JPY and CAD prices in their own currencies");
     check(!lines.some(l => /real-time/i.test(l)), "R1 nothing is labelled real-time");
     await row(page, 12).locator("details summary").click();
     const vod = (await row(page, 12).locator("details dl").innerText()).replace(/\s+/g, " ");
-    check(/provider quoted [\d.]+ GBp/.test(vod) && /through this site's market-data gateway/.test(vod) && /may be delayed/i.test(vod) && /not labelled real-time/.test(vod), `R1 VOD.L: pence quote converted, source and delay stated (${vod.slice(0, 200)})`);
+    check(/provider quoted [\d.]+ GBp/.test(vod) && /through this site's data gateway/.test(vod) && /may be delayed/i.test(vod) && /not labelled real-time/.test(vod), `R1 VOD.L: pence quote converted, source and delay stated (${vod.slice(0, 200)})`);
     const vodPrice = num(await row(page, 12).locator(".rb-price").innerText());
     check(vodPrice > 0.5 && vodPrice < 2, `R1 VOD.L valued in pounds, not pence (£${vodPrice})`);
     check(/NVIDIA \(NVDA\) Yield Shares Purpose ETF · Cboe Canada/.test(await row(page, 8).locator(".rb-identity").innerText()), "R1 YNVD.NE stays the Cboe Canada ETF");
@@ -153,16 +156,17 @@ async function noHorizontalScroll(page, widths) {
     const tiles = await page.locator("#rbResults .pj-tile").allInnerTexts();
     check(/All verified/.test(tiles.join(" ")) && num(tiles.find(t => /Total buys/.test(t))) <= 3000.01 && await page.locator("#rbResults .rb-sell").count() === 0, "R1 New Money: within the budget, no sells, all prices verified");
     await page.locator("#rbResults .rb-warn-group.info summary").click();
-    check(/Priced by the free source \(Yahoo Finance data through this site's market-data gateway, no key; may be delayed; not an exchange's official price\): VEQT\.TO/.test(await page.locator("#rbResults").innerText()), "R1 the plan names the holdings priced by the free source");
+    check(/Priced by Yahoo Finance through this site's data gateway \(no key; may be delayed; not official exchange data\): VEQT\.TO/.test(await page.locator("#rbResults").innerText()), "R1 the plan names the holdings priced by Yahoo Finance");
     const csvText = fs.readFileSync(await download(page, "#rbExportCsv", "free-plan.csv"), "utf8");
-    check(/"Yahoo Finance \(free source, no key\)",VEQT\.TO,latest regular-session price \(may be delayed\)/.test(csvText) && /^Free source,Yahoo Finance chart data through this site's market-data gateway/m.test(csvText), "R1 CSV: source tier, symbol and price basis per holding, and the free source in the summary");
-    check(/VOD\.L,XLON:VOD,Vodafone Group Plc,,GBP,/.test(csvText) && /through this site's market-data gateway/.test(csvText), "R1 CSV: VOD.L in GBP with its listing; source details column");
-    check(!csvText.includes(AUTHORIZATION_TEXT) && !/SOURCE_AUTHORIZATION|KEYLESS_SOURCE/.test(csvText), "R1 CSV: no gateway setting or secret");
+    check(/"Yahoo Finance \(no key, this site's data gateway\)",VEQT\.TO,latest regular-session price \(may be delayed\)/.test(csvText) && /^Yahoo Finance,Yahoo Finance data through this site's data gateway/m.test(csvText), "R1 CSV: source, symbol and price basis per holding, and Yahoo Finance in the summary");
+    check(/^Source order \(first tried first\),1\. Yahoo Finance; 2\. Alpha Vantage \(off\); 3\. Marketstack \(off\); 4\. Finnhub \(off\)/m.test(csvText), "R1 CSV: the source order is recorded");
+    check(/VOD\.L,XLON:VOD,Vodafone Group Plc,,GBP,/.test(csvText) && /through this site's data gateway/.test(csvText), "R1 CSV: VOD.L in GBP with its listing; source details column");
+    check(!csvText.includes(ATTESTATION_TEXT) && !/OWNER_ATTESTATION|KEYLESS_SOURCE|SOURCE_AUTHORIZATION/.test(csvText), "R1 CSV: no gateway setting");
     try {
       const out = execFileSync(process.env.PYTHON || "python3", ["-c",
         "import sys,openpyxl,warnings;warnings.simplefilter('error');wb=openpyxl.load_workbook(sys.argv[1]);cells=[str(c.value) for ws in wb for r in ws.iter_rows() for c in r if c.value is not None];" +
-        "print('|'.join(wb.sheetnames), wb['Trade Plan'].max_row, any(isinstance(c,str) and c.startswith('=') for c in cells), any(sys.argv[2] in c for c in cells), any('Yahoo Finance (free source, no key)' in c for c in cells))",
-        await download(page, "#rbExportXlsx", "free-plan.xlsx"), AUTHORIZATION_TEXT], { encoding: "utf8" }).trim();
+        "print('|'.join(wb.sheetnames), wb['Trade Plan'].max_row, any(isinstance(c,str) and c.startswith('=') for c in cells), any(sys.argv[2] in c for c in cells), any('Yahoo Finance (no key, this site' in c for c in cells))",
+        await download(page, "#rbExportXlsx", "free-plan.xlsx"), ATTESTATION_TEXT], { encoding: "utf8" }).trim();
       check(out === "Trade Plan|Summary 15 False False True", `R1 Excel: 14 holdings, no formulas, no secret, source tier stated (${out})`);
     } catch (error) { check(false, `R1 Excel export validation: ${String(error.message).slice(0, 160)}`); }
     const stored = await page.evaluate(() => Object.keys(localStorage).map(k => [k, localStorage.getItem(k)]));
@@ -172,7 +176,7 @@ async function noHorizontalScroll(page, widths) {
     check(!disallowedRequests(net.external).length && calls.blocked.length === 0, `R1 only allowed hosts contacted (${disallowedRequests(net.external).slice(0, 3).join(", ")})`);
     const a11y = await a11yProblems(page, "#rb-app");
     check(!a11y.length, `R1 accessibility structure: labelled controls, unique ids, live regions (${a11y.join("; ")})`);
-    check(await page.getAttribute("#rbFreeSource", "role") === "status", "R1 the free-source panel is a status region");
+    check(await page.getAttribute("#rbFreeState", "role") === "status" && await page.getAttribute("#rbSrcLive", "aria-live") === "polite", "R1 Yahoo Finance's state and source-list changes are announced (status regions)");
     await page.click("#rbFxPanel > summary");
     const layout = await noHorizontalScroll(page, [360, 390, 768, 1280]);
     check(layout.every(l => l.ok), `R1 no horizontal scroll at 360–1280 px with prices and plan (${layout.map(l => `${l.width}:${l.scroll}/${l.client}`).join(" ")})`);
@@ -191,7 +195,7 @@ async function noHorizontalScroll(page, widths) {
     const before = quoteCalls(calls).length;
     const again = await open(browser, RB + WITH_GATEWAY, mode, { context, calls });
     await loadSample(again.page);
-    check(/about 0 free-source requests/.test(await again.page.locator("#rbEstimate").innerText()) || /needs no requests|about 0/.test(await again.page.locator("#rbEstimate").innerText()), `R2 estimate: copies saved in this browser cost nothing (${(await again.page.locator("#rbEstimate").innerText()).slice(0, 120)})`);
+    check(/about 0 Yahoo Finance requests/.test(await again.page.locator("#rbEstimate").innerText()) || /needs no requests|about 0/.test(await again.page.locator("#rbEstimate").innerText()), `R2 estimate: copies saved in this browser cost nothing (${(await again.page.locator("#rbEstimate").innerText()).slice(0, 120)})`);
     await again.page.click("#rbPriceAll");
     await rbIdle(again.page);
     check(quoteCalls(calls).length === before && /\(saved copy, \d+ min old\)/.test(await lineOf(again.page, 0)), "R2 this browser's saved copy: no request, labelled");
@@ -200,9 +204,9 @@ async function noHorizontalScroll(page, widths) {
 
   /* ---------- R3. production configuration: no gateway configured ---------- */
   {
-    const { context, page, calls } = await open(browser, RB, {});
+    const { context, page, calls } = await open(browser, `${RB}?mdgateway=none`, {});
     check(await page.getAttribute("#rb-app", "data-free-source") === "not_configured" && calls.gateway.length === 0, "R3 no gateway configured: nothing is contacted");
-    check(/not available\. This site's market-data gateway has not been set up/.test(await page.locator("#rbFreeSource").innerText()), "R3 the page says the free source is not set up");
+    check(/Not available on this site yet/.test(await page.locator("#rbFreeSource").innerText()), "R3 the page says Yahoo Finance is not available yet");
     await context.close();
   }
 
@@ -211,15 +215,15 @@ async function noHorizontalScroll(page, widths) {
     const mode = { gatewayOff: true };
     const { context, page, calls, net } = await open(browser, RB + WITH_GATEWAY, mode);
     check(await page.getAttribute("#rb-app", "data-free-source") === "disabled", "R4 switched-off source detected from the gateway's health");
-    check(/not available\. This site's market-data gateway is running, but its keyless source is switched off \(The keyless source is switched off on this gateway \(KEYLESS_SOURCE is not set\)/.test(await page.locator("#rbFreeSource").innerText()), "R4 the gateway's own reason is shown");
-    check(await page.locator('#rbSource option[value="keyless"]').isDisabled() && /\(not available\)/.test(await page.locator('#rbSource option[value="keyless"]').innerText()), "R4 the free source cannot be chosen");
+    check(/Not available right now: it is switched off on this site at the moment/.test(await page.locator("#rbFreeSource").innerText()) && !/KEYLESS_SOURCE|OWNER_ATTESTATION/.test(await page.locator("#rb-app").innerText()), "R4 a plain reason is shown, no gateway setting names");
+    check(/On, but unavailable: switched off on this site at the moment/.test(await page.locator("#rbSources .ms-item[data-source='yahoo'] .ms-state").innerText()), "R4 the source list says why Yahoo Finance is unavailable");
     check(await page.locator("#rbFreeSource button", { hasText: "Check again" }).count() === 1, "R4 Check again is offered");
     await loadSample(page);
-    check(/switched off on this site's market-data gateway/.test(await page.locator("#rbEstimate").innerText()) && /add your own key/i.test(await page.locator("#rbEstimate").innerText()), "R4 estimate explains why nothing can be fetched");
+    check(/Yahoo Finance is switched off on this site at the moment/.test(await page.locator("#rbEstimate").innerText()) && /add your own key/i.test(await page.locator("#rbEstimate").innerText()), "R4 estimate explains why nothing can be fetched");
     await page.click("#rbPriceAll");
     await rbIdle(page);
     check(quoteCalls(calls).length === 0 && calls.yahoo.length === 0, "R4 no price request to a switched-off source");
-    check(/0 of 14 priced/.test(await page.locator("#rbStatus").innerText()) && /no price source available/.test(await page.locator("#rbStatus").innerText()), `R4 every holding names the reason (${(await page.locator("#rbStatus").innerText()).slice(0, 160)})`);
+    check(/0 of 14 priced/.test(await page.locator("#rbStatus").innerText()) && /no source available/.test(await page.locator("#rbStatus").innerText()), `R4 every holding names the reason (${(await page.locator("#rbStatus").innerText()).slice(0, 160)})`);
     await page.click("#rbRun");
     check(/Plan withheld/.test(await page.locator("#rbResults").innerText()), "R4 plan withheld without prices");
     const pricesCsv = path.join(OUT, "own-prices.csv");
@@ -247,7 +251,7 @@ async function noHorizontalScroll(page, widths) {
     await page.waitForFunction(() => document.querySelector("#rb-app").dataset.freeSource === "enabled");
     await page.click("#rbPriceAll");
     await rbIdle(page);
-    check(/Verified[\s\S]*Yahoo Finance \(free source\)/.test(await lineOf(page, 0)) && quoteCalls(calls).length === 1, "R5 after Check again the free source prices the holding");
+    check(/Verified[\s\S]*Yahoo Finance · /.test(await lineOf(page, 0)) && quoteCalls(calls).length === 1, "R5 after Check again Yahoo Finance prices the holding");
     check(net.errors.length === 0, `R5 no page errors (${net.errors.join("; ")})`);
     await context.close();
   }
@@ -263,18 +267,22 @@ async function noHorizontalScroll(page, widths) {
     check(JSON.stringify(sent) === JSON.stringify(["AAPL", "BADCUR.DE", "BADJSON", "NOPRICE", "OTCX", "WRONGSYM", "ZZZQ"]), `R6 unsupported listings are not requested (${sent.join(",")})`);
     const texts = await Promise.all([0, 1, 2, 3, 4, 5, 6, 7, 8].map(i => lineOf(page, i)));
     check(/Verified/.test(texts[0]), "R6 AAPL priced");
-    check(/different listing or exchange; the answer was not used/.test(texts[1]), "R6 OTC listing for a US symbol refused");
-    check(/does not trade in; the answer was not used/.test(texts[2]), "R6 wrong currency refused");
-    check(/has no data for this symbol/.test(texts[3]) && /no current price/.test(texts[4]), "R6 unknown symbol and missing price explained");
-    check(/Market indexes cannot be held/.test(texts[5]) && /Not covered[\s\S]*free source does not cover/.test(texts[6]), "R6 index refused locally; Bombay listing not covered");
-    check(/failed its checks, so it was not used/.test(texts[7]) && /failed its checks|different listing/.test(texts[8]), "R6 malformed answer and a different symbol refused");
+    check(/Yahoo Finance: answered for a different listing/.test(texts[1]), "R6 OTC listing for a US symbol refused");
+    check(/Yahoo Finance: could not confirm the currency/.test(texts[2]), "R6 wrong currency refused");
+    check(/Yahoo Finance: has no data for this listing/.test(texts[3]) && /Yahoo Finance: has no data for this listing/.test(texts[4]), "R6 unknown symbol and missing price explained");
+    for (const [i, re, what] of [[1, /different listing or exchange; the answer was not used/, "OTC"], [2, /does not trade in; the answer was not used/, "currency"], [4, /no current price/, "no price"]]) {
+      await row(page, i).locator("details summary").click();
+      check(re.test(await row(page, i).locator("details dl").innerText()), `R6 the source's full answer is kept in the details (${what})`);
+    }
+    check(/Market indexes cannot be held/.test(texts[5]) && /Not covered[\s\S]*Yahoo Finance: does not cover/.test(texts[6]), "R6 index refused locally; Bombay listing not covered");
+    check(/Yahoo Finance: returned data that failed its checks/.test(texts[7]) && /failed its checks|different listing/.test(texts[8]), "R6 malformed answer and a different symbol refused");
     check(texts.slice(1).every(t => !/C\$|US\$|€|£/.test(t)), "R6 no price is shown for any refused holding");
     await page.click("#rbRun");
     check(/Plan withheld/.test(await page.locator("#rbResults").innerText()) && await page.locator("#rbResults .rb-pill").count() === 0, "R6 plan withheld while holdings lack a reliable price");
     await context.close();
   }
 
-  /* ---------- R7. rate limit, timeout and outage ---------- */
+  /* ---------- R7. rate limit, timeout and outage: requests stop, never loop ---------- */
   {
     const limited = { gatewayLimits: { perClientPerMinute: 5 } };
     const a = await open(browser, RB + WITH_GATEWAY, limited);
@@ -282,8 +290,19 @@ async function noHorizontalScroll(page, widths) {
     await a.page.click("#rbPriceAll");
     await rbIdle(a.page);
     const okCount = await a.page.locator("#rbRows .rb-row[data-tone='ok']").count();
-    check(okCount === 5 && /free source busy or limited/.test(await a.page.locator("#rbStatus").innerText()), `R7 rate limit: 5 priced, the rest say the free source is limited (${okCount})`);
-    check(quoteCalls(a.calls).length === 14, "R7 a rate-limited request is not retried in a loop");
+    check(okCount === 5 && /sources limited or paused/.test(await a.page.locator("#rbStatus").innerText()), `R7 rate limit: 5 priced, the rest say why (${okCount})`);
+    check(quoteCalls(a.calls).length === 6, `R7 after the first "too many requests" answer nothing more is sent (${quoteCalls(a.calls).length} requests for 14 holdings)`);
+    const paused = await a.page.$$eval("#rbRows .rb-line", ls => ls.filter(l => /Yahoo Finance: paused after a rate limit/.test(l.textContent)).length);
+    check(paused === 8, `R7 the holdings not requested say Yahoo Finance is paused (${paused})`);
+    check(/Paused: paused for about \d+ more minutes? after it asked this site to slow down/.test(await a.page.locator("#rbFreeState").innerText()) && await a.page.getAttribute("#rb-app", "data-free-source") === "paused", "R7 the Yahoo Finance panel shows the pause");
+    check(/On, but unavailable: paused for about/.test(await a.page.locator("#rbSources .ms-item[data-source='yahoo'] .ms-state").innerText()), "R7 the source list shows the pause");
+    // A reload keeps the pause: nothing is sent until it ends.
+    const reload = await open(browser, RB + WITH_GATEWAY, limited, { context: a.context, calls: a.calls });
+    await loadSample(reload.page);
+    const sentBefore = quoteCalls(a.calls).length;
+    await reload.page.click("#rbPriceAll");
+    await rbIdle(reload.page);
+    check(quoteCalls(a.calls).length === sentBefore, "R7 after a reload the pause is honoured without a request");
     await a.context.close();
 
     const slow = { yahoo: { hang: true }, gatewayLimits: { upstreamTimeoutMs: 200 } };
@@ -291,51 +310,63 @@ async function noHorizontalScroll(page, widths) {
     await importHoldings(b.page, "one.csv", ["AAPL,1,100,"]);
     await b.page.click("#rbPriceAll");
     await rbIdle(b.page);
-    check(/did not answer the free source in time/.test(await lineOf(b.page, 0)) && quoteCalls(b.calls).length === 2, "R7 timeout: retried once, then reported");
+    check(/Yahoo Finance: did not answer in time/.test(await lineOf(b.page, 0)) && quoteCalls(b.calls).length === 1, "R7 timeout reported by the gateway: reported, not retried");
     await b.context.close();
 
     const down = { yahoo: { down: true } };
     const c = await open(browser, RB + WITH_GATEWAY, down);
-    await importHoldings(c.page, "two.csv", ["AAPL,1,50,", "VEQT.TO,1,50,"]);
+    await importHoldings(c.page, "four.csv", ["AAPL,1,25,", "VEQT.TO,1,25,", "MSFT,1,25,", "SPY,1,25,"]);
     await c.page.click("#rbPriceAll");
     await rbIdle(c.page);
-    check(/Yahoo Finance is unavailable to the free source right now/.test(await lineOf(c.page, 0)) && /0 of 2 priced/.test(await c.page.locator("#rbStatus").innerText()), "R7 provider outage: reported per holding, nothing priced");
+    const outage = await Promise.all([0, 1, 2, 3].map(i => lineOf(c.page, i)));
+    check(/0 of 4 priced/.test(await c.page.locator("#rbStatus").innerText()) && outage.slice(0, 3).every(l => /Yahoo Finance: unavailable/.test(l)), `R7 provider outage: reported per holding, nothing priced (${outage[0]})`);
+    check(quoteCalls(c.calls).length === 3 && /Yahoo Finance: paused after an outage/.test(outage[3]) && c.calls.yahoo.length === 3, `R7 after three failures the gateway's breaker opens and the page stops asking (${quoteCalls(c.calls).length} requests, ${c.calls.yahoo.length} upstream)`);
     await c.page.click("#rbRun");
     check(/Plan withheld/.test(await c.page.locator("#rbResults").innerText()), "R7 plan withheld during an outage");
     await c.context.close();
   }
 
-  /* ---------- R8. personal keys: precedence, explicit choice, opt-in fallback that keeps the error visible ---------- */
+  /* ---------- R8. personal keys: Yahoo Finance stays first until the visitor reorders ---------- */
   {
     const mode = { avLimit: 0 };
     const { context, page, calls } = await open(browser, RB + WITH_GATEWAY, mode);
-    await saveKey(page, "Alpha Vantage", TEST_KEY);
-    await saveKey(page, "Finnhub", FH_KEY);
+    await saveKey(page, "Alpha Vantage", TEST_KEY, true); // remembered: the reload below opens a new tab
+    await saveKey(page, "Finnhub", FH_KEY, true);
+    const order = await page.$$eval("#rbSources .ms-item", n => n.map(i => `${i.dataset.source}:${i.dataset.status}`));
+    check(JSON.stringify(order) === JSON.stringify(["yahoo:on", "alphavantage:on", "marketstack:needs_key", "finnhub:on"]), `R8 saving keys switches providers on without moving them above Yahoo Finance (${order.join(" ")})`);
     await importHoldings(page, "keys.csv", ["VEQT.TO,10,50,", "AAPL,2,30,", "7203.T,1,20,"]);
     await page.click("#rbPriceAll");
     await rbIdle(page);
-    check(calls.fh.includes("AAPL") && /Finnhub · last price/.test(await lineOf(page, 1)), "R8 a saved key comes first: AAPL from Finnhub");
-    const limitLine = await lineOf(page, 0);
-    check(/daily (request )?limit/.test(limitLine) && !quoteCalls(calls).some(c => /VEQT/.test(c.url)), `R8 without fallback, Alpha Vantage's daily limit is shown and the free source is not used for VEQT.TO (${limitLine}; ${quoteCalls(calls).map(c => c.url).join(",")})`);
-    check(/Yahoo Finance \(free source\)/.test(await lineOf(page, 2)), "R8 Tokyo, which no saved key covers, uses the free source");
-    await page.check("#rbFallback");
-    await row(page, 0).getByRole("button", { name: /Retry|Get price/ }).click();
-    await rbIdle(page);
-    const fallbackLine = await lineOf(page, 0);
-    check(/Yahoo Finance \(free source\)[\s\S]*used because Alpha Vantage: daily limit reached/.test(fallbackLine) && await row(page, 0).getAttribute("data-tone") === "warn", `R8 opt-in fallback: priced by the free source, the key's daily limit stays visible (${fallbackLine})`);
-    if ((await page.locator("#rbKeysPanel").getAttribute("open")) === null) await page.click("#rbKeysPanel > summary");
-    check(/reported its daily limit/.test(await page.locator("#rbProviders").innerText()), "R8 the Alpha Vantage card still shows its daily limit");
-    await page.click("#rbRun");
-    check(/Needs your attention[\s\S]*VEQT\.TO: priced by Yahoo Finance because Alpha Vantage \(daily limit reached\) could not/.test(await page.locator("#rbResults").innerText()), "R8 the plan lists the fallback under Needs your attention");
-    const sentBefore = quoteCalls(calls).length;
-    await page.selectOption("#rbSource", "alphavantage");
-    await page.click("#rbPriceAll");
-    await rbIdle(page);
-    check(quoteCalls(calls).length === sentBefore && /Not covered/.test(await lineOf(page, 2)), "R8 Alpha Vantage chosen explicitly: the free source is not used");
-    await page.selectOption("#rbSource", "keyless");
-    await page.click("#rbPriceAll");
-    await rbIdle(page);
-    check(/Yahoo Finance \(free source\)/.test(await lineOf(page, 1)) && calls.fh.filter(s => s === "AAPL").length === 1, "R8 Free source chosen explicitly: keys are not used");
+    check(calls.av.length === 0 && calls.fh.length === 0 && quoteCalls(calls).length === 3, `R8 first source succeeds: later sources are not asked (${calls.av.length} AV, ${calls.fh.length} FH)`);
+    const firstLines = await Promise.all([0, 1, 2].map(i => lineOf(page, i)));
+    check(firstLines.every(l => /Verified[\s\S]*Yahoo Finance · /.test(l) && !/used because/.test(l)), `R8 all three priced by Yahoo Finance at position 1 (${firstLines[1]})`);
+    // Move Yahoo Finance to the bottom with its Move down button; the order persists.
+    for (let i = 0; i < 3; i += 1) await page.locator("#rbSources .ms-item[data-source='yahoo'] [data-dir='down']").click();
+    check(await page.$$eval("#rbSources .ms-item", n => n.map(i => i.dataset.source).join()) === "alphavantage,marketstack,finnhub,yahoo", "R8 Move down puts Yahoo Finance at position 4");
+    const again = await open(browser, RB + WITH_GATEWAY, mode, { context, calls });
+    check(await again.page.$$eval("#rbSources .ms-item", n => n.map(i => i.dataset.source).join()) === "alphavantage,marketstack,finnhub,yahoo", "R8 the order survives a reload");
+    await importHoldings(again.page, "keys2.csv", ["VEQT.TO,10,50,", "AAPL,2,30,", "7203.T,1,20,"]);
+    const yahooBefore = quoteCalls(calls).length;
+    await again.page.click("#rbPriceAll");
+    await rbIdle(again.page);
+    const veqt = await lineOf(again.page, 0);
+    check(/Yahoo Finance · [\s\S]*used because Alpha Vantage: daily limit reached/.test(veqt) && await row(again.page, 0).getAttribute("data-tone") === "warn", `R8 first source fails (daily limit), Finnhub is skipped (no TSX), Yahoo Finance prices VEQT.TO and the limit stays visible (${veqt})`);
+    check(calls.av.length === 1, `R8 an exhausted provider is not asked again (${calls.av.length} Alpha Vantage request)`);
+    check(/Finnhub · last price/.test(await lineOf(again.page, 1)) && JSON.stringify(calls.fh) === JSON.stringify(["AAPL"]), "R8 AAPL: Alpha Vantage skipped (limit recorded), Finnhub answers");
+    await row(again.page, 1).locator("details summary").click();
+    check(/(Skipped|Tried first)[\s\S]*Alpha Vantage: [^\n]*daily limit/.test(await row(again.page, 1).locator("details dl").innerText()), "R8 the details say why Alpha Vantage was not used");
+    check(/Yahoo Finance · /.test(await lineOf(again.page, 2)) && quoteCalls(calls).length - yahooBefore <= 2, "R8 7203.T: neither key covers Tokyo, Yahoo Finance answers (this browser's copy reused)");
+    if ((await again.page.locator("#rbKeysPanel").getAttribute("open")) === null) await again.page.click("#rbKeysPanel > summary");
+    check(/reported its daily limit/.test(await again.page.locator("#rbProviders").innerText()), "R8 the Alpha Vantage card shows its daily limit");
+    await again.page.click("#rbRun");
+    check(/Needs your attention[\s\S]*VEQT\.TO: priced by Yahoo Finance because Alpha Vantage \(daily limit reached\) could not/.test(await again.page.locator("#rbResults").innerText()), "R8 the plan lists the fallback under Needs your attention");
+    // Switching Yahoo Finance off leaves only the key providers.
+    await again.page.locator("#rbSources .ms-item[data-source='yahoo'] input[role='switch']").uncheck();
+    check(/Prices it gave were cleared \(VEQT\.TO, 7203\.T\)/.test(await again.page.locator("#rbSrcNotes").innerText()), "R8 switching a source off clears the prices it gave, by name");
+    const sent = quoteCalls(calls).length;
+    await again.page.click("#rbPriceAll");
+    await rbIdle(again.page);
+    check(quoteCalls(calls).length === sent && /Not covered|No source/.test(await lineOf(again.page, 2)), "R8 Yahoo Finance off: it is not asked");
     await context.close();
   }
 
@@ -356,43 +387,46 @@ async function noHorizontalScroll(page, widths) {
   {
     const mode = {};
     const { context, page, calls, net } = await open(browser, SD + WITH_GATEWAY, mode);
-    check(await page.isChecked('input[name="source"][value="free"]') && !(await page.isDisabled('input[name="source"][value="free"]')), "S1 new profile: the free source is selected by default");
-    check(/Free source/.test(await page.locator("#sddPipelineState").innerText()) && /No key needed/.test(await page.locator("#sddPipelineDetail").innerText()), "S1 the status widget names the free source");
-    check(/Free source \(no key\): available/.test(await page.locator("#sddFreeSourceState").innerText()), "S1 Settings: available");
+    check(await page.isChecked('input[name="source"][value="market"]') && await page.locator('input[name="source"][value="free"], input[name="source"][value="live"]').count() === 0, "S1 new profile: market data from the source list is selected by default");
+    check(/Yahoo Finance/.test(await page.locator("#sddPipelineState").innerText()) && /no key needed/.test(await page.locator("#sddPipelineDetail").innerText()), "S1 the status widget names Yahoo Finance as tried first");
+    check(/Yahoo Finance: available \(position 1 in your list\)/.test(await page.locator("#sddFreeSourceState").innerText()), "S1 Settings: available");
+    check(/1\. Yahoo Finance · 2\. Alpha Vantage \(off\) · 3\. Marketstack \(off\) · 4\. Finnhub \(off\)/.test(await page.locator("#sddSourceOrder").innerText()), "S1 the compare form shows the source order");
+    const marketstack = await page.locator("#sddSources .ms-item[data-source='marketstack'] .ms-why").innerText();
+    check(/Not used on this page: Marketstack provides latest prices only, not price history/.test(marketstack), `S1 a latest-price-only source is never presented as a history source (${marketstack})`);
     check(calls.gateway.length === 1 && calls.yahoo.length === 0, "S1 page load: one health check only");
     const TICKERS = ["AAPL", "VEQT.TO", "SAP.DE", "VOD.L", "7203.T", "600519.SS"];
     await setTickers(page, TICKERS);
     await page.selectOption("#sddHorizon", "1Y");
-    check(/at most 6 requests to the free source/.test(await page.locator("#sddEstimate").innerText()), "S1 request estimate shown");
+    check(/at most 6 Yahoo Finance requests/.test(await page.locator("#sddEstimate").innerText()), "S1 request estimate shown");
     const status = await run(page);
     check(/Comparison complete: 6 securities, 1Y, daily prices\./.test(status), `S1 comparison: six securities, daily (${status})`);
     const meta = await page.locator("#sddCompareMeta").innerText();
-    check(/Yahoo Finance \(free source, no key\)/.test(meta) && /252 periods per year/.test(meta), "S1 meta: source and annualization");
+    check(/Yahoo Finance \(no key\)/.test(meta) && /252 periods per year/.test(meta), "S1 meta: source and annualization");
     check(JSON.stringify(await metricCells(page, 1)) === JSON.stringify(["USD", "CAD", "EUR", "GBP", "JPY", "CNY"]), `S1 each series in its listing currency (${(await metricCells(page, 1)).join(",")})`);
     check((await metricCells(page, 2)).every(t => /Adjusted close/.test(t)), "S1 adjusted closes when requested and available");
     const hist = historyCalls(calls);
     check(hist.length === 6 && hist.every(c => { const p = new URL(c.url).searchParams; return [...p.keys()].sort().join() === "interval,range,symbol" && p.get("interval") === "1d" && ["1mo", "3mo", "6mo", "1y", "2y", "5y"].includes(p.get("range")); }), "S1 history requests: symbol, an allowlisted range and 1d only");
     check(JSON.stringify(hist.map(c => new URL(c.url).searchParams.get("symbol"))) === JSON.stringify(TICKERS), "S1 exact symbols requested");
     const sources = await page.locator("#sddCompareSources").innerText();
-    check(TICKERS.every(t => new RegExp(`${t.replace(".", "\\.")} · Yahoo Finance \\(free source, no key\\) \\(this site's market-data gateway\\)`).test(sources)) && /symbol VOD\.L/.test(sources) && /retrieved/.test(sources), "S1 provenance for every series");
+    check(TICKERS.every(t => new RegExp(`${t.replace(".", "\\.")} · Yahoo Finance \\(no key\\) \\(this site's data gateway\\)`).test(sources)) && /symbol VOD\.L/.test(sources) && /retrieved/.test(sources), `S1 provenance for every series (${sources.slice(0, 200)})`);
     check(/split/i.test(sources) && /dividend/i.test(sources), "S1 adjustment notes state what each basis means");
     const warnings = await page.locator("#sddCompareWarnings").innerText();
-    check(/VOD\.L: prices quoted in GBp \(minor units\) were converted to GBP/.test(warnings) && /Free source \(Yahoo Finance chart data/.test(warnings), "S1 pence conversion and the free-source note shown");
+    check(/VOD\.L: prices quoted in GBp \(minor units\) were converted to GBP/.test(warnings) && /Yahoo Finance \(through this site's data gateway, no key\)/.test(warnings), "S1 pence conversion and the Yahoo Finance note shown");
     check(await page.locator("#sddCorrelation table").count() === 1 && await page.locator("#sddRegression table").count() === 1, "S1 correlation and regression computed");
     const adjustedReturns = await metricCells(page, 3);
     // Exports.
     await page.click("#sddTab-export");
     const metricsCsv = fs.readFileSync(await download(page, "#sddExportMetrics", "free-metrics.csv"), "utf8");
-    check(TICKERS.every(t => new RegExp(`^${t.replace(".", "\\.")},[A-Z]{3},Adjusted close \\(dividends included\\),daily,[^\\n]*,"Yahoo Finance \\(free source, no key\\) \\(this site's market-data gateway\\)",[A-Z]{3}\\r?$`, "m").test(metricsCsv)), "S1 metrics CSV: source per series");
+    check(TICKERS.every(t => new RegExp(`^${t.replace(".", "\\.")},[A-Z]{3},Adjusted close \\(dividends included\\),daily,[^\\n]*,Yahoo Finance \\(no key\\) \\(this site's data gateway\\),[A-Z]{3}\\r?$`, "m").test(metricsCsv)), "S1 metrics CSV: source per series");
     const pricesCsv = fs.readFileSync(await download(page, "#sddExportPrices", "free-prices.csv"), "utf8");
-    check(/,VOD\.L,0\.\d+,Adjusted close \(dividends included\),GBP,"Yahoo Finance \(free source, no key\) \(this site's market-data gateway\)",GBP/.test(pricesCsv), "S1 prices CSV: source per row, VOD.L in pounds");
+    check(/,VOD\.L,0\.\d+,Adjusted close \(dividends included\),GBP,Yahoo Finance \(no key\) \(this site's data gateway\),GBP/.test(pricesCsv), "S1 prices CSV: source per row, VOD.L in pounds");
     const json = JSON.parse(fs.readFileSync(await download(page, "#sddExportJson", "free.json"), "utf8"));
-    check(json.comparison.provenance.length === 6 && json.comparison.provenance.every(p => p.sourceTier === "free" && p.source === "Yahoo Finance (free source, no key)"), "S1 JSON: provenance for every series");
+    check(json.comparison.provenance.length === 6 && json.comparison.provenance.every(p => p.sourceTier === "free" && p.sourceId === "yahoo" && p.source === "Yahoo Finance (no key)") && /1\. Yahoo Finance/.test(json.comparison.sourceOrder), "S1 JSON: provenance and source order for every series");
     try {
       const out = execFileSync(process.env.PYTHON || "python3", ["-c",
         "import sys,openpyxl,warnings;warnings.simplefilter('error');wb=openpyxl.load_workbook(sys.argv[1]);cells=[str(c.value) for ws in wb for r in ws.iter_rows() for c in r if c.value is not None];raw=wb['Raw Data Ingestion'];" +
-        "print(len(wb.sheetnames), any(isinstance(c,str) and c.startswith('=') for c in cells), any(sys.argv[2] in c for c in cells), any('Yahoo Finance chart data through' in c for c in cells), [c.value for c in raw[1]][-1])",
-        await download(page, "#sddExportXlsx", "free.xlsx"), AUTHORIZATION_TEXT], { encoding: "utf8" }).trim();
+        "print(len(wb.sheetnames), any(isinstance(c,str) and c.startswith('=') for c in cells), any(sys.argv[2] in c for c in cells), any('Yahoo Finance through this site' in c for c in cells), [c.value for c in raw[1]][-1])",
+        await download(page, "#sddExportXlsx", "free.xlsx"), ATTESTATION_TEXT], { encoding: "utf8" }).trim();
       check(out === "5 False False True Source", `S1 workbook: five sheets, no formulas or secrets, data source and per-row source (${out})`);
     } catch (error) { check(false, `S1 workbook validation: ${String(error.message).slice(0, 160)}`); }
     await page.click("#sddTab-compare");
@@ -426,7 +460,7 @@ async function noHorizontalScroll(page, widths) {
     await page.selectOption("#sddHorizon", "1M");
     const partial = await run(page);
     const notice = await page.locator("#sddCompareNotice").innerText();
-    check(/Comparison complete: 2 securities/.test(partial) && /2 tickers skipped/.test(partial) && /Market indexes cannot be held/.test(notice) && /no data for this symbol/.test(notice), `S1 index and unknown ticker skipped with reasons (${notice.replace(/\s+/g, " ").slice(0, 160)})`);
+    check(/Comparison complete: 2 securities/.test(partial) && /2 tickers skipped/.test(partial) && /\^GSPC: market indexes are not available from these sources/.test(notice) && /ZZZQ: [\s\S]*Yahoo Finance: has no data for this listing/.test(notice), `S1 index and unknown ticker skipped with reasons (${notice.replace(/\s+/g, " ").slice(0, 200)})`);
     check(!historyCalls(calls).some(c => /GSPC/.test(c.url)), "S1 the index is never requested");
     // Snapshot through the free source.
     await page.click("#sddTab-snapshot");
@@ -435,7 +469,7 @@ async function noHorizontalScroll(page, widths) {
     await page.waitForSelector("#sddSnapshotResult:not([hidden])", { timeout: 60000 });
     const market = await page.locator("#sddSnapshotMarket").innerText();
     check(/GBP/.test(await page.locator("#sddSnapshotIdentity").innerText()) && /0\.\d+ GBP/.test(market) && /may be delayed/.test(market) && /Last available price|Intraday/.test(market), `S1 snapshot: VOD.L in pounds, dated, delay stated (${market.replace(/\s+/g, " ").slice(0, 160)})`);
-    check(/Yahoo Finance \(free source, no key\)/.test(await page.locator("#sddSnapshotSource").innerText()), "S1 snapshot names its source");
+    check(/Yahoo Finance \(no key\)/.test(await page.locator("#sddSnapshotSource").innerText()) && /may be delayed/.test(await page.locator("#sddSnapshotSource").innerText()), "S1 snapshot names its source and that it may be delayed");
     // The demo still works and makes no request.
     await page.click("#sddTab-compare");
     const sent = calls.gateway.length;
@@ -450,11 +484,11 @@ async function noHorizontalScroll(page, widths) {
     await context.close();
   }
 
-  /* ---------- S2. switched-off gateway, and an Alpha Vantage key keeps its precedence ---------- */
+  /* ---------- S2. switched-off gateway; a saved Alpha Vantage key does not jump ahead of Yahoo Finance ---------- */
   {
     const { context, page, calls } = await open(browser, SD + WITH_GATEWAY, { gatewayOff: true });
-    check(await page.isDisabled('input[name="source"][value="free"]') && await page.isChecked('input[name="source"][value="live"]') && /\(not available\)/.test(await page.locator("#sddFreeState").innerText()), "S2 switched off: the free source cannot be chosen");
-    check(/switched off/.test(await page.locator("#sddFreeSourceState").innerText()) && /switched off/.test(await page.locator("#sddPipelineDetail").innerText()), "S2 Settings and status say it is switched off");
+    check(/\(no source available\)/.test(await page.locator("#sddFreeState").innerText()) && /Unavailable/.test(await page.locator("#sddPipelineState").innerText()), "S2 switched off: no history source available is stated");
+    check(/switched off on this site at the moment/.test(await page.locator("#sddFreeSourceState").innerText()) && /switched off/.test(await page.locator("#sddPipelineDetail").innerText()), "S2 Settings and status say it is switched off");
     check(historyCalls(calls).length + quoteCalls(calls).length === 0, "S2 nothing requested from a switched-off source");
     await context.close();
     const mode = {};
@@ -464,7 +498,7 @@ async function noHorizontalScroll(page, widths) {
     await first.page.check("#sddKeyRemember");
     await first.page.click('#sddKeyForm button[type="submit"]');
     const reload = await open(browser, SD + WITH_GATEWAY, mode, { context: first.context, calls: first.calls });
-    check(await reload.page.isChecked('input[name="source"][value="live"]') && !(await reload.page.isDisabled('input[name="source"][value="free"]')), "S2 with a saved Alpha Vantage key, the key stays the default; the free source is optional");
+    check(/Yahoo Finance/.test(await reload.page.locator("#sddPipelineState").innerText()) && /Then: Alpha Vantage/.test(await reload.page.locator("#sddPipelineDetail").innerText()), "S2 with a saved Alpha Vantage key, Yahoo Finance stays first and Alpha Vantage follows");
     await first.context.close();
   }
 

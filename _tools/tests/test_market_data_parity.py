@@ -227,7 +227,8 @@ def test_sample_portfolio_identical():
     assert target_total_basis_points(rows[:10]) == 9000, "the ten Questrade targets scaled to 90%"
     assert all(r["accountType"] == "" for r in rows)
     assert not any("price" in r or "group" in r for r in rows), "no prices and no separate group"
-    assert [r.get("sampleTag") for r in rows].count("international-example") == 4
+    assert all(set(r) == {"ticker", "shares", "targetWeight", "accountType"} for r in rows), "ordinary rows: no tag or marker"
+    assert SAMPLE_PORTFOLIO["schema"] == "rb.sample-portfolio.v3"
     assert SAMPLE_PORTFOLIO["reportingCurrency"] == "CAD" and SAMPLE_PORTFOLIO["mode"] == "new_money" and SAMPLE_PORTFOLIO["budget"] == 3000
 
 

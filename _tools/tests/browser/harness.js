@@ -12,7 +12,11 @@
 //   md.gateway.test        the REAL market-data gateway code (_services/market-data-gateway)
 //                          running in this process, whose upstream is the synthetic Yahoo
 //                          fixtures (../fixtures/yahoo-chart.mjs): Yahoo is never contacted.
-//                          Pages use it only when opened with ?mdgateway=https://md.gateway.test
+//                          Pages use it when opened with ?mdgateway=https://md.gateway.test.
+//                          The site's configured gateway (_data/market_data.yml), once set,
+//                          is answered by the same mocked Worker, so a page opened without
+//                          ?mdgateway behaves as in production without any live request;
+//                          ?mdgateway=none opens a page as if no gateway were configured.
 // Any other external request except the Chart.js CDN is aborted and recorded, so a
 // test can prove which hosts a page contacted. No real market data is stored here.
 //
@@ -35,6 +39,17 @@ const CORS = { "access-control-allow-origin": "*" };
 const JSON_HEADERS = { ...CORS, "content-type": "application/json" };
 const MD_GATEWAY = "https://md.gateway.test";
 const ROOT = path.resolve(__dirname, "../../..");
+// The deployed gateway the site points at (empty until it is set): never contacted by a test.
+const SITE_GATEWAY = (() => {
+  try {
+    const m = require("fs").readFileSync(path.join(ROOT, "_data/market_data.yml"), "utf8").match(/^gateway:\s*"([^"]*)"/m);
+    return m && m[1] ? new URL(m[1]).origin : "";
+  } catch (_) { return ""; }
+})();
+const escapeRe = text => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const GATEWAY_ROUTE = SITE_GATEWAY ? new RegExp(`^(https://md\\.gateway\\.test|${escapeRe(SITE_GATEWAY)})/`) : /^https:\/\/md\.gateway\.test\//;
+// The gateway's activation values, as the owner's production deployment sets them.
+const GATEWAY_ON = { KEYLESS_SOURCE: "yahoo-chart", OWNER_ATTESTATION: "owner-confirms-yahoo-permission" };
 let gatewayModules = null;
 const loadGateway = () => (gatewayModules ||= Promise.all([
   import(pathToFileURL(path.join(ROOT, "_services/market-data-gateway/src/gateway.js")).href),
@@ -206,15 +221,17 @@ async function mockMarketData(context, mode = {}) {
   const calls = { boc: 0, ecb: 0, av: [], ms: [], fh: [], gateway: [], yahoo: [], blocked: [] };
   mode.yahoo ||= {};
   mode.yahoo.calls = calls.yahoo;
-  await context.route(/^https:\/\/md\.gateway\.test\//, async route => {
+  await context.route(GATEWAY_ROUTE, async route => {
     const req = route.request();
     const [{ createGateway }, { yahooFetch }] = await loadGateway();
-    mode.gatewayInstance ||= createGateway({ fetchImpl: yahooFetch({ mode: mode.yahoo }), log: () => {}, cache: null, limits: mode.gatewayLimits || {} });
+    // Upstream spacing (1 s per request) is tested in unit tests; here it is shortened
+    // so a 14-holding run does not take 14 s, unless a test sets its own limits.
+    mode.gatewayInstance ||= createGateway({ fetchImpl: yahooFetch({ mode: mode.yahoo }), log: () => {}, cache: null, limits: { upstreamMinSpacingMs: 50, ...(mode.gatewayLimits || {}) } });
     const sent = req.headers();
     calls.gateway.push({ url: req.url(), method: req.method(), headers: sent, body: req.postData() });
     if (mode.gatewayHold) await mode.gatewayHold;
     if (mode.gatewayDown) return route.abort("connectionrefused");
-    const env = { ALLOWED_ORIGINS: SITE_URL, ...(mode.gatewayOff ? {} : { KEYLESS_SOURCE: "yahoo-chart", SOURCE_AUTHORIZATION: "browser test fixture" }) };
+    const env = { ALLOWED_ORIGINS: SITE_URL, ...(mode.gatewayOff ? {} : GATEWAY_ON) };
     const headers = { "CF-Connecting-IP": "198.51.100.20" };
     if (sent.origin) headers.Origin = sent.origin;
     if (sent["access-control-request-method"]) headers["Access-Control-Request-Method"] = sent["access-control-request-method"];

@@ -8,6 +8,11 @@
 // price; the exact 14-holding sample (one list, international holdings included)
 // loads with no prices and spends no request; one Get prices covers every holding;
 // and the page never scrolls sideways.
+//
+// These checks cover the personal-key providers, so the page is opened as if no data
+// gateway were configured (?mdgateway=none): Yahoo Finance is then listed first but
+// unavailable. Yahoo Finance itself, and its interplay with the keys, is covered by
+// freesource.test.js and sources.test.js.
 "use strict";
 const path = require("path");
 const fs = require("fs");
@@ -15,7 +20,7 @@ const os = require("os");
 const { execFileSync } = require("child_process");
 const { SITE_URL, TEST_KEY, FH_KEY, MS_KEY, launch, mockMarketData, watchNetwork, checker, disallowedRequests } = require("./harness");
 
-const PAGE = `${SITE_URL}/projects/portfolio-rebalancer/`;
+const PAGE = `${SITE_URL}/projects/portfolio-rebalancer/?mdgateway=none`;
 const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "rebalancer-test-"));
 const num = text => Number(String(text).replace(/[^0-9.\-]/g, ""));
 const SAMPLE = [
@@ -49,6 +54,16 @@ async function saveKey(page, provider, key, remember = false) {
 const row = (page, i, list = "#rbRows") => page.locator(`${list} .rb-row`).nth(i);
 const rowValues = (page, list = "#rbRows") => page.$$eval(`${list} .rb-row`, rows => rows.map(r => [r.querySelector(".rb-ticker").value, r.querySelector(".rb-shares").value, r.querySelector(".rb-weight").value]));
 const lineOf = (page, i, list) => row(page, i, list).locator(".rb-line").innerText();
+const sourceNames = page => page.$$eval("#rbSources .ms-item", items => items.map(i => i.querySelector(".ms-name").textContent));
+// Moves a source with the keyboard: focus its handle, press Arrow Up / Arrow Down.
+async function moveSource(page, name, steps) {
+  const handle = page.locator(`#rbSources .ms-item:has(.ms-name:text-is("${name}")) .ms-handle`);
+  await handle.focus();
+  for (let i = 0; i < Math.abs(steps); i += 1) {
+    await page.keyboard.press(steps < 0 ? "ArrowUp" : "ArrowDown");
+    await page.waitForTimeout(30);
+  }
+}
 async function loadSample(page) {
   await page.click("#rbSample");
   await page.waitForFunction(() => document.querySelectorAll("#rbRows .rb-row .rb-identity:not([hidden])").length === 14);
@@ -76,14 +91,17 @@ async function download(page, id, name) {
     const { context, page, calls, net } = await newPage(browser, mode);
     check(calls.boc === 1 && calls.av.length + calls.ms.length + calls.fh.length === 0, `page load: one Bank of Canada request, no price request (boc=${calls.boc})`);
     check(await page.locator("#rbRows .rb-row").count() === 1 && (await page.locator("#rbRows .rb-ticker").inputValue()) === "", "page starts with one empty holding, no sample prices");
-    const sources = await page.locator("#rbSource option").allInnerTexts();
-    check(sources.length === 5 && /Automatic \(route by market\)/.test(sources[0]) && /^Free source: no key \(Yahoo Finance\) \(not available\)$/.test(sources[1]) && sources.some(s => /Alpha Vantage/.test(s)) && sources.some(s => /Marketstack/.test(s)) && sources.some(s => /Finnhub/.test(s)), `source selector: Automatic, the free source (not available) and three providers (${sources.join(" | ")})`);
-    check(await page.locator('#rbSource option[value="keyless"]').isDisabled(), "without a configured gateway the free source cannot be chosen");
-    check(/Free source \(no key\): not available\. This site's market-data gateway has not been set up/.test(await page.locator("#rbFreeSource").innerText()) && await page.getAttribute("#rb-app", "data-free-source") === "not_configured", "production configuration (no gateway): the page says the free source is not set up");
+    const items = await page.$$eval("#rbSources .ms-item", n => n.map(i => [i.dataset.source, i.dataset.status, i.querySelector(".ms-state").textContent, i.querySelector(".ms-pos").textContent]));
+    check(JSON.stringify(items.map(i => i[0])) === JSON.stringify(["yahoo", "alphavantage", "marketstack", "finnhub"]) && items.every((it, n) => it[3] === String(n + 1)), `fresh browser: four numbered sources, Yahoo Finance first (${JSON.stringify(items)})`);
+    check(items[0][1] === "unavailable" && /On, but unavailable: not available on this site yet/.test(items[0][2]), `Yahoo Finance is on by default and says why it is unavailable (${items[0][2]})`);
+    check(items.slice(1).every(i => i[1] === "needs_key" && /Needs your API key/.test(i[2])), "every key provider starts off and says it needs a key");
+    check(await page.locator("#rbSources .ms-item[data-source='alphavantage'] input[role='switch']").isDisabled(), "a provider without a key cannot be switched on");
+    check(/Yahoo Finance — Free Market Data/.test(await page.locator("#rbFreeSource").innerText()) && /Quotes may be delayed, incomplete, or differ from official exchange data/.test(await page.locator("#rbFreeSource").innerText()), "the Yahoo Finance explanation is shown");
+    check(/Not available on this site yet/.test(await page.locator("#rbFreeState").innerText()) && await page.getAttribute("#rb-app", "data-free-source") === "not_configured", "without a configured gateway Yahoo Finance says it is not available yet");
+    check(await page.locator("#rbSource, #rbFallback, #rbRemoveIntl").count() === 0, "no single-source selector, no fallback checkbox, no Remove international examples button");
     check(calls.blocked.length === 0 && !net.external.some(u => /gateway/.test(u)), "no gateway is contacted when none is configured");
-    check(!sources.some(s => /Alpaca|Massive/.test(s)), "Alpaca and Massive are not offered in the browser");
+    check(!items.some(i => /alpaca|massive/.test(i[0])), "Alpaca and Massive are not offered in the browser");
     check(/Alpaca \(desktop app only\)[\s\S]*Massive \(deferred\)/.test(await page.locator("#rbNotOffered").textContent()), "the reasons Alpaca and Massive are not offered are stated");
-
     await loadSample(page);
     check(JSON.stringify(await rowValues(page)) === JSON.stringify(SAMPLE), "sample: fourteen holdings in order, with exact shares and targets");
     check(await page.locator("#rbTestRows, #rbTestGroup, #rbPriceTests").count() === 0, "no separate international container and no separate price button");
@@ -98,24 +116,14 @@ async function download(page, id, name) {
     check(/Toyota[\s\S]*JPY/.test(await row(page, 10).locator(".rb-identity").innerText()) && /SAP SE[\s\S]*EUR/.test(await row(page, 11).locator(".rb-identity").innerText()) && /Moutai[\s\S]*CNY/.test(await row(page, 13).locator(".rb-identity").innerText()), "international holdings show their listing currency");
     check(/GBP \(quoted in pence/.test(await row(page, 12).locator(".rb-identity").innerText()), "VOD.L is identified as quoted in pence");
     check(await row(page, 12).locator(".rb-ticker").isEditable() && await row(page, 12).locator(".rb-weight").isEditable() && await row(page, 12).locator(".rb-remove").count() === 1, "international holdings are editable and removable like any other");
-    check(/add your own key/i.test(await page.locator("#rbEstimate").innerText()), "without a key, the page explains how to get prices");
+    check(/add your own key/i.test(await page.locator("#rbEstimate").innerText()) && /Yahoo Finance is not available on this site yet/.test(await page.locator("#rbEstimate").innerText()), "without a usable source, the page explains how to get prices");
     await page.click("#rbRun");
     check(/Plan withheld/.test(await page.locator("#rbResults").innerText()) && await page.locator("#rbResults .rb-pill").count() === 0, "0 of 14 prices: no plan, no Buy/Sell pills");
     check(/14 of 14 holdings have no usable price/.test(await page.locator("#rbStatus").innerText()), "status says why the plan is withheld (not 'Completed')");
     check(await page.locator("#rbExportCsv").isDisabled() && await page.locator("#rbExportXlsx").isDisabled(), "no export without a plan");
-    // Remove international examples: only the four unchanged sample rows go.
-    check(await page.locator("#rbRemoveIntl").isVisible(), "Remove international examples is offered while the examples are unchanged");
-    await row(page, 10).locator(".rb-shares").fill("2");
-    await page.click("#rbAddRow");
-    await row(page, 14).locator(".rb-ticker").fill("SAP.DE");
-    await row(page, 14).locator(".rb-ticker").press("Enter");
-    await row(page, 14).locator(".rb-shares").fill("1");
-    await row(page, 14).locator(".rb-weight").fill("2.5");
-    await page.click("#rbRemoveIntl");
-    const left = (await rowValues(page)).map(r => r.join(" "));
-    check(left.length === 12 && left.includes("7203.T 2 2.5") && left.filter(t => /^SAP\.DE /.test(t)).length === 1 && !left.some(t => /^(VOD\.L|600519\.SS) /.test(t)), `removes only unchanged examples; an edited example and a user-added SAP.DE stay (${left.slice(9).join(" | ")})`);
-    check(await page.locator("#rbRemoveIntl").isHidden(), "the button disappears once no unchanged example is left");
-    check(/the plan scales them to 100%/.test(await page.locator("#rbSummary").innerText()), "targets no longer total 100%: the summary says they are scaled");
+    // The four international holdings are ordinary rows: no special removal control.
+    check(await page.getByRole("button", { name: /international/i }).count() === 0, "no button for removing the international holdings");
+    check(!/Remove international/i.test(await page.locator("#rb-app").innerText()), "no Remove international examples wording");
     check(net.errors.length === 0, `no page errors (${net.errors.join("; ")})`);
     await context.close();
   }
@@ -125,13 +133,21 @@ async function download(page, id, name) {
     const mode = {};
     const { context, page, calls, net } = await newPage(browser, mode);
     await saveKey(page, "Alpha Vantage", TEST_KEY);
+    check(/Alpha Vantage is switched on at position 2 of 4, after Yahoo Finance/.test(await page.locator("#rbStatus").innerText()), `a new key switches its provider on below Yahoo Finance, never at the top (${await page.locator("#rbStatus").innerText()})`);
     await saveKey(page, "Finnhub", FH_KEY);
+    check(JSON.stringify(await sourceNames(page)) === JSON.stringify(["Yahoo Finance", "Alpha Vantage", "Marketstack", "Finnhub"]), "saving keys does not reorder the list");
+    check(await page.locator("#rbSources .ms-item[data-source='finnhub']").getAttribute("data-status") === "on", "Finnhub is on after its key is saved");
+    // Keyboard reordering: Finnhub up two places, above Alpha Vantage (US listings first to Finnhub).
+    await moveSource(page, "Finnhub", -2);
+    check(JSON.stringify(await sourceNames(page)) === JSON.stringify(["Yahoo Finance", "Finnhub", "Alpha Vantage", "Marketstack"]), `Arrow Up moves Finnhub to position 2 (${(await sourceNames(page)).join(", ")})`);
+    check(/Finnhub moved to position 2 of 4/.test(await page.locator("#rbSrcLive").innerText()), "the move is announced");
+    check(await page.evaluate(() => document.activeElement?.closest(".ms-item")?.dataset.source) === "finnhub", "focus stays on the moved entry");
     await loadSample(page);
     const estimate = await page.locator("#rbEstimate").innerText();
     check(/about 8 Alpha Vantage requests/.test(estimate) && /about 4 Finnhub requests/.test(estimate), `estimate before fetching covers all fourteen: 8 Alpha Vantage, 4 Finnhub (${estimate.slice(0, 200)})`);
     check(/uses 8 of the 25 left/.test(estimate), "the estimate says how much of the daily allowance it uses");
     check(/Listings outside Canada and the US: 7203\.T \(Tokyo Stock Exchange, JPY\), SAP\.DE \(Xetra[^)]*\), EUR\), VOD\.L \(London Stock Exchange, GBP\), 600519\.SS \(Shanghai Stock Exchange, CNY\)/.test(estimate), "international listings are named before any request");
-    check(/Not covered by your saved sources: YNVD\.NE, 7203\.T/.test(estimate), "YNVD.NE and 7203.T are named as not covered before any request");
+    check(/Not covered by the sources switched on: YNVD\.NE, 7203\.T/.test(estimate), "YNVD.NE and 7203.T are named as not covered before any request");
     check(!/of 25 used/.test(await page.locator("#rb-app").innerText()), "no 'N of 25 used' wording anywhere");
     check(calls.av.length + calls.fh.length === 0, "still no request before Get prices");
     check(/about 12 requests/.test(await page.locator("#rbPriceAll").innerText()), `one Get prices button for every holding (${await page.locator("#rbPriceAll").innerText()})`);
@@ -142,7 +158,7 @@ async function download(page, id, name) {
     check(JSON.stringify(calls.fh.slice().sort()) === JSON.stringify(["AAPL", "CBRS", "SPCX", "VST"]), `US holdings: Finnhub (${calls.fh.join(",")})`);
     check(!calls.av.concat(calls.fh).some(c => /YNVD|7203/.test(c)), "no request for the holdings no saved source covers");
     const status = await page.locator("#rbStatus").innerText();
-    check(/12 of 14 priced\. Without a usable price: YNVD\.NE \(not covered by your saved sources\), 7203\.T \(not covered by your saved sources\)\. The plan stays withheld/.test(status), `Get prices names the incomplete holdings (${status})`);
+    check(/12 of 14 priced\. Without a usable price: YNVD\.NE \(not covered by your sources\), 7203\.T \(not covered by your sources\)\. The plan stays withheld/.test(status), `Get prices names the incomplete holdings (${status})`);
     check(/Verified[\s\S]*Alpha Vantage · latest price for trading day \d{4}-\d{2}-\d{2}/.test(await lineOf(page, 0)), "VEQT.TO shows provider, price type and trading date");
     check(/Verified[\s\S]*US\$[\d,.]+[\s\S]*Finnhub · last price/.test(await lineOf(page, 4)), "AAPL priced in US dollars by Finnhub");
     check(/Verified[\s\S]*€[\d,.]+/.test(await lineOf(page, 11)) && /Verified[\s\S]*£[\d,.]+/.test(await lineOf(page, 12)) && /Verified[\s\S]*CN¥[\d,.]+/.test(await lineOf(page, 13)), "SAP.DE in euros, VOD.L in pounds, 600519.SS in yuan");
@@ -176,7 +192,9 @@ async function download(page, id, name) {
     // Exports: provenance, user-supplied label, display tickers kept, no keys.
     const csvText = fs.readFileSync(await download(page, "#rbExportCsv", "plan.csv"), "utf8");
     check(/Includes 2 user-supplied price/.test(csvText) && /YNVD\.NE,NEOE:YNVD/.test(csvText) && /Entered by you \(user-supplied\)/.test(csvText), "CSV: user-supplied label, YNVD.NE and its listing");
-    check(/Alpha Vantage \(provider\),VEQT\.TRT,latest price for trading day/.test(csvText) && /Finnhub \(provider\),AAPL,last price/.test(csvText), "CSV: provider, provider symbol and price type per holding");
+    check(/Alpha Vantage \(your own key\),VEQT\.TRT,latest price for trading day/.test(csvText) && /Finnhub \(your own key\),AAPL,last price/.test(csvText), "CSV: provider, provider symbol and price type per holding");
+    check(/Source order \(first tried first\),1\. Yahoo Finance; 2\. Finnhub; 3\. Alpha Vantage; 4\. Marketstack \(off\)/.test(csvText), "CSV: the source order used for the plan");
+    check(/Sources tried first,Sources skipped/.test(csvText) && /Finnhub: does not cover Toronto Stock Exchange/.test(csvText), "CSV: why earlier sources were skipped, per holding");
     check(/VOD\.L,XLON:VOD,Vodafone Group Plc,,GBP,/.test(csvText) && /SAP\.DE,XETR:SAP,SAP SE,,EUR,/.test(csvText) && /600519\.SS,XSHG:600519,[^\n]*,CNY,/.test(csvText) && /7203\.T,XTKS:7203,Toyota Motor Corporation,,JPY,/.test(csvText), "CSV: every international holding with its listing and currency");
     check(/Bank of Canada/.test(csvText) && /^JPY,/m.test(csvText) && /^GBP,/m.test(csvText) && /^EUR,/m.test(csvText) && /^CNY,/m.test(csvText), "CSV: exchange-rate source for every currency");
     check(!csvText.includes(TEST_KEY) && !csvText.includes(FH_KEY), "CSV contains no key");
@@ -317,15 +335,19 @@ async function download(page, id, name) {
     const { context, page } = await newPage(browser, mode);
     await saveKey(page, "Alpha Vantage", TEST_KEY);
     await saveKey(page, "Finnhub", FH_KEY);
+    await moveSource(page, "Finnhub", -2); // Finnhub before Alpha Vantage: AAPL goes to Finnhub
     await row(page, 0).locator(".rb-ticker").fill("AAPL");
     await row(page, 0).locator(".rb-shares").fill("2");
     await row(page, 0).locator(".rb-weight").fill("100");
     await row(page, 0).locator(".rb-ticker").press("Enter");
     await page.waitForFunction(() => /Fetching/.test(document.querySelector("#rbRows .rb-line").textContent));
-    await page.selectOption("#rbSource", "alphavantage");
+    await page.locator("#rbSources .ms-item[data-source='finnhub'] input[role='switch']").uncheck();
     release();
     await page.waitForTimeout(500);
-    check(!/Finnhub/.test(await lineOf(page, 0)), "a source change mid-request discards the old source's late answer");
+    check(!/Finnhub/.test(await lineOf(page, 0)), "switching a source off mid-request discards its late answer");
+    await row(page, 0).getByRole("button", { name: /Get price|Retry/ }).click();
+    await idle(page);
+    check(/Alpha Vantage/.test(await lineOf(page, 0)), "the next request uses the remaining source");
     await context.close();
   }
 
@@ -334,7 +356,6 @@ async function download(page, id, name) {
     const mode = { msLimit: 1 };
     const { context, page, calls } = await newPage(browser, mode);
     await saveKey(page, "Marketstack", MS_KEY);
-    await page.selectOption("#rbSource", "marketstack");
     await loadSample(page);
     const msEstimate = await page.locator("#rbEstimate").innerText();
     check(/about 13 Marketstack requests/.test(msEstimate) && /uses 13 of the 100 left/.test(msEstimate) && /YNVD\.NE/.test(msEstimate), `Marketstack estimate: 13 requests of 100, YNVD.NE not covered (${msEstimate.slice(0, 160)})`);
@@ -350,6 +371,7 @@ async function download(page, id, name) {
     const { context, page } = await newPage(browser, {});
     await saveKey(page, "Alpha Vantage", TEST_KEY);
     await saveKey(page, "Finnhub", FH_KEY);
+    await moveSource(page, "Finnhub", -2);
     await page.check("#rbShowAccount");
     await loadSample(page);
     await page.click("#rbPriceAll");

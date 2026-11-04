@@ -14,9 +14,8 @@ let nextId = 1;
 export const ROW_STATES = ["empty", "draft", "resolved", "invalid", "unsupported", "unresolved", "pricing", "priced", "failed", "not_covered"];
 
 // Every holding is an ordinary row: there is no separate group or pricing rule for any
-// market. `sampleTag` (set only for rows loaded from the sample) is provenance for the
-// optional "Remove international examples" button; `sampleTicker` is the ticker as loaded.
-export function createRow({ ticker = "", shares = "", targetWeight = "", accountType = "", sampleTag = null } = {}) {
+// market.
+export function createRow({ ticker = "", shares = "", targetWeight = "", accountType = "" } = {}) {
   const text = String(ticker || "").trim().toUpperCase();
   return {
     id: `r${nextId++}`,
@@ -25,8 +24,6 @@ export function createRow({ ticker = "", shares = "", targetWeight = "", account
     shares: shares === null || shares === undefined ? "" : String(shares),
     targetWeight: targetWeight === null || targetWeight === undefined ? "" : String(targetWeight),
     accountType: accountType || "",
-    sampleTag: sampleTag || null,
-    sampleTicker: sampleTag ? text : null,
     status: text ? "draft" : "empty",
     identity: null,
     quote: null, // md.quote.v1 from a provider, for this row's current instrument only

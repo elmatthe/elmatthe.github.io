@@ -1,9 +1,16 @@
 # Cloudflare Workers configuration for the shared market-data gateway (Workers Free plan).
-# Deployment, activation gate, verification and rollback: README.md in this folder.
+# Deployment, activation, verification and rollback: README.md in this folder.
 #
 # Uses no paid feature and no storage product: no KV, D1, R2, Durable Objects, Queues
 # or Workers Paid features. Keep the account on the Workers Free plan; Cloudflare then
 # stops serving requests above the free daily allowance (error 1027) instead of billing.
+#
+# Two configurations:
+#   npx wrangler@4 deploy                    top-level settings below: the data source is
+#                                            OFF (a fresh, unconfigured deployment)
+#   npx wrangler@4 deploy --env production   the owner's approved deployment ([env.production]):
+#                                            the data source is ON by the owner's attestation
+# Both deploy the same Worker name, so the last deploy decides the live settings.
 name = "market-data-gateway"
 main = "src/worker.js"
 compatibility_date = "2026-10-01"
@@ -19,20 +26,26 @@ enabled = false
 # http://127.0.0.1:<port> / http://localhost:<port> for local development only).
 ALLOWED_ORIGINS = "https://elmatthe.github.io"
 
-# THE ACTIVATION GATE. The keyless source stays OFF unless BOTH are set:
-#   KEYLESS_SOURCE       = "yahoo-chart"
-#   SOURCE_AUTHORIZATION = a reference to the written permission that covers automated
-#                          retrieval AND public redistribution of this data (who granted
-#                          it, when, and where the document is kept).
-# With either empty, every data request is answered with `source_disabled` and no
-# request is sent to the data source. Do not fill these in without that permission.
+# THE ACTIVATION SETTINGS. The keyless source stays OFF unless BOTH are set exactly:
+#   KEYLESS_SOURCE    = "yahoo-chart"
+#   OWNER_ATTESTATION = "owner-confirms-yahoo-permission"
+# OWNER_ATTESTATION is a plain flag by which the site owner confirms that their own
+# written permission covers automated retrieval through this Worker, temporary caching
+# and display to visitors. It holds no document, reference or secret. With either value
+# missing, every data request is answered with `source_disabled` and nothing is sent to
+# the data source.
 KEYLESS_SOURCE = ""
-SOURCE_AUTHORIZATION = ""
+OWNER_ATTESTATION = ""
+
+# "true" lets clients that send no Origin header (the desktop apps) use the data
+# endpoints. Browsers always send Origin on these requests; an unlisted Origin is refused.
+ALLOW_NO_ORIGIN = "false"
 
 # Cross-isolate rate limits, in addition to the in-memory limits in src/gateway.js.
 # Requires Wrangler 4.36.0 or later; namespace_id is any integer unique within your
-# Cloudflare account. If your account cannot use the binding, remove these two blocks:
-# the in-memory limits still apply. Limits are approximate and per Cloudflare location.
+# Cloudflare account. If your account cannot use the binding, remove these blocks
+# (here and under [env.production]): the in-memory limits still apply. Limits are
+# approximate and per Cloudflare location.
 # Per client (hashed client IP):
 [[ratelimits]]
 name = "RATE_LIMITER"
@@ -48,5 +61,33 @@ name = "UPSTREAM_LIMITER"
 namespace_id = "21012"
 
   [ratelimits.simple]
-  limit = 60
+  limit = 40
+  period = 60
+
+# ---------------------------------------------------------------------------------
+# The owner's approved deployment. `vars` and rate-limit bindings are not inherited
+# by an environment in Wrangler, so they are repeated here in full.
+[env.production]
+name = "market-data-gateway"
+
+[env.production.vars]
+ALLOWED_ORIGINS = "https://elmatthe.github.io"
+KEYLESS_SOURCE = "yahoo-chart"
+OWNER_ATTESTATION = "owner-confirms-yahoo-permission"
+ALLOW_NO_ORIGIN = "true"
+
+[[env.production.ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "21011"
+
+  [env.production.ratelimits.simple]
+  limit = 30
+  period = 60
+
+[[env.production.ratelimits]]
+name = "UPSTREAM_LIMITER"
+namespace_id = "21012"
+
+  [env.production.ratelimits.simple]
+  limit = 40
   period = 60

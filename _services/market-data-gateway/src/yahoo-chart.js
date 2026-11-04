@@ -1,20 +1,21 @@
 // Upstream adapter for Yahoo Finance chart data (the gateway's only upstream).
 //
-// What this endpoint is, and is not:
-//   * https://query1.finance.yahoo.com/v8/finance/chart/{symbol} is an UNOFFICIAL,
-//     undocumented Yahoo Finance endpoint. Yahoo publishes no API documentation, no
-//     service levels and no licence for it. It is not the Python `yfinance` library
-//     (an independent open-source client of the same endpoints).
-//   * Running it through a Cloudflare Worker does not remove Yahoo's rate limits or its
-//     blocking of automated clients, and it does not license the data. Yahoo's Terms of
-//     Service prohibit collecting data "using any automated means" and redistributing
-//     the services (see _tools/PROVIDER_MATRIX.md, "Keyless gateway").
+// What this endpoint is:
+//   * https://query1.finance.yahoo.com/v8/finance/chart/{symbol} is Yahoo Finance's chart
+//     endpoint. Yahoo publishes no API documentation or service levels for it. It is not
+//     the Python `yfinance` library (an independent open-source client of the same
+//     endpoint); the gateway calls it directly from the Worker.
+//   * The site owner has confirmed that their own written permission from Yahoo covers
+//     automated retrieval through this Worker, temporary caching and display to visitors.
+//     The gateway still keeps the source OFF unless its operator activates it
+//     (KEYLESS_SOURCE + OWNER_ATTESTATION; README.md, "Activation").
+//   * Running it through a Cloudflare Worker does not remove Yahoo's rate limits. The
+//     gateway spaces, budgets, coalesces and caches its requests, and stops contacting
+//     Yahoo for a while after any refusal (./gateway.js).
 //   * This adapter sends an honest, identifying User-Agent. It does not imitate a
-//     browser, obtain cookies or "crumbs", rotate addresses or otherwise work around
-//     bot detection. If Yahoo refuses the request, the gateway reports it and stops.
-// The gateway therefore keeps this source OFF unless its operator records a written
-// authorization (SOURCE_AUTHORIZATION; README.md, "Activation gate").
-//
+//     browser, obtain cookies or "crumbs", rotate addresses or otherwise work around a
+//     refusal. If Yahoo refuses the request, the gateway reports it and stops.
+
 // The URL is always built here from a fixed base and an allowlisted symbol; nothing
 // the client sends is copied into it except that validated symbol and an allowlisted
 // range.
@@ -27,9 +28,9 @@ export const YAHOO_CHART_PATH = "/v8/finance/chart/";
 export const SOURCE_INFO = Object.freeze({
   id: SOURCE_ID,
   provider: "Yahoo Finance",
-  dataset: "Yahoo Finance chart data (unofficial, undocumented endpoint)",
+  dataset: "Yahoo Finance chart data",
   official: false,
-  attribution: "Data: Yahoo Finance (unofficial chart endpoint), relayed by this site's market-data gateway. Not an exchange's official price.",
+  attribution: "Data: Yahoo Finance, retrieved and temporarily cached by this site's market-data gateway. Quotes may be delayed and are not an exchange's official price.",
 });
 
 // Calendar days each history range covers, and the one interval served.

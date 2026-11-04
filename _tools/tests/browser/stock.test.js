@@ -1,5 +1,8 @@
 // Browser test: Stock Comparison & Analytics web app (visitor-key live data, CSV
 // import, offline demo, official-rate FX normalization, exports, failure paths).
+// The page is opened as if no data gateway were configured (?mdgateway=none), so
+// Alpha Vantage with the visitor's key is the only history source; Yahoo Finance and
+// the source order are covered by freesource.test.js and sources.test.js.
 "use strict";
 const path = require("path");
 const fs = require("fs");
@@ -7,7 +10,7 @@ const os = require("os");
 const { execFileSync } = require("child_process");
 const { SITE_URL, TEST_KEY, launch, mockMarketData, watchNetwork, checker, disallowedRequests } = require("./harness");
 
-const PAGE = `${SITE_URL}/projects/stock-data-dashboard-tool/`;
+const PAGE = `${SITE_URL}/projects/stock-data-dashboard-tool/?mdgateway=none`;
 const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "stock-test-"));
 const DAY = 86400000;
 
@@ -48,7 +51,7 @@ function sampleCsv() {
   // Live without a key: explained, no request.
   await page.click("#sddRunCompare");
   await waitCompare();
-  check(/Live data is not set up/.test(await page.locator("#sddCompareNotice").innerText()) && calls.av.length === 0, "live run without a key explains how to proceed and makes no request");
+  check(/No market-data source is available/.test(await page.locator("#sddCompareNotice").innerText()) && /Alpha Vantage: no key saved/.test(await page.locator("#sddCompareNotice").innerText()) && /Marketstack: latest prices only, not used for comparisons/.test(await page.locator("#sddCompareNotice").innerText()) && calls.av.length === 0, "a run without any usable source explains how to proceed, per source, and makes no request");
 
   // Invalid input never reaches the network.
   await page.fill("#sddTickerList .sdd-ticker-row:nth-child(2) input", "MS FT$");
@@ -61,7 +64,8 @@ function sampleCsv() {
   await page.click("#sddKeyForm button[type=submit]");
   check(/kept for this tab only/.test(await page.locator("#sddKeyStatus").innerText())
     && await page.evaluate(k => sessionStorage.getItem("md.key.v2.alphavantage") === k && !JSON.stringify(localStorage).includes(k), TEST_KEY), "key kept for this tab only by default");
-  check(/Your key/.test(await page.locator("#sddPipelineState").innerText()), "masthead shows live data via the visitor's key");
+  check(/kept for this tab only[\s\S]*Alpha Vantage is switched on at position 2 of 4, after Yahoo Finance/.test(await page.locator("#sddKeyStatus").innerText()), `saving the key switches Alpha Vantage on below Yahoo Finance (${await page.locator("#sddKeyStatus").innerText()})`);
+  check(/Alpha Vantage/.test(await page.locator("#sddPipelineState").innerText()), "masthead names the source tried first (Alpha Vantage, as Yahoo Finance is unavailable here)");
   await page.click("#sddTab-compare");
 
   // 1Y live comparison: weekly adjusted closes, one unknown ticker, normalized to USD.
@@ -108,7 +112,7 @@ function sampleCsv() {
     "metadata reports the price basis actually used, not the one requested");
   check(/windows up to about 4 months use daily closes as traded/.test(await page.locator("#sddCompareWarnings").innerText()),
     "live results explain that the window decides frequency and price basis");
-  check(/indexes are a premium/.test(await page.locator("#sddCompareNotice").innerText()), "index symbol explained as unavailable on a free key");
+  check(/\^GSPC: market indexes are not available from these sources/.test(await page.locator("#sddCompareNotice").innerText()), "index symbol explained as unavailable");
   check(!calls.av.some(c => /\^GSPC/.test(c)), "no request made for an index symbol");
 
   // Exports.
@@ -129,7 +133,8 @@ function sampleCsv() {
       "import sys,openpyxl,warnings;warnings.simplefilter('error');wb=openpyxl.load_workbook(sys.argv[1]);ws=wb['Read Me & Sources'];print('|'.join(wb.sheetnames));print(' '.join(str(c.value) for r in ws.iter_rows() for c in r if c.value))", xlsxPath]).toString().trim().split("\n");
     check(out[0] === "Read Me & Sources|Executive Summary|Model & Calculations|Portfolio Risk|Raw Data Ingestion", `XLSX opens cleanly with five sheets (${out[0]})`);
     check(/Alpha Vantage, fetched with the user's own API key/.test(out[1]) && /weekly log returns/.test(out[1]) && /52 periods per year/.test(out[1]), "workbook read-me states source, frequency and annualization");
-    check(/Live data note/.test(out[1]) && /Native currency/.test(out[1]) && /Converted from CAD/.test(out[1]), "workbook read-me states the live-data basis note and each ticker's currency conversion");
+    check(/Data note/.test(out[1]) && /windows up to about 4 months use daily closes as traded/.test(out[1]) && /Native currency/.test(out[1]) && /Converted from CAD/.test(out[1]), "workbook read-me states the live-data basis note and each ticker's currency conversion");
+    check(/Source order \(first tried first\) 1\. Yahoo Finance; 2\. Alpha Vantage; 3\. Marketstack \(off\); 4\. Finnhub \(off\)/.test(out[1]) && /Sources tried first/.test(out[1]) && /Yahoo Finance: not available on this site yet/.test(out[1]), "workbook read-me records the source order and why Yahoo Finance was skipped");
     check(!out.join(" ").includes(TEST_KEY) && !fs.readFileSync(csvPath, "utf8").includes(TEST_KEY), "exports never contain the API key");
   } catch (error) {
     check(false, `XLSX validation via openpyxl: ${String(error.message).slice(0, 160)}`);
@@ -189,13 +194,13 @@ function sampleCsv() {
   check(/line 2/.test(await status()), "malformed CSV rejected with a line number");
 
   // Rate limit, then the offline demo with no requests.
-  await page.check('input[name="source"][value="live"]');
+  await page.check('input[name="source"][value="market"]');
   await page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith("md.av.")).forEach(k => localStorage.removeItem(k)));
   Object.assign(mode, { avLimit: 2, avCalls: 0 });
   await page.click("#sddRunCompare");
   await waitCompare();
   const noticeText = await page.locator("#sddCompareNotice").innerText();
-  check(/daily request limit/.test(noticeText), "rate limit explained");
+  check(/Alpha Vantage: daily limit reached/.test(noticeText), `quota exhaustion is shown, not hidden (${noticeText.slice(0, 200)})`);
   check(!/of 25/.test(await page.locator("#sdd-app, body").first().innerText()), "no 'N of 25 used' wording");
   check(await page.locator("#sddCompareResult").isHidden() && await page.locator("#sddExportXlsx").isDisabled(), "failed run hides the superseded result and disables exports");
   const avAfterLimit = calls.av.length;
@@ -218,7 +223,7 @@ function sampleCsv() {
   await page.fill("#sddKey", TEST_KEY);
   await page.click("#sddKeyForm button[type=submit]");
   await page.click("#sddTab-compare");
-  await page.check('input[name="source"][value="live"]');
+  await page.check('input[name="source"][value="market"]');
   Object.assign(mode, { avLimit: undefined, avCalls: 0 });
   const rows = page.locator("#sddTickerList .sdd-ticker-row input");
   for (let i = 0; i < await rows.count(); i += 1) await rows.nth(i).fill(["SPLITX", "AAPL", "MSFT"][i] || "");

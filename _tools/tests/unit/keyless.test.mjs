@@ -18,16 +18,17 @@ const REFERENCE = JSON.parse(fs.readFileSync(new URL("../../../assets/data/instr
 const resolver = createInstrumentResolver(REFERENCE);
 const GATEWAY = "https://md.gateway.test";
 const ORIGIN = "https://elmatthe.github.io";
-const ON = { KEYLESS_SOURCE: "yahoo-chart", SOURCE_AUTHORIZATION: "test fixture only", ALLOWED_ORIGINS: ORIGIN };
+const ON = { KEYLESS_SOURCE: "yahoo-chart", OWNER_ATTESTATION: "owner-confirms-yahoo-permission", ALLOWED_ORIGINS: ORIGIN };
 const NOW = Date.parse("2026-11-03T15:00:00Z");
 const AV_KEY = "TESTKEY12345";
 
 // The browser side: fetch() calls to the gateway go to the real gateway handler; Alpha
 // Vantage answers with its daily-limit notice (to test fallback); anything else fails.
-function world({ env = ON, mode = {}, avLimited = false, gatewayDown = false } = {}) {
+function world({ env = ON, mode = {}, avLimited = false, gatewayDown = false, local = memoryStorage() } = {}) {
   let t = NOW;
   const calls = { gateway: [], av: 0, yahoo: [] };
-  const gw = createGateway({ fetchImpl: yahooFetch({ now: () => t, mode: { ...mode, calls: calls.yahoo } }), now: () => t, log: () => {}, cache: null });
+  const upstreamMode = { ...mode, calls: calls.yahoo };
+  const gw = createGateway({ fetchImpl: yahooFetch({ now: () => t, mode: upstreamMode }), now: () => t, log: () => {}, cache: null, limits: { upstreamMinSpacingMs: 0 }, sleep: async () => {} });
   const fetchImpl = async (url, init = {}) => {
     const u = new URL(String(url));
     if (u.origin === GATEWAY) {
@@ -44,8 +45,8 @@ function world({ env = ON, mode = {}, avLimited = false, gatewayDown = false } =
     }
     throw new TypeError(`unexpected host ${u.host}`);
   };
-  const md = createMarketData({ local: memoryStorage(), session: memoryStorage(), fetchImpl, now: () => t, reference: REFERENCE, gatewayUrl: GATEWAY, minSpacingMs: 0, sleep: async () => {}, locks: null });
-  return { md, calls, advance: ms => { t += ms; } };
+  const md = createMarketData({ local, session: memoryStorage(), fetchImpl, now: () => t, reference: REFERENCE, gatewayUrl: GATEWAY, minSpacingMs: 0, sleep: async () => {}, locks: null });
+  return { md, calls, local, upstreamMode, advance: ms => { t += ms; } };
 }
 
 test("symbol mapping: the 14 sample holdings and class/unit lines; unsupported venues get no symbol", () => {
@@ -64,6 +65,8 @@ test("gateway URL: the site's setting; an override only on a page served from th
   assert.equal(resolveMarketGateway("", { hostname: "elmatthe.github.io", search: "?mdgateway=https://evil.example" }), "");
   assert.equal(resolveMarketGateway("https://gw.example", { hostname: "elmatthe.github.io", search: "?mdgateway=https://evil.example" }), "https://gw.example");
   assert.equal(resolveMarketGateway("", { hostname: "127.0.0.1", search: "?mdgateway=https://md.gateway.test" }), "https://md.gateway.test");
+  assert.equal(resolveMarketGateway("https://gw.example", { hostname: "127.0.0.1", search: "?mdgateway=none" }), "", "local testing can switch the gateway off");
+  assert.equal(resolveMarketGateway("https://gw.example", { hostname: "elmatthe.github.io", search: "?mdgateway=none" }), "https://gw.example");
   assert.equal(historyBucket({ start: new Date(NOW - 10 * 86400000), end: new Date(NOW) }), "1mo");
   assert.equal(historyBucket({ start: new Date(NOW - 365 * 86400000), end: new Date(NOW) }), "2y");
   assert.equal(historyBucket({ start: new Date(NOW - 3 * 365 * 86400000), end: new Date(NOW) }), "5y");
@@ -74,7 +77,7 @@ test("availability: not configured sends nothing; disabled and unreachable gatew
   const none = createKeylessSource({ baseUrl: "", fetchImpl: async () => { requests += 1; throw new Error("no"); } });
   assert.equal((await none.check()).state, "not_configured");
   assert.equal(requests, 0, "no request at all without a configured gateway");
-  assert.match(none.coverageGap(resolver.resolve("AAPL")), /not set up/);
+  assert.deepEqual(none.availability(), { available: false, code: "not_configured", reason: "not available on this site yet", short: "not available on this site yet" });
   await assert.rejects(none.quote(resolver.resolve("AAPL")), e => e.kind === "not_configured");
   assert.equal(createKeylessSource({ baseUrl: "http://gw.example" }).configured(), false, "plain HTTP is refused outside this computer");
 
@@ -82,7 +85,7 @@ test("availability: not configured sends nothing; disabled and unreachable gatew
   const st = await off.md.keyless.check();
   assert.equal(st.state, "disabled");
   assert.match(st.reason, /switched off/);
-  await assert.rejects(off.md.priceInstrument(resolver.resolve("AAPL")), e => e.kind === "not_configured" && /No available source/.test(e.message));
+  await assert.rejects(off.md.priceInstrument(resolver.resolve("AAPL")), e => e.kind === "not_configured" && /No source in your list can give a usable price \(Yahoo Finance: switched off on this site at the moment\)/.test(e.message));
   assert.equal(off.calls.gateway.length, 1, "only the health check was sent");
   assert.equal(off.calls.yahoo.length, 0);
 
@@ -94,7 +97,7 @@ test("availability: not configured sends nothing; disabled and unreachable gatew
 test("new browser, no keys: the free source prices all fourteen sample holdings with exact listing, currency and unit", async () => {
   const { md, calls } = world();
   assert.equal((await md.keyless.check()).state, "enabled");
-  assert.equal(md.routing.mode, "auto");
+  assert.deepEqual(md.sources.enabledOrder(), [KEYLESS_ID], "zero keys: Yahoo Finance is the only source switched on");
   assert.equal(md.hasPriceSource(), true);
   const quotes = {};
   for (const r of SAMPLE_PORTFOLIO.rows) {
@@ -147,14 +150,14 @@ test("browser cache, gateway cache and expiry are labelled; a cached price is ne
   const other = world();
   await other.md.keyless.check();
   await other.md.priceInstrument(id);
-  assert.equal(md.estimate([id]).perProvider.keyless.requests, 0, "the estimate knows the saved copy is free");
+  assert.equal(md.estimate([id]).perProvider[KEYLESS_ID].requests, 0, "the estimate knows the saved copy is free");
 });
 
 test("re-validation in the browser: a gateway answer for another listing, currency or unit is refused", async () => {
   const tamper = change => ({ answer: u => {
     if (!u.pathname.endsWith("/v1/quote")) return null;
     return (async () => {
-      const gw = createGateway({ fetchImpl: yahooFetch({ now: () => NOW }), now: () => NOW, log: () => {}, cache: null });
+      const gw = createGateway({ fetchImpl: yahooFetch({ now: () => NOW }), now: () => NOW, log: () => {}, cache: null, limits: { upstreamMinSpacingMs: 0 } });
       const r = await gw.handle(new Request(u.href, { headers: { Origin: ORIGIN } }), ON);
       const body = await r.json();
       change(body);
@@ -174,7 +177,7 @@ test("re-validation in the browser: a gateway answer for another listing, curren
   for (const [change, kind, pattern] of cases) {
     const { md } = world({ mode: tamper(change) });
     await md.keyless.check();
-    await assert.rejects(md.priceInstrument(resolver.resolve("SAP.DE")), e => e.kind === kind && pattern.test(e.message), String(change));
+    await assert.rejects(md.priceInstrument(resolver.resolve("SAP.DE")), e => e.attempts[0].kind === kind && pattern.test(e.attempts[0].message), String(change));
   }
 });
 
@@ -182,7 +185,7 @@ test("failures: rate limits, outages, timeouts and unsupported listings explain 
   for (const [mode, kind] of [[{ limited: true }, "rate_limited"], [{ down: true }, "unavailable"], [{ blocked: true }, "unavailable"]]) {
     const { md, calls } = world({ mode });
     await md.keyless.check();
-    await assert.rejects(md.priceInstrument(resolver.resolve("AAPL")), e => e.kind === kind && e.provider === "Free source", JSON.stringify(mode));
+    await assert.rejects(md.priceInstrument(resolver.resolve("AAPL")), e => e.kind === kind && e.provider === "Yahoo Finance" && e.attempts.length === 1, JSON.stringify(mode));
     assert.equal(calls.gateway.filter(u => u.includes("/v1/quote")).length, 1, "a refusal is not retried");
   }
   const unknown = world();
@@ -203,32 +206,96 @@ test("failures: rate limits, outages, timeouts and unsupported listings explain 
   assert.equal(attempts, 2, "a timeout is retried once, then reported");
 });
 
-test("routing: the visitor's own key comes first; fallback to the free source is opt-in, bounded and keeps the key's error visible", async () => {
+test("order: Yahoo Finance first by default; a new key joins below it; reordering and fallback follow the list", async () => {
   const { md, calls } = world({ avLimited: true });
   await md.keyless.check();
-  md.setKey("alphavantage", AV_KEY);
+  const added = md.setKey("alphavantage", AV_KEY);
+  assert.match(added.note, /Alpha Vantage is switched on at position 2 of 4, after Yahoo Finance/, "a saved key never jumps to the top");
   const veqt = resolver.resolve("VEQT.TO");
+  assert.deepEqual(md.route(veqt).candidates.map(c => c.id), [KEYLESS_ID, "alphavantage"]);
+  const first = await md.priceInstrument(veqt);
+  assert.equal(first.providerId, KEYLESS_ID);
+  assert.equal(calls.av, 0, "the first source answered: Alpha Vantage is not asked");
+  // Yahoo Finance moved to the bottom: Alpha Vantage first; its daily limit makes Yahoo Finance answer, and the limit stays visible.
+  md.sources.move(KEYLESS_ID, 9);
+  assert.deepEqual(md.sources.order(), ["alphavantage", "marketstack", "finnhub", KEYLESS_ID]);
   assert.deepEqual(md.route(veqt).candidates.map(c => c.id), ["alphavantage", KEYLESS_ID]);
-  await assert.rejects(md.priceInstrument(veqt), e => e.kind === "rate_limited" && e.quotaScope === "daily" && e.provider === "Alpha Vantage", "without opting in, the key's daily limit is reported, not hidden");
-  assert.equal(calls.gateway.filter(u => u.includes("/v1/quote")).length, 0);
-  md.setRouting({ fallback: true });
-  const q = await md.priceInstrument(veqt);
+  const q = await md.priceInstrument(veqt, { useCache: false });
   assert.equal(q.providerId, KEYLESS_ID);
   assert.equal(q.fallbackFrom.length, 1);
   assert.equal(q.fallbackFrom[0].provider, "Alpha Vantage");
   assert.equal(q.fallbackFrom[0].kind, "rate_limited");
   assert.equal(q.fallbackFrom[0].quotaScope, "daily");
   assert.ok(md.providerStatus("alphavantage").limitRecord, "the daily limit stays recorded on the key's card");
-  // A provider chosen explicitly is used alone; the free source alone in its own mode.
-  md.setRouting({ mode: "alphavantage" });
-  assert.deepEqual(md.route(veqt).candidates.map(c => c.id), ["alphavantage"]);
-  md.setRouting({ mode: KEYLESS_ID });
-  assert.deepEqual(md.route(veqt).candidates.map(c => c.id), [KEYLESS_ID]);
-  assert.equal(md.routing.mode, KEYLESS_ID);
-  // Listings no saved key covers go to the free source in Automatic mode.
-  md.setRouting({ mode: "auto" });
+  // The exhausted provider is now skipped without a request.
+  const sentAv = calls.av;
+  const plan = md.route(veqt);
+  assert.deepEqual(plan.candidates.map(c => c.id), [KEYLESS_ID]);
+  assert.match(plan.skipped.find(x => x.id === "alphavantage").reason, /reported its daily limit/);
+  await md.priceInstrument(veqt, { useCache: false });
+  assert.equal(calls.av, sentAv, "no request to a provider whose daily limit is recorded");
+  // Listings no key covers use Yahoo Finance wherever it stands.
   assert.deepEqual(md.route(resolver.resolve("7203.T")).candidates.map(c => c.id), [KEYLESS_ID]);
   assert.deepEqual(md.route(resolver.resolve("YNVD.NE")).candidates.map(c => c.id), [KEYLESS_ID]);
+  // Yahoo Finance switched off: nothing is left that can answer; the reason is given.
+  assert.equal(md.sources.setEnabled(KEYLESS_ID, false).changed, true);
+  await assert.rejects(md.priceInstrument(veqt, { useCache: false }), e => e.kind === "not_configured" && /Alpha Vantage: daily limit reached/.test(e.message));
+  // Removing the only key switches Yahoo Finance back on, with an explanation.
+  const removed = md.setKey("alphavantage", "");
+  assert.match(removed.note, /Yahoo Finance was switched back on because no other source in your list can be used/);
+  assert.deepEqual(md.sources.enabledOrder(), [KEYLESS_ID]);
+  assert.deepEqual(md.sources.order(), ["alphavantage", "marketstack", "finnhub", KEYLESS_ID], "the order itself is kept");
+});
+
+test("pauses: after a rate limit nothing more is sent until Retry-After has passed, across reloads; one outage does not pause", async () => {
+  const local = memoryStorage();
+  const limited = world({ mode: { limited: true }, local });
+  await limited.md.keyless.check();
+  await assert.rejects(limited.md.priceInstrument(resolver.resolve("AAPL")), e => e.kind === "rate_limited" && /Yahoo Finance: rate-limited/.test(e.message));
+  assert.equal(limited.md.keyless.pauseState().paused, true);
+  assert.ok(limited.md.keyless.pauseState().minutesLeft >= 15, "the gateway's 15-minute cooldown is honoured");
+  const sent = limited.calls.gateway.filter(u => u.includes("/v1/quote")).length;
+  for (const t of ["MSFT", "SPY", "VEQT.TO"]) await assert.rejects(limited.md.priceInstrument(resolver.resolve(t)), e => /paused after a rate limit/.test(e.message), t);
+  assert.equal(limited.calls.gateway.filter(u => u.includes("/v1/quote")).length, sent, "no request while paused");
+  assert.equal(limited.md.sources.list()[0].status, "unavailable");
+  // A new page in the same browser (same storage) keeps the pause.
+  const reload = world({ local });
+  await reload.md.keyless.check();
+  assert.equal(reload.md.keyless.pauseState().paused, true);
+  assert.equal(reload.md.hasPriceSource(), false);
+  await assert.rejects(reload.md.priceInstrument(resolver.resolve("AAPL")), e => e.kind === "not_configured" && /Yahoo Finance: paused after a rate limit/.test(e.message));
+  assert.equal(reload.calls.gateway.filter(u => u.includes("/v1/quote")).length, 0);
+  // After the pause, requests resume.
+  reload.advance(16 * 60000);
+  assert.equal(reload.md.keyless.pauseState().paused, false);
+  assert.equal((await reload.md.priceInstrument(resolver.resolve("AAPL"))).providerId, KEYLESS_ID);
+
+  // A single outage for one listing does not stop the others; the gateway's breaker (three failures) does.
+  const flaky = world({ mode: { downFor: ["AAPL"] } });
+  await flaky.md.keyless.check();
+  await assert.rejects(flaky.md.priceInstrument(resolver.resolve("AAPL")), e => /Yahoo Finance: unavailable/.test(e.message));
+  assert.equal(flaky.md.keyless.pauseState().paused, false);
+  assert.equal((await flaky.md.priceInstrument(resolver.resolve("MSFT"))).providerId, KEYLESS_ID);
+  const down = world({ mode: { down: true } });
+  await down.md.keyless.check();
+  for (const t of ["AAPL", "MSFT", "SPY"]) await assert.rejects(down.md.priceInstrument(resolver.resolve(t)));
+  assert.equal(down.md.keyless.pauseState().paused, true, "the breaker's long Retry-After pauses the page");
+  assert.equal(down.md.keyless.pauseState().kind, "unavailable");
+  await assert.rejects(down.md.priceInstrument(resolver.resolve("VST")), e => /paused after an outage/.test(e.message));
+  assert.equal(down.calls.yahoo.length, 3, "nothing more reached the data source");
+  // The gateway reporting its own cooldown in /v1/health pauses a fresh page before any request.
+  let quoteRequests = 0;
+  const store = memoryStorage();
+  const fresh = createKeylessSource({ baseUrl: GATEWAY, storage: store, now: () => NOW, sleep: async () => {}, locks: null, fetchImpl: async url => {
+    if (String(url).endsWith("/v1/health")) return new Response(JSON.stringify({ schema: "md-gateway.health.v1", keyless: { enabled: true }, upstream: { state: "cooling_down", code: "upstream_rate_limited", retryAfterSeconds: 600 } }), { status: 200 });
+    quoteRequests += 1;
+    throw new Error("must not be called");
+  } });
+  await fresh.check();
+  assert.equal(fresh.availability().code, "paused");
+  assert.equal(fresh.pauseState().minutesLeft, 10);
+  await assert.rejects(fresh.quote(resolver.resolve("AAPL")), e => e.paused === true && e.kind === "rate_limited");
+  assert.equal(quoteRequests, 0);
 });
 
 test("history: both price bases kept apart, running session dropped, curated currency enforced, nothing filled in", async () => {

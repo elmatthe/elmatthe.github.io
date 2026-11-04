@@ -17,8 +17,10 @@
 //   BADCUR.DE   Xetra listing reported in USD
 //   IDXETF      reported as an INDEX
 //   NOADJ       history without adjusted closes
-// `mode` (mutable): down (HTTP 503), limited (HTTP 429), blocked (HTTP 403),
-// redirect (HTTP 302), huge (a body over the gateway's size cap), calls (array: every URL).
+// `mode` (mutable): down (HTTP 503), downFor (array of symbols answered with HTTP 503),
+// limited (HTTP 429), blocked (HTTP 403), redirect (HTTP 302), huge (a body over the
+// gateway's size cap), staleDays (answers dated that many days in the past), calls
+// (array: every URL).
 
 const DAY = 86400000;
 
@@ -122,8 +124,11 @@ export function yahooChartResponse(url, { now = Date.now(), mode = {} } = {}) {
   if (mode.huge) return { status: 200, body: JSON.stringify({ chart: { result: [{ meta: {}, pad: "x".repeat(2.5 * 1024 * 1024) }], error: null } }) };
   const listing = FIXTURE_LISTINGS[symbol];
   if (!listing) return { status: 404, body: JSON.stringify({ chart: { result: null, error: { code: "Not Found", description: "No data found, symbol may be delisted" } } }) };
+  if (mode.downFor?.includes(symbol)) return { status: 503, body: "<html>Service unavailable</html>" };
   const range = u.searchParams.get("range");
-  return { status: 200, body: chartBody(symbol, listing, { range, now, quote: range === "5d" }) };
+  // staleDays: the source answers as of that many days ago (an old price, never relabelled).
+  const asOf = mode.staleDays ? now - mode.staleDays * DAY : now;
+  return { status: 200, body: chartBody(symbol, listing, { range, now: asOf, quote: range === "5d" }) };
 }
 
 // A fetch() stand-in for the gateway's upstream. `hang: true` never answers until aborted.

@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from market_data.service import MarketData  # noqa: E402
 from portfolio_rebalancer.export import write_csv_export, write_excel_export  # noqa: E402
 from portfolio_rebalancer.model import Row, Settings, action_lines, build_plan, rows_from_sample  # noqa: E402
-from portfolio_rebalancer.sample import SAMPLE_PORTFOLIO, is_unchanged_international_example, target_total_basis_points  # noqa: E402
+from portfolio_rebalancer.sample import SAMPLE_PORTFOLIO, target_total_basis_points  # noqa: E402
 
 AV_KEY, FH_KEY = "AVKEY1234567", "FHKEY1234567890ABCDEF"
 NOW = 1793718000.0  # 2026-11-03 15:00 UTC: the fixtures' 2026-11-02 closes are the latest session everywhere
@@ -121,17 +121,14 @@ def test_routing_requests_and_withheld_plan_then_user_supplied_prices():
     assert len(run["plan"]["results"]) == 13 and any("99.10%" in w for w in run["plan"]["warnings"] + run["notes"]["info"])
 
 
-def test_remove_international_examples_only_unchanged_rows():
+def test_international_holdings_are_ordinary_rows():
+    """The four international sample holdings are ordinary rows (no tag, no special removal)."""
+    import portfolio_rebalancer.sample as sample
     rows = rows_from_sample(SAMPLE_PORTFOLIO)
-    assert [r.ticker for r in rows if is_unchanged_international_example(r)] == ["7203.T", "SAP.DE", "VOD.L", "600519.SS"]
-    rows[10].shares = "2"
-    rows[11].set_manual("220", "EUR")
-    rows[12].edit_ticker("TSCO.L")
-    rows.append(Row("600519.SS", "1", "2.5"))
-    assert [r.ticker for r in rows if is_unchanged_international_example(r)] == ["600519.SS"]
-    kept = [r for r in rows if not is_unchanged_international_example(r)]
-    assert len(kept) == 14 and sum(1 for r in kept if r.ticker == "600519.SS") == 1 and kept[-1].sample_tag is None
-
+    assert [r.ticker for r in rows][10:] == ["7203.T", "SAP.DE", "VOD.L", "600519.SS"]
+    assert not hasattr(sample, "is_unchanged_international_example") and not hasattr(sample, "INTERNATIONAL_EXAMPLE_TAG")
+    assert not hasattr(rows[10], "sample_tag")
+    assert all(set(r) == {"ticker", "shares", "targetWeight", "accountType"} for r in SAMPLE_PORTFOLIO["rows"])
 
 def test_invalid_currencies_and_units_are_rejected():
     row = Row("VOD.L", "1", "2.5")

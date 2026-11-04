@@ -4,7 +4,7 @@
 // the synthetic fixtures in ../fixtures/yahoo-chart.mjs, so nothing leaves this process.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createGateway, sourceState, parseOrigins, LIMITS, CACHE_TTL_SECONDS } from "../../../_services/market-data-gateway/src/gateway.js";
+import { createGateway, sourceState, parseOrigins, LIMITS, CACHE_TTL_SECONDS, COOLDOWN_SECONDS, OWNER_ATTESTATION_VALUE } from "../../../_services/market-data-gateway/src/gateway.js";
 import { VENUES, parseSymbol } from "../../../_services/market-data-gateway/src/venues.js";
 import { chartUrl, HISTORY_RANGES } from "../../../_services/market-data-gateway/src/yahoo-chart.js";
 import { yahooFetch } from "../fixtures/yahoo-chart.mjs";
@@ -13,32 +13,45 @@ import { KEYLESS_VENUES } from "../../../assets/js/market-data/keyless.js";
 const ORIGIN = "https://elmatthe.github.io";
 const BASE = "https://market-data-gateway.example.workers.dev";
 const NOW = Date.parse("2026-11-03T15:00:00Z"); // a Tuesday
-const ON = { KEYLESS_SOURCE: "yahoo-chart", SOURCE_AUTHORIZATION: "test fixture only", ALLOWED_ORIGINS: `${ORIGIN},http://127.0.0.1:4000` };
+const ON = { KEYLESS_SOURCE: "yahoo-chart", OWNER_ATTESTATION: "owner-confirms-yahoo-permission", ALLOWED_ORIGINS: `${ORIGIN},http://127.0.0.1:4000` };
 
-function setup({ mode = {}, env = ON, cache = null, limits = {} } = {}) {
+// Upstream spacing is switched off here unless a test asks for it (`spaced`): it has its
+// own tests below. `sleep` advances the fake clock, so waits take no real time.
+function setup({ mode = {}, env = ON, cache = null, limits = {}, spaced = false, sleepAdvancesClock = true } = {}) {
   let t = NOW;
   const calls = [];
   const logs = [];
+  const sleeps = [];
   const upstream = yahooFetch({ now: () => t, mode });
-  const fetchImpl = async (url, init) => { calls.push({ url: String(url), init }); return upstream(url, init); };
-  const gw = createGateway({ fetchImpl, now: () => t, log: e => logs.push(JSON.stringify(e)), cache, limits });
+  const fetchImpl = async (url, init) => { calls.push({ url: String(url), init, at: t }); return upstream(url, init); };
+  const sleep = async ms => { sleeps.push(ms); if (sleepAdvancesClock) t += ms; };
+  const gw = createGateway({ fetchImpl, now: () => t, log: e => logs.push(JSON.stringify(e)), cache, limits: spaced ? limits : { upstreamMinSpacingMs: 0, ...limits }, sleep });
   const get = async (path, { origin = ORIGIN, ip = "198.51.100.7", method = "GET", headers = {}, e = env } = {}) => {
     const r = await gw.handle(new Request(`${BASE}${path}`, { method, headers: { ...(origin ? { Origin: origin } : {}), "CF-Connecting-IP": ip, ...headers } }), e);
     const text = await r.text();
     return { status: r.status, headers: Object.fromEntries(r.headers), body: text ? JSON.parse(text) : null };
   };
-  return { gw, get, calls, logs, advance: ms => { t += ms; } };
+  return { gw, get, calls, logs, sleeps, advance: ms => { t += ms; }, now: () => t };
 }
 const quote = s => `/v1/quote?symbol=${encodeURIComponent(s)}`;
 const history = (s, range = "1y") => `/v1/history?symbol=${encodeURIComponent(s)}&range=${range}&interval=1d`;
 
 /* ---------------- activation gate ---------------- */
-test("off by default: no setting, or no recorded authorization, means no upstream request", async () => {
-  for (const env of [{}, { KEYLESS_SOURCE: "" }, { KEYLESS_SOURCE: "off" }, { KEYLESS_SOURCE: "yahoo-chart" }, { KEYLESS_SOURCE: "yahoo-chart", SOURCE_AUTHORIZATION: "   " }, { KEYLESS_SOURCE: "stooq", SOURCE_AUTHORIZATION: "x" }]) {
+test("off by default: the source runs only with KEYLESS_SOURCE and the exact owner attestation", async () => {
+  const envs = [
+    {}, { KEYLESS_SOURCE: "" }, { KEYLESS_SOURCE: "off" }, { KEYLESS_SOURCE: "yahoo-chart" },
+    { KEYLESS_SOURCE: "yahoo-chart", OWNER_ATTESTATION: "   " }, { KEYLESS_SOURCE: "yahoo-chart", OWNER_ATTESTATION: "true" },
+    { KEYLESS_SOURCE: "yahoo-chart", OWNER_ATTESTATION: "yes" }, { KEYLESS_SOURCE: "yahoo-chart", OWNER_ATTESTATION: "Owner-Confirms-Yahoo-Permission" },
+    // The previous document-reference setting no longer switches anything on.
+    { KEYLESS_SOURCE: "yahoo-chart", SOURCE_AUTHORIZATION: "letter on file" },
+    { KEYLESS_SOURCE: "stooq", OWNER_ATTESTATION: OWNER_ATTESTATION_VALUE },
+  ];
+  for (const env of envs) {
     const { get, calls } = setup({ env: { ...env, ALLOWED_ORIGINS: ORIGIN } });
     const h = await get("/v1/health");
     assert.equal(h.status, 200);
     assert.equal(h.body.keyless.enabled, false, JSON.stringify(env));
+    assert.equal(h.body.keyless.activation, null);
     assert.ok(h.body.keyless.reason.length > 20);
     for (const path of [quote("AAPL"), history("AAPL")]) {
       const r = await get(path, { e: { ...env, ALLOWED_ORIGINS: ORIGIN } });
@@ -48,18 +61,43 @@ test("off by default: no setting, or no recorded authorization, means no upstrea
     }
     assert.equal(calls.length, 0, "no request reaches the data source while the source is off");
   }
-  assert.match(sourceState({ KEYLESS_SOURCE: "yahoo-chart" }).reason, /no written authorization/);
+  assert.match(sourceState({ KEYLESS_SOURCE: "yahoo-chart" }).reason, /has not activated it/);
   assert.equal(sourceState(ON).enabled, true);
+  assert.equal(sourceState(ON).activation, "owner_attestation");
+  assert.equal(OWNER_ATTESTATION_VALUE, "owner-confirms-yahoo-permission");
 });
 
-test("health: no secrets, the authorization reference itself is never returned", async () => {
-  const { get } = setup({ env: { ...ON, SOURCE_AUTHORIZATION: "Agreement REF-123 kept in owner files" } });
+test("wrangler.toml: fresh top-level settings are off; only [env.production] carries the owner's activation", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const toml = await readFile(new URL("../../../_services/market-data-gateway/wrangler.toml", import.meta.url), "utf8");
+  const split = toml.indexOf("\n[env.production]\n");
+  assert.ok(split > 0);
+  const top = toml.slice(0, split);
+  const prod = toml.slice(split);
+  assert.match(top, /^KEYLESS_SOURCE = ""$/m);
+  assert.match(top, /^OWNER_ATTESTATION = ""$/m);
+  assert.match(top, /^ALLOW_NO_ORIGIN = "false"$/m);
+  assert.match(prod, /^name = "market-data-gateway"$/m);
+  assert.match(prod, /^KEYLESS_SOURCE = "yahoo-chart"$/m);
+  assert.match(prod, new RegExp(`^OWNER_ATTESTATION = "${OWNER_ATTESTATION_VALUE}"$`, "m"));
+  assert.match(prod, /^ALLOWED_ORIGINS = "https:\/\/elmatthe\.github\.io"$/m);
+  assert.equal((prod.match(/\[\[env\.production\.ratelimits\]\]/g) || []).length, 2, "both rate-limit bindings repeated (not inherited)");
+  assert.ok(!/SOURCE_AUTHORIZATION|letter|correspondence|grant number/i.test(toml.replace(/^#.*$/gm, "")), "no authorization document or reference in the settings");
+  assert.ok(!/kv_namespaces|d1_databases|r2_buckets|durable_objects|queues|usage_model/.test(toml), "no paid or storage products");
+});
+
+test("health: no secrets; reports activation, upstream state and limits", async () => {
+  const { get } = setup({ env: { ...ON, SOURCE_AUTHORIZATION: "Agreement REF-123 kept in owner files" }, spaced: true });
   const h = await get("/v1/health", { origin: null });
   assert.equal(h.status, 200);
   assert.equal(h.headers["access-control-allow-origin"], undefined, "no CORS grant without an allowed origin");
-  assert.deepEqual(h.body.keyless, { enabled: true, source: "yahoo-chart", reason: null, provider: "Yahoo Finance", attribution: h.body.keyless.attribution, official: false });
+  assert.deepEqual(h.body.keyless, { enabled: true, source: "yahoo-chart", reason: null, activation: "owner_attestation", provider: "Yahoo Finance", attribution: h.body.keyless.attribution, official: false });
+  assert.deepEqual(h.body.upstream, { state: "ok", code: null, retryAfterSeconds: 0 });
   assert.ok(!JSON.stringify(h.body).includes("REF-123"));
+  assert.ok(!JSON.stringify(h.body).includes(OWNER_ATTESTATION_VALUE), "the attestation value is not echoed");
   assert.deepEqual(h.body.history, { ranges: ["1mo", "3mo", "6mo", "1y", "2y", "5y"], intervals: ["1d"] });
+  assert.equal(h.body.limits.upstreamMinSpacingMs, LIMITS.upstreamMinSpacingMs);
+  assert.deepEqual(h.body.cacheTtlSeconds, CACHE_TTL_SECONDS);
 });
 
 /* ---------------- fixed upstream ---------------- */
@@ -195,7 +233,7 @@ test("mismatched, malformed and invalid upstream answers are refused (fail close
     const r = await g(quote("AAPL"));
     assert.equal(r.status, status, flag);
     assert.equal(r.body.error.code, code, flag);
-    if (code === "upstream_rate_limited") assert.equal(r.headers["retry-after"], "300");
+    if (code === "upstream_rate_limited") assert.equal(r.headers["retry-after"], String(COOLDOWN_SECONDS.upstream_rate_limited), "the cooldown that starts is announced");
   }
 });
 
@@ -325,4 +363,164 @@ test("logs and answers never contain client addresses, upstream URLs or request 
   const text = logs.join("\n");
   assert.equal(logs.length, 2);
   assert.ok(!/192\.0\.2\.55|query1|finance\.yahoo|a=b/.test(text), text);
+});
+
+/* ---------------- protecting the data source ---------------- */
+test("spacing: upstream requests start at least upstreamMinSpacingMs apart; a queue longer than 15 s is refused (throttled)", async () => {
+  const { get, calls } = setup({ spaced: true });
+  const symbols = ["AAPL", "MSFT", "SPY", "VEQT.TO", "SAP.DE"];
+  for (const [i, s] of symbols.entries()) assert.equal((await get(quote(s), { ip: `10.0.0.${i}` })).status, 200, s);
+  const gaps = calls.slice(1).map((c, i) => c.at - calls[i].at);
+  assert.ok(gaps.every(g => g >= LIMITS.upstreamMinSpacingMs), `gaps ${gaps.join(",")}`);
+  assert.equal(LIMITS.upstreamMinSpacingMs, 1000);
+
+  // Many different symbols at once: the ones that would wait more than 15 s are refused.
+  // The clock does not move while they wait, so every request sees the whole queue.
+  const burst = setup({ spaced: true, limits: { upstreamPerMinute: 100 }, sleepAdvancesClock: false });
+  const many = Array.from({ length: 20 }, (_, i) => `T${String.fromCharCode(65 + i)}X`);
+  const answers = await Promise.all(many.map((s, i) => burst.get(quote(s), { ip: `10.1.0.${i}` })));
+  const throttled = answers.filter(a => a.body.error?.code === "throttled");
+  assert.ok(throttled.length >= 1, "a long queue is cut off");
+  assert.ok(burst.calls.length <= Math.floor(LIMITS.upstreamQueueMaxWaitMs / LIMITS.upstreamMinSpacingMs) + 1, `upstream calls ${burst.calls.length}`);
+  assert.ok(throttled.every(a => a.status === 429 && a.headers["retry-after"]));
+});
+
+test("coalescing: identical concurrent requests send one upstream request", async () => {
+  const { get, calls } = setup();
+  const answers = await Promise.all(Array.from({ length: 6 }, (_, i) => get(quote("VOD.L"), { ip: `10.2.0.${i}` })));
+  assert.ok(answers.every(a => a.status === 200));
+  assert.equal(calls.length, 1);
+  assert.equal(answers.filter(a => a.body.cache.status === "miss").length, 1);
+  assert.ok(answers.every(a => a.body.price === answers[0].body.price && a.body.retrievedAt === answers[0].body.retrievedAt));
+});
+
+test("definitive refusals are remembered (no repeated upstream request for an unknown or mismatched listing)", async () => {
+  const { get, calls, advance } = setup();
+  for (const s of ["ZZZQ", "OTCX", "BADCUR.DE"]) {
+    const a = await get(quote(s));
+    const b = await get(quote(s), { ip: "10.3.0.1" });
+    assert.equal(a.body.error.code, b.body.error.code, s);
+    assert.equal(b.body.error.definitive, true);
+  }
+  assert.equal(calls.length, 3, "one upstream request per listing");
+  advance((CACHE_TTL_SECONDS.refusal + 1) * 1000);
+  await get(quote("ZZZQ"));
+  assert.equal(calls.length, 4, "the refusal expires");
+  // Transient failures are never remembered as refusals.
+  const mode = { down: true };
+  const t = setup({ mode });
+  await t.get(quote("AAPL"));
+  mode.down = false;
+  assert.equal((await t.get(quote("AAPL"))).status, 200);
+});
+
+test("circuit breaker: after HTTP 429 the data source is not contacted for 15 minutes; cached answers still served", async () => {
+  const mode = {};
+  const { get, calls, advance, logs } = setup({ mode });
+  assert.equal((await get(quote("AAPL"))).status, 200);
+  mode.limited = true;
+  const first = await get(quote("MSFT"));
+  assert.equal(first.status, 429);
+  assert.equal(first.body.error.code, "upstream_rate_limited");
+  assert.equal(first.headers["retry-after"], String(COOLDOWN_SECONDS.upstream_rate_limited));
+  mode.limited = false; // even if Yahoo would answer again, nothing is sent during the cooldown
+  const before = calls.length;
+  for (const s of ["SPY", "VEQT.TO", "SAP.DE"]) {
+    const r = await get(quote(s), { ip: s });
+    assert.equal(r.body.error.code, "upstream_rate_limited", s);
+    assert.ok(Number(r.headers["retry-after"]) > 0 && Number(r.headers["retry-after"]) <= COOLDOWN_SECONDS.upstream_rate_limited);
+  }
+  assert.equal((await get(quote("AAPL"), { ip: "cached" })).body.cache.status, "hit", "cached answers are still served");
+  assert.equal(calls.length, before, "no upstream request during the cooldown");
+  const h = await get("/v1/health");
+  assert.equal(h.body.upstream.state, "cooling_down");
+  assert.equal(h.body.upstream.code, "upstream_rate_limited");
+  advance(COOLDOWN_SECONDS.upstream_rate_limited * 1000 + 1000);
+  assert.equal((await get(quote("SPY"), { ip: "later" })).status, 200, "requests resume after the cooldown");
+  assert.equal(calls.length, before + 1);
+  assert.ok(logs.some(l => /cooldown_started/.test(l)));
+});
+
+test("circuit breaker: HTTP 403 stops upstream requests for 30 minutes; three consecutive 5xx for 2 minutes", async () => {
+  const blockedMode = { blocked: true };
+  const b = setup({ mode: blockedMode });
+  assert.equal((await b.get(quote("AAPL"))).body.error.code, "upstream_blocked");
+  blockedMode.blocked = false;
+  const again = await b.get(quote("MSFT"));
+  assert.equal(again.body.error.code, "upstream_blocked");
+  assert.equal(again.headers["retry-after"], String(COOLDOWN_SECONDS.upstream_blocked));
+  assert.equal(b.calls.length, 1);
+  b.advance(COOLDOWN_SECONDS.upstream_blocked * 1000 + 1);
+  assert.equal((await b.get(quote("MSFT"))).status, 200);
+
+  const downMode = { down: true };
+  const d = setup({ mode: downMode });
+  for (let i = 0; i < 3; i += 1) assert.equal((await d.get(quote(["AAPL", "MSFT", "SPY"][i]))).body.error.code, "upstream_unavailable");
+  downMode.down = false;
+  const cooling = await d.get(quote("VST"));
+  assert.equal(cooling.body.error.code, "upstream_unavailable");
+  assert.equal(cooling.headers["retry-after"], String(COOLDOWN_SECONDS.upstream_unavailable));
+  assert.equal(d.calls.length, 3);
+  d.advance(COOLDOWN_SECONDS.upstream_unavailable * 1000 + 1);
+  assert.equal((await d.get(quote("VST"))).status, 200);
+
+  // Two failures then a success do not start a cooldown.
+  const m = { down: true };
+  const e = setup({ mode: m });
+  await e.get(quote("AAPL"));
+  await e.get(quote("MSFT"));
+  m.down = false;
+  assert.equal((await e.get(quote("SPY"))).status, 200);
+  m.down = true;
+  await e.get(quote("VST"));
+  m.down = false;
+  assert.equal((await e.get(quote("BRK-B"))).status, 200, "the failure count restarts after a success");
+});
+
+test("circuit breaker: the cooldown is shared with other isolates through the Cache API, never longer than its own length", async () => {
+  const store = new Map();
+  const fake = {
+    match: async key => (store.has(key) ? new Response(store.get(key)) : undefined),
+    put: async (key, response) => { store.set(key, await response.text()); },
+    delete: async key => store.delete(key),
+  };
+  const a = setup({ cache: fake, mode: { limited: true } });
+  await a.get(quote("AAPL"));
+  const b = setup({ cache: fake }); // another isolate in the same data center
+  const r = await b.get(quote("MSFT"));
+  assert.equal(r.body.error.code, "upstream_rate_limited");
+  assert.equal(b.calls.length, 0);
+  // A corrupted or far-future entry is ignored: it can never stop the source for longer
+  // than the cooldown that was actually started.
+  const key = [...store.keys()].find(k => k.endsWith("/state/cooldown"));
+  for (const bad of [{ code: "upstream_rate_limited", until: NOW + 365 * 86400000 }, { code: "upstream_rate_limited", startedAt: NOW, until: NOW + 365 * 86400000 }, { code: "other", startedAt: NOW, until: NOW + 1000 }]) {
+    store.set(key, JSON.stringify(bad));
+    const c = setup({ cache: fake });
+    assert.equal((await c.get(quote("MSFT"))).status, 200, JSON.stringify(bad));
+  }
+});
+
+test("clients without an Origin header (desktop apps) only when ALLOW_NO_ORIGIN is true; unlisted origins always refused", async () => {
+  const off = setup();
+  assert.equal((await off.get(quote("AAPL"), { origin: null })).body.error.code, "origin_not_allowed");
+  const on = setup({ env: { ...ON, ALLOW_NO_ORIGIN: "true" } });
+  const r = await on.get(quote("AAPL"), { origin: null });
+  assert.equal(r.status, 200);
+  assert.equal(r.headers["access-control-allow-origin"], undefined, "no CORS grant is given to a client without an Origin");
+  for (const origin of ["https://evil.example", "null", "http://127.0.0.2:4000"]) {
+    assert.equal((await on.get(quote("AAPL"), { origin, ip: origin || "empty" })).body.error.code, "origin_not_allowed", JSON.stringify(origin));
+  }
+  // The same limits apply to them.
+  for (let i = 0; i < LIMITS.perClientPerMinute; i += 1) await on.get(quote("MSFT"), { origin: null, ip: "203.0.113.200" });
+  assert.equal((await on.get(quote("MSFT"), { origin: null, ip: "203.0.113.200" })).body.error.code, "rate_limited");
+});
+
+test("no credentials or holdings: the upstream request carries only the symbol; client query extras are refused", async () => {
+  const { get, calls } = setup();
+  for (const extra of ["apikey=SECRETKEY123", "token=abc", "shares=10", "account=TFSA", "target=5"]) {
+    assert.equal((await get(`/v1/quote?symbol=AAPL&${extra}`)).body.error.code, "invalid_request", extra);
+  }
+  await get(quote("AAPL"), { headers: { Authorization: "Bearer SECRETKEY123", "X-Api-Key": "SECRETKEY123" } });
+  assert.equal(calls.length, 1);
+  assert.ok(!JSON.stringify(calls).includes("SECRETKEY123"));
 });

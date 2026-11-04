@@ -8,7 +8,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import * as E from "../../../assets/js/portfolio-rebalancer/engine.js";
 import * as R from "../../../assets/js/portfolio-rebalancer/rows.js";
-import { SAMPLE_PORTFOLIO, INTERNATIONAL_EXAMPLE_TAG, isUnchangedInternationalExample, targetTotalBasisPoints } from "../../../assets/js/portfolio-rebalancer/sample.js";
+import * as SAMPLE from "../../../assets/js/portfolio-rebalancer/sample.js";
+const { SAMPLE_PORTFOLIO, targetTotalBasisPoints } = SAMPLE;
 import { createInstrumentResolver } from "../../../assets/js/market-data/instruments.js";
 
 const REFERENCE = JSON.parse(fs.readFileSync(new URL("../../../assets/data/instruments.v1.json", import.meta.url), "utf8"));
@@ -34,7 +35,8 @@ test("the sample is fourteen ordinary holdings in the exact order, shares and ta
   assert.equal(rows.length, 14);
   assert.ok(rows.every(R.isActive), "every holding has shares and a target, so every one is priced and planned");
   assert.ok(rows.every(r => r.status === "draft" && !r.quote && !r.manual && R.effectivePrice(r) === null), "no prices before Get prices");
-  assert.deepEqual(rows.filter(r => r.sampleTag === INTERNATIONAL_EXAMPLE_TAG).map(r => [r.ticker, r.shares]), [["7203.T", "1"], ["SAP.DE", "1"], ["VOD.L", "1"], ["600519.SS", "1"]]);
+  assert.deepEqual(rows.slice(10).map(r => [r.ticker, r.shares, r.targetWeight]), [["7203.T", "1", "2.5"], ["SAP.DE", "1", "2.5"], ["VOD.L", "1", "2.5"], ["600519.SS", "1", "2.5"]]);
+  assert.equal(SAMPLE_PORTFOLIO.schema, "rb.sample-portfolio.v3");
 });
 
 test("targets total exactly 100.0%; the ten Questrade targets are the earlier ones scaled to 90%", () => {
@@ -129,21 +131,12 @@ test("removing a holding updates the portfolio: value, normalized targets and th
   assert.match(E.weightWarnings(positions)[0], /add up to 99\.10%, not 100%/);
 });
 
-test("Remove international examples removes only the four unchanged sample rows", () => {
+test("the international holdings are ordinary rows: no tag, no special removal helper", () => {
+  assert.ok(SAMPLE_PORTFOLIO.rows.every(r => Object.keys(r).sort().join() === "accountType,shares,targetWeight,ticker"), "no sampleTag or other marker on any row");
+  assert.equal(SAMPLE.isUnchangedInternationalExample, undefined, "the 'Remove international examples' helper is gone");
+  assert.equal(SAMPLE.INTERNATIONAL_EXAMPLE_TAG, undefined);
   const rows = loaded();
-  assert.deepEqual(rows.filter(isUnchangedInternationalExample).map(r => r.ticker), ["7203.T", "SAP.DE", "VOD.L", "600519.SS"]);
-  // A user edit turns an example into an ordinary user holding: it stays.
-  rows[10] = R.editField(rows[10], "shares", "2");
-  rows[11] = R.setManualPrice(rows[11], { price: 220, currency: "EUR" });
-  rows[12] = R.editTicker(rows[12], "TSCO.L");
-  // The same security added by the user (no sample tag) is never matched.
-  rows.push(R.createRow({ ticker: "600519.SS", shares: 1, targetWeight: 2.5 }));
-  assert.deepEqual(rows.filter(isUnchangedInternationalExample).map(r => r.ticker), ["600519.SS"]);
-  assert.equal(rows.filter(r => r.ticker === "600519.SS").length, 2);
-  const kept = rows.filter(r => !isUnchangedInternationalExample(r));
-  assert.equal(kept.length, 14);
-  assert.equal(kept.filter(r => r.ticker === "600519.SS").length, 1, "only the loaded example was removed");
-  assert.ok(kept.some(r => r.ticker === "7203.T" && r.shares === "2"));
-  // Resetting an edited field to the loaded value makes it an unchanged example again.
-  assert.equal(isUnchangedInternationalExample(R.editField(rows[10], "shares", "1")), true);
+  assert.ok(rows.every(r => !("sampleTag" in r) && !("sampleTicker" in r)));
+  assert.deepEqual(rows.map(r => r.ticker).slice(10), ["7203.T", "SAP.DE", "VOD.L", "600519.SS"]);
 });
+
