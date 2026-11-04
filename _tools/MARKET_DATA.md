@@ -160,9 +160,10 @@ slow-down answer. The desktop apps use the same gateway (`market_data/gateway.py
 **Source tiers**, shown the same way in both tools:
 1. *Free source (no key)*: Yahoo Finance chart data relayed by the site's own Cloudflare
    Worker (`_services/market-data-gateway`). Offered only when `_data/market_data.yml`
-   names a gateway **and** its `/v1/health` reports the source enabled. **Today it does
-   neither**: the Worker is not deployed and its source is gated off pending written
-   permission (`PROVIDER_MATRIX.md` §10), so both pages say "not available" and why.
+   names a gateway **and** its `/v1/health` reports the source enabled. *(2026-11-03: it
+   did neither. Since 2026-11-04 it does both: the owner's production Worker is deployed
+   at `https://market-data-gateway.elmatthe.workers.dev`, activated by the owner's
+   attestation and verified live; see the gateway README, "Deployment status".)*
 2. *Your own key*: Alpha Vantage, Marketstack, Finnhub (unchanged, five-provider catalog).
 3. *Your own prices*: typed prices and CSV files (Rebalancer), CSV files and the synthetic
    demo (Stock).
@@ -226,7 +227,7 @@ Worker code), fixtures `fixtures/yahoo-chart.mjs` (synthetic; nothing contacts Y
 
 There is no public proxy or relay and no secret anywhere in the site. The code is in
 `assets/js/market-data/`. (Since 0.1, the site's own market-data gateway may serve the
-free source; it is not deployed and its source is switched off.)
+free source; since 2026-11-04 it is deployed and serves Yahoo Finance, see section 0.)
 
 ## 2. Why the previous design failed (root cause)
 

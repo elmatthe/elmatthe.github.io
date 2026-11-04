@@ -11,11 +11,73 @@ separate service. It shares no code or settings with `../cpi-data-gateway/`.
 
 ## Deployment status
 
-See `md-instructions/Handoff.md` for the current state (deployed URL, activation, live
-smoke results). The website reads the gateway address from `_data/market_data.yml`; the
-desktop apps from `DEFAULT_GATEWAY_URL` in `_tools/shared_py/market_data/gateway.py`
-(the two are kept equal by `_tools/tests/test_market_data_parity.py`). Empty means "not
-set up": the tools then say Yahoo Finance is not available yet and send it nothing.
+**Deployed and active since 2026-11-04.** The owner deployed `[env.production]` from their
+own computer (`npx wrangler@4 deploy --env production`, Workers Free; both rate-limit
+bindings accepted):
+
+| | |
+|---|---|
+| Address | <https://market-data-gateway.elmatthe.workers.dev> (`workers.dev` subdomain; no custom domain, DNS record or route) |
+| Version | `76998e2b-205d-4645-8f85-7a6fdf0dbad7` (gateway code 1.1.0) |
+| Health | `keyless.enabled: true`, `source: yahoo-chart`, `activation: owner_attestation`, `upstream.state: ok`; caches 600 s (quotes) / 43,200 s (history) |
+
+The website reads the address from `_data/market_data.yml`; the desktop apps from
+`DEFAULT_GATEWAY_URL` in `_tools/shared_py/market_data/gateway.py` (kept equal by
+`_tools/tests/test_market_data_parity.py`). Both were set to this address on 2026-11-04,
+after the verification below. Empty means "not set up": the tools then say Yahoo Finance
+is not available and send it nothing.
+
+### Live verification, 2026-11-04 (02:23–02:30 UTC)
+
+Run from a cloud test container (Cloudflare location IAD), with curl, one request at a
+time. Full record: `md-instructions/Handoff.md`.
+
+- **Refused before any Yahoo request, as designed:** health with a query string (400),
+  POST to health or quote (405), an unknown path (404), plain `http://` (403
+  `https_required`); a foreign `Origin`, `Origin: null` (403 `origin_not_allowed`, no CORS
+  headers); preflights from a foreign origin, asking for `POST` or for an `X-Api-Key`
+  header (403); missing, extra (`apikey`, `shares`) or repeated parameters (400
+  `invalid_request`); a URL or `;` in the symbol (400 `invalid_symbol`); `^GSPC`,
+  `EURUSD=X`, `ABC.XX` (400 `unsupported_listing`); history ranges `10y` or interval `1wk`
+  (400 `invalid_range`).
+- **CORS:** the site's preflight answers 204 with `Access-Control-Allow-Origin:
+  https://elmatthe.github.io` (never `*`), `GET`, `Accept`, `Access-Control-Expose-Headers:
+  Retry-After`; answers to requests without `Origin` (the desktop path) carry no CORS
+  headers. An empty `Origin:` header was handled like no `Origin` (the desktop path); it
+  gets no CORS headers either, and browsers never send one.
+- **Per-client limit:** over one connection, requests 1–30 within a minute were answered
+  normally and requests 31–40 got 429 `rate_limited` with `Retry-After: 60` and
+  `retryAfterSeconds: 60` in the body (CORS headers present, so pages can read the wait).
+  The limit is per caller address: 40 requests spread over this container's rotating
+  outbound addresses were not limited, as each address has its own budget. Upstream
+  protection does not depend on callers (it is per isolate and per location).
+- **Capped smoke** (7 quotes + 1 history, 6 s apart, no retries): all HTTP 200, no
+  `Retry-After`, `upstream.state` still `ok` afterwards.
+
+| Request | Listing (Yahoo code, name) | Price | Currency | Trading date · source time (UTC) |
+|---|---|---|---|---|
+| AAPL (no `Origin`) | US · NMS · NasdaqGS · equity | 331.90 | USD | 2026-11-03 · 21:00:01 |
+| VEQT.TO | XTSE · TOR · Toronto · ETF | 60.78 | CAD | 2026-11-03 · 20:59:58 |
+| YNVD.NE | NEOE · NEO · Cboe CA · ETF | 42.30 | CAD | 2026-11-03 · 20:59:54 |
+| 7203.T | XTKS · JPX · Tokyo · equity | 2,996.5 | JPY | 2026-11-04 · 02:10:06 (session open) |
+| SAP.DE | XETR · GER · XETRA · equity | 206.65 | EUR | 2026-11-03 · 16:40:00 |
+| VOD.L | XLON · LSE · LSE · equity | 1.172 (Yahoo: 117.2 GBp, scale 0.01) | GBP | 2026-11-03 · 16:56:16 |
+| 600519.SS | XSHG · SHH · Shanghai · equity | 1,457.47 | CNY | 2026-11-04 · 02:10:24 (session open) |
+
+  Every quote: `priceBasis: regular_market_price`, `adjusted: false`, `realTime: false`,
+  nothing missing, cache `miss` (first request). Markets closed at retrieval returned their
+  last regular-session price; Tokyo and Shanghai were trading and their prices were about
+  15 minutes old. No exchange code in `src/venues.js` needed correcting.
+  **History** `VEQT.TO`, `1y`, `1d` (no `Origin`): 252 daily rows, 2025-11-03 to
+  2026-11-03, no missing values or duplicate dates; close and adjusted close both present
+  and kept apart (adjusted ÷ close = 0.98611 up to 2025-12-29, 1 from 2025-12-30: one
+  distribution); `lastBarMayBeIncomplete: true` because the last date was still "today" in
+  Toronto when retrieved (after the close; the flag is deliberately cautious). Values pass
+  through unrounded as Yahoo sends them (for example a previous close of
+  338.32000732421875). The prices were not compared with a broker.
+- **Not exercised live** (it would take many Yahoo requests): upstream spacing, the
+  upstream budgets and the circuit breaker. They are covered by `market-gateway.test.mjs`,
+  `test_desktop_gateway.py` and `freesource.test.js` against this same Worker code.
 
 ## Activation (fail closed)
 
@@ -143,8 +205,10 @@ causes a refusal (`listing_mismatch`).
   send none: only a symbol (and a range for history).
 - CORS: `ALLOWED_ORIGINS`; a browser request from another origin is refused. Requests
   with **no** `Origin` (the desktop apps) are accepted only when `ALLOW_NO_ORIGIN =
-  "true"`. CORS is not authentication; abuse is bounded by the allowlists, the limits
-  above, the cache and Cloudflare's free daily cap.
+  "true"`; on the deployed Worker an empty `Origin:` header is handled the same way and
+  gets no CORS headers. CORS is not authentication; abuse is bounded by the allowlists,
+  the limits above (the per-client limit counts per caller address), the cache and
+  Cloudflare's free daily cap.
 - Logs: event name, code, venue, upstream status, cooldown length. Never an IP address,
   URL or header. Workers Logs are disabled (`[observability] enabled = false`).
 - Headers: `Content-Security-Policy: default-src 'none'`, `X-Content-Type-Options:

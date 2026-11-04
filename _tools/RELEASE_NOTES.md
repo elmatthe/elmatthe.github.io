@@ -32,6 +32,11 @@ Nothing below is investment advice. No calculation engine changed.
 - **Desktop:** Portfolio Rebalancer 1.4.0 and Stock Comparison 0.6.0 (candidates; ZIPs
   rebuilt; no tag or release created). *Sources…* opens the list; no browser or local
   server is needed.
+- **Gateway live.** The owner deployed the data gateway (Cloudflare Workers Free,
+  `https://market-data-gateway.elmatthe.workers.dev`); after a capped live check (seven
+  quotes and one history, all answered with the expected listing and currency) the site
+  and both desktop apps point at it. Until this branch is merged, the live site keeps the
+  previous version.
 
 ## 2026-11-03: free market-data source prepared, switched off
 

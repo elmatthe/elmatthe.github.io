@@ -123,7 +123,9 @@ operator sets `KEYLESS_SOURCE = "yahoo-chart"` and the non-sensitive owner-attes
 flag `OWNER_ATTESTATION = "owner-confirms-yahoo-permission"`. Fresh or forked deployments
 (the top-level `wrangler.toml` settings) are switched off; only the owner's
 `[env.production]` deployment carries the flag (`_services/market-data-gateway/README.md`,
-"Activation"). Switching it off takes one variable change.
+"Activation"). Switching it off takes one variable change. That deployment is live since
+2026-11-04 at `https://market-data-gateway.elmatthe.workers.dev` (verified the same day:
+README, "Deployment status").
 
 **Technical and operational safeguards** (README, "Protecting the data source"): fixed
 upstream URL and allowlisted listings; every answer checked for symbol, exchange,
