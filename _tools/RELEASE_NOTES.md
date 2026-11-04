@@ -1,6 +1,39 @@
 # Release notes: web tools on /projects/
 
-## 2026-11-03 (latest): free market-data source prepared, switched off
+## 2026-11-04 (latest, candidate on PR 46): Yahoo Finance with no key, and your own source order
+
+Nothing below is investment advice. No calculation engine changed.
+
+### Portfolio Rebalancer and Stock Comparison (web and desktop)
+- **Yahoo Finance — Free Market Data.** Prices come from Yahoo Finance through this site's
+  data gateway with no account or key, briefly cached; quotes may be delayed, incomplete or
+  differ from official exchange data. It is the first source in a fresh list.
+- **Your sources, in the order they are tried.** One numbered list in both tools and both
+  desktop apps: Yahoo Finance and the providers you add with your own key (Alpha Vantage,
+  Marketstack, Finnhub; Alpaca on the desktop). Reorder by dragging, with *Move up* /
+  *Move down*, or the keyboard; switch sources on or off. The order is remembered (shared by
+  both tools on this site; per program on the desktop). A new key joins below Yahoo Finance
+  and never jumps to the top; removing a key switches that provider off and keeps its place.
+- **Sequential fallback with reasons.** Each holding (or Stock series) uses the first
+  source that covers it and gives a usable answer; the next is tried only if it cannot (no
+  data, different listing, currency not confirmed, rate limit, rejected key, outage). The
+  row, the status line, the plan notes and the exports say which source answered and why
+  the others were skipped or failed. A rejected key or a used-up allowance is shown, not
+  hidden, and that provider is not asked again. Nothing is ever filled in.
+- **Gentle on Yahoo Finance.** Requests go one at a time; the gateway spaces, budgets,
+  coalesces and caches them and stops entirely after Yahoo asks it to slow down; the tools
+  then pause Yahoo Finance (also across reloads) and use your other sources.
+- **Stock Comparison:** latest-price-only sources (Marketstack and Finnhub on the web,
+  Finnhub on the desktop) are listed but never asked for history; one comparison never
+  mixes daily and weekly prices; a comparison from several sources says so and every
+  export names each series' source. The snapshot takes price and history from one source.
+- **Portfolio Rebalancer:** the *Price source* selector, the fallback checkbox and *Remove
+  international examples* are gone; the fourteen sample holdings are unchanged.
+- **Desktop:** Portfolio Rebalancer 1.4.0 and Stock Comparison 0.6.0 (candidates; ZIPs
+  rebuilt; no tag or release created). *Sources…* opens the list; no browser or local
+  server is needed.
+
+## 2026-11-03: free market-data source prepared, switched off
 
 Nothing below is investment advice. No calculation, sample or desktop app changed.
 

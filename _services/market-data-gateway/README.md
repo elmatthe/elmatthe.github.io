@@ -1,215 +1,206 @@
-# Market-data gateway (Cloudflare Worker, free tier)
+# Market-data gateway (Cloudflare Worker, Workers Free plan)
 
 One small Cloudflare Worker shared by the **Portfolio Rebalancer** and the **Stock
-Comparison & Analytics** web apps on <https://elmatthe.github.io>. It provides the pages'
-*free source*: ordinary market data (latest regular-session price, bounded daily history)
-that a visitor can request **without an API key**, in one normalized JSON contract.
-GitHub Pages still hosts the website; this Worker is a separate, optional service.
-It is not the CPI gateway (`../cpi-data-gateway/`) and shares no code or settings with it.
+Comparison & Analytics** tools, on the website (<https://elmatthe.github.io>) and in
+both desktop apps. It retrieves **Yahoo Finance** chart data, checks it, caches it
+briefly, and returns it in one normalized JSON contract, so a visitor needs no API key.
+In each tool Yahoo Finance is one entry in the user's ordered source list (position 1
+by default), next to providers the user adds with their own keys
+(`_tools/MARKET_DATA.md` §0). GitHub Pages still hosts the website; this Worker is a
+separate service. It shares no code or settings with `../cpi-data-gateway/`.
 
-**Status: written and tested with mocks only; not deployed; its data source is switched
-off.** The only upstream it implements is Yahoo Finance chart data, and the rights needed
-to relay that data to the public could not be established (next section). The Worker
-therefore refuses every data request (`source_disabled`) until its operator records a
-written authorization. The website points at no gateway (`_data/market_data.yml` is
-empty), so both pages say the free source is not available and keep working with
-personal keys, typed prices and CSV files.
+## Deployment status
 
-## Licensing gate (why the source is off)
+See `md-instructions/Handoff.md` for the current state (deployed URL, activation, live
+smoke results). The website reads the gateway address from `_data/market_data.yml`; the
+desktop apps from `DEFAULT_GATEWAY_URL` in `_tools/shared_py/market_data/gateway.py`
+(the two are kept equal by `_tools/tests/test_market_data_parity.py`). Empty means "not
+set up": the tools then say Yahoo Finance is not available yet and send it nothing.
 
-Checked 2026-11-03 against the sources linked; details and quotes in
-`_tools/PROVIDER_MATRIX.md` §10.
+## Activation (fail closed)
 
-- `https://query1.finance.yahoo.com/v8/finance/chart/{symbol}` is an **unofficial,
-  undocumented** Yahoo Finance endpoint. Yahoo publishes no API, documentation, licence
-  or service level for it. It is **not** the Python `yfinance` library; yfinance is an
-  independent client of the same endpoints whose own disclaimer says the API "is
-  intended for personal use only" and refers users to Yahoo's terms.
-- Yahoo's Terms of Service (legal.yahoo.com, version current on 2026-11-03) prohibit
-  collecting data "using any automated means … robots, spiders, scrapers" (§2(d)(ix)),
-  accessing the services "using a method other than the interface and the instructions
-  that we provide" (§2(e)), and reproducing, distributing, transmitting or broadcasting
-  "any portion or use of, or access to, the Services" (§2(h)). Much of Yahoo Finance's
-  data is supplied by third-party data providers and exchanges.
-- A Worker does **not** remove Yahoo's rate limits or its blocking of automated
-  clients; Cloudflare's IP ranges are shared and are often blocked or rate-limited. It
-  also does not change who is licensed: relaying one fetch to many visitors, and caching
-  it, is redistribution, which is different from one person's own research use.
-- Sending a browser-like User-Agent, obtaining cookies or "crumbs", or rotating
-  addresses would only disguise automated access; it grants no right. This gateway sends
-  an honest, identifying User-Agent and does none of those things.
+The data source is used only when **both** settings are present, exactly:
 
-**Activation gate.** The source runs only when both settings are present:
+| Setting | Value | Meaning |
+|---|---|---|
+| `KEYLESS_SOURCE` | `yahoo-chart` | which upstream adapter to use (the only one implemented) |
+| `OWNER_ATTESTATION` | `owner-confirms-yahoo-permission` | the site owner confirms that their own written permission from Yahoo covers automated retrieval through this Worker, temporary caching and display to visitors, including exchange data Yahoo distributes |
 
-| Setting | Meaning |
+The attestation is a plain, non-sensitive flag. No document, reference, correspondence
+or secret is stored in the Worker, the repository or its answers, and none is needed.
+With either value missing or different, `/v1/health` reports `"enabled": false` with the
+reason, every data request answers `source_disabled`, and nothing is sent to Yahoo.
+
+`wrangler.toml` has two configurations:
+
+- the **top-level settings** (what `npx wrangler@4 deploy` uses): both values empty, so a
+  fresh or forked deployment is always switched off;
+- **`[env.production]`** (what `npx wrangler@4 deploy --env production` uses): the owner's
+  approved deployment, with both values set, `ALLOWED_ORIGINS =
+  "https://elmatthe.github.io"` and `ALLOW_NO_ORIGIN = "true"` (the desktop apps send no
+  `Origin`). Wrangler does not inherit `vars` or rate-limit bindings into an environment,
+  so they are repeated there; `name` is the same, so both deploy the one Worker.
+
+The previous `SOURCE_AUTHORIZATION` setting is no longer read (it would not switch
+anything on).
+
+## Protecting the data source (slow is better than blocked)
+
+Every limit fails closed: when in doubt, nothing is sent to Yahoo.
+
+| Layer | Rule |
 |---|---|
-| `KEYLESS_SOURCE = "yahoo-chart"` | which upstream adapter to use (the only one implemented) |
-| `SOURCE_AUTHORIZATION = "<reference>"` | where the written permission is kept: who granted it, when, and what it covers. It must cover **automated retrieval and public redistribution (display to anonymous visitors, with caching)** of the data, including any exchange data Yahoo licenses from others. |
+| Spacing | at most one upstream request start per **1 s** in each isolate; requests queue for their turn, and a request that would wait more than **15 s** is refused (`throttled`, `Retry-After`) |
+| Concurrency | at most **2** upstream requests in flight per isolate (others wait in the same queue) |
+| Budget | **20** upstream requests per minute per isolate, and **40** per minute per Cloudflare location through the `UPSTREAM_LIMITER` binding (one shared key) |
+| Coalescing | identical concurrent requests in an isolate share **one** upstream request |
+| Caching | quotes reused **10 min**, history **12 h** (per symbol and range); definitive refusals (unknown symbol, other listing or currency) remembered **30 min** |
+| Circuit breaker | after Yahoo answers **429**, no upstream request for **15 min**; after **401/403**, **30 min**; after **3 consecutive** 5xx/timeouts/network errors, **2 min**. Cached answers are still served. The cooldown is shared with other isolates of the data center through the Cache API (best effort; a corrupted entry is ignored) and reported in `/v1/health` (`upstream.state: "cooling_down"`) |
+| Per client | **30** requests per minute and **2** in flight per client (hashed IP) per isolate, plus the `RATE_LIMITER` binding (30/min per location) |
+| No retries | the Worker never retries Yahoo; the pages and desktop apps retry only a network error reaching the gateway, once |
 
-With either missing, `/v1/health` reports `"enabled": false` with the reason, every data
-request answers `source_disabled`, and no request is sent upstream. The reference text is
-never returned by the gateway.
+The clients add their own restraint (`assets/js/market-data/keyless.js`,
+`_tools/shared_py/market_data/gateway.py`): one request at a time, at least 0.35 s apart
+(across all tabs of the site in a browser), copies reused (10 min quotes, 12 h history),
+and after any "slow down" answer — or an outage while the breaker is open — **nothing
+more is sent until `Retry-After` has passed**, a pause remembered across page loads and
+program restarts. The next source in the user's list is used meanwhile.
 
-If permission cannot be obtained, leave the source off. A licensed, display-permitted
-feed can replace the Yahoo adapter behind the same contract (`src/yahoo-chart.js` is the
-only upstream-specific file); no such provider is configured, and none is implied.
+Expected volume: the Rebalancer's 14-holding sample costs at most 14 requests (about 14 s
+with the 1 s spacing when nothing is cached); a Stock comparison one per ticker. The free
+daily allowance of 100,000 Worker requests is far above that.
+
+Honest identity: the Worker sends `User-Agent: market-data-gateway/1.1.0
+(+https://elmatthe.github.io/projects/portfolio-rebalancer/)`. It never imitates a
+browser, obtains cookies or "crumbs", rotates addresses or otherwise works around a
+refusal. If Yahoo refuses, the gateway reports it and stops (circuit breaker).
 
 ## Contract
 
 All endpoints are `GET` (plus CORS preflight). Every answer is JSON with
-`Cache-Control: no-store` for the browser; prices are always in **major units** of the
-stated currency, with the provider's raw value and unit alongside.
+`Cache-Control: no-store`; prices are in **major units** of the stated currency, with
+Yahoo's raw value and unit alongside.
 
 | Request | Answer |
 |---|---|
-| `GET /v1/health` | `md-gateway.health.v1`: `status`, `version`, `keyless {enabled, source, reason, provider, attribution, official:false}`, `venues`, `history {ranges, intervals}`, `cacheTtlSeconds`, `limits`. No secrets. Works without an `Origin`. |
-| `GET /v1/quote?symbol=VEQT.TO` | `md-gateway.quote.v1`: `source`, `listing {symbol, mic, venueName, exchangeCode, exchangeName, instrumentType, name, timeZone}`, `currency`, `rawCurrency`, `quoteUnit`, `unitScale`, `price`, `rawPrice`, `priceBasis: "regular_market_price"`, `adjusted:false`, `tradingDate` (in the venue's time zone), `sourceTime`, `delay {realTime:false, note}`, `dayHigh`, `dayLow`, `volume`, `previousClose` (each `null` when absent, and listed in `missing`), `retrievedAt`, `cache {status, ageSeconds, ttlSeconds}` |
-| `GET /v1/history?symbol=SAP.DE&range=1y&interval=1d` | `md-gateway.history.v1`: same identity fields, `range`, `interval`, `frequency:"daily"`, `adjustment {close, adjClose, adjCloseAvailable}`, `observations: [[date, close, adjClose], …]` (ascending, one per trading date, `null` where the source gave none), `count`, `firstDate`, `lastDate`, `lastBarMayBeIncomplete`, `missing {rowsWithoutPrices, closes, adjCloses, duplicateDates}`, `retrievedAt`, `cache` |
-| `OPTIONS` on the two data paths | 204 for an allowed origin asking for `GET`; 403 otherwise |
-| anything else, or any refusal | `md-gateway.error.v1`: `{error: {code, message, retryable, definitive}}` with a fixed message |
+| `GET /v1/health` | `md-gateway.health.v1`: `status`, `version`, `keyless {enabled, source, reason, activation, provider, attribution, official:false}`, `upstream {state, code, retryAfterSeconds}`, `venues`, `history {ranges, intervals}`, `cacheTtlSeconds`, `limits`. No secrets; the attestation value is never echoed. |
+| `GET /v1/quote?symbol=VEQT.TO` | `md-gateway.quote.v1`: `source`, `listing {symbol, mic, venueName, exchangeCode, exchangeName, instrumentType, name, timeZone}`, `currency`, `rawCurrency`, `quoteUnit`, `unitScale`, `price`, `rawPrice`, `priceBasis: "regular_market_price"`, `adjusted:false`, `tradingDate` (venue time zone), `sourceTime`, `delay {realTime:false, note}`, `dayHigh`, `dayLow`, `volume`, `previousClose` (each `null` when absent, listed in `missing`), `retrievedAt`, `cache {status, ageSeconds, ttlSeconds}` |
+| `GET /v1/history?symbol=SAP.DE&range=1y&interval=1d` | `md-gateway.history.v1`: same identity fields, `range`, `interval`, `frequency:"daily"`, `adjustment {close, adjClose, adjCloseAvailable}`, `observations: [[date, close, adjClose], …]` (ascending, one per trading date, `null` where Yahoo gave none), `count`, `firstDate`, `lastDate`, `lastBarMayBeIncomplete`, `missing {…}`, `retrievedAt`, `cache` |
+| `OPTIONS` on the data paths | 204 for an allowed origin asking for `GET` (exposes `Retry-After`); 403 otherwise |
+| any refusal | `md-gateway.error.v1`: `{error: {code, message, retryable, definitive, retryAfterSeconds?}}` with a fixed message; `Retry-After` header when retryable |
 
 Error codes: `invalid_request`, `invalid_symbol`, `unsupported_listing`, `invalid_range`,
 `origin_not_allowed`, `https_required`, `not_found`, `method_not_allowed`,
-`source_disabled`, `rate_limited` (this client), `throttled` (the shared upstream budget),
+`source_disabled`, `rate_limited` (this client), `throttled` (the shared budget or queue),
 `busy`, `symbol_not_found`, `no_price`, `no_history`, `listing_mismatch`,
 `currency_mismatch`, `currency_unknown`, `unsupported_instrument`,
 `upstream_rate_limited`, `upstream_blocked`, `upstream_unavailable`, `upstream_timeout`,
-`upstream_invalid`, `upstream_rejected`. Retryable codes carry `Retry-After`.
+`upstream_invalid`, `upstream_rejected`.
 
-Price semantics. `close` in history is Yahoo's close, adjusted for splits but not for
-dividends (price return); `adjClose` is Yahoo's adjusted close, also adjusted for dividend
-and capital-gain distributions (total return). They are returned separately and never
-substituted for each other; when `adjClose` is absent the pages say so and use closes,
-labelled as such. The quote is the latest regular-session price, possibly delayed by an
-amount Yahoo does not state; it is never labelled real-time.
+Price semantics. History `close` is Yahoo's close, adjusted for splits but not for
+dividends (price return); `adjClose` is Yahoo's adjusted close, also adjusted for
+dividends and capital-gain distributions (total return). They are never substituted for
+each other; when `adjClose` is absent the tools say so and use closes, labelled as such.
+The quote is the latest regular-session price, possibly delayed; never labelled
+real-time. London listings quoted in pence (`GBp`) are converted to pounds (`unitScale`
+0.01) and both values are returned.
 
 ## Validation (fail closed)
 
 Request: HTTPS; URL at most 256 characters; exactly the listed query parameters, each
-once (anything else, including `shares`, `target` or `account`, is `invalid_request`);
-symbol: upper-case letters and digits with optional hyphens, at most 20 characters, and
-an exchange suffix from the fixed list in `src/venues.js` (US with no suffix, `.TO`,
-`.V`, `.NE`, `.L`, `.DE`, `.PA`, `.AS`, `.SW`, `.T`, `.SS`, `.SZ`, `.HK`, `.AX`).
-Indexes (`^`), currency pairs and futures (`=`), other exchanges and free text are refused
-before any upstream request. History: `range` one of `1mo 3mo 6mo 1y 2y 5y`, `interval`
-`1d`.
+once (anything else — `shares`, `target`, `account`, `apikey`, `token` — is
+`invalid_request`); symbol: upper-case letters and digits with optional hyphens, at most
+20 characters, and an exchange suffix from the fixed list in `src/venues.js` (US with no
+suffix, `.TO`, `.V`, `.NE`, `.L`, `.DE`, `.PA`, `.AS`, `.SW`, `.T`, `.SS`, `.SZ`, `.HK`,
+`.AX`). Indexes (`^`), currency pairs and futures (`=`), other exchanges and free text are
+refused before any upstream request. History: `range` one of `1mo 3mo 6mo 1y 2y 5y`,
+`interval` `1d`.
 
 Upstream answer: HTTP 200 JSON of at most 2 MB, one `chart.result`, `meta.symbol` equal
 to the requested symbol, `meta.instrumentType` EQUITY, ETF or MUTUALFUND,
 `meta.exchangeName` one of the venue's exchange codes, `meta.currency` one of the venue's
-currencies (`GBp` is converted from pence to GBP), a finite positive price, a plausible
-price time; history timestamps strictly ascending, at most 2,000, arrays of equal length,
-every value `null` or a finite positive number. Zero, negative or non-numeric values,
-another symbol, another exchange (for example an OTC line for a US symbol), another
-currency, a redirect or a non-JSON page make the whole answer invalid: it is refused,
-never repaired or replaced by another listing, and dates are never filled in.
+currencies, a finite positive price, a plausible price time; history timestamps strictly
+ascending, at most 2,000, equal-length arrays, every value `null` or finite positive.
+Anything else — another symbol, another exchange (an OTC line for a US symbol), another
+currency, a redirect, a non-JSON page — is refused, never repaired or replaced by
+another listing; dates are never filled in. YNVD.NE is asked for on Cboe Canada (`NEO`);
+Questrade's `YNVD.TO` resolves to the same listing in the tools and is never sent as a
+Toronto symbol.
 
 The exchange codes (`NMS`, `NYQ`, `PCX`, `TOR`, `VAN`, `NEO`, `LSE`, `GER`, `JPX`, `SHH`, …)
-come from public examples of Yahoo's response and have **not** been checked against live
-answers from this gateway. A wrong code only causes a refusal (`listing_mismatch`); confirm
-them in the approved live smoke test before activation.
+are confirmed by the live smoke test below (results in the Handoff). A wrong code only
+causes a refusal (`listing_mismatch`).
 
 ## Security and privacy
 
-- No credentials, keys or secrets exist in this Worker, its requests or its answers.
-- Fixed upstream origin and path; the only client input copied into the upstream URL is an
-  allowlisted symbol and range; no client header (cookies, authorization, forwarding
-  headers) is forwarded; redirects are not followed; 8-second upstream timeout.
-- The contract has no field for holdings, quantities, targets or accounts, and the pages
+- No credentials, keys or secrets exist in this Worker, its requests or its answers. The
+  tools never send a provider key to the gateway (tested in `keyless.test.mjs`,
+  `sources.test.js`, `test_desktop_gateway.py`).
+- Fixed upstream origin and path; the only client input copied into the upstream URL is
+  an allowlisted symbol and range; no client header is forwarded; redirects are never
+  followed; 8-second upstream timeout.
+- The contract has no field for holdings, quantities, targets or accounts, and the tools
   send none: only a symbol (and a range for history).
-- CORS: `ALLOWED_ORIGINS` (default `https://elmatthe.github.io`); data requests without an
-  allowed `Origin` are refused. **CORS is not authentication** — any script can send any
-  `Origin` — so abuse is bounded by the rest: allowlists, per-client and shared upstream
-  rate limits, the cache, and Cloudflare's free daily cap.
-- Rate limits (all fail closed): 30 requests per minute per client (SHA-256 of the client
-  IP, truncated; the IP is not stored or logged) in each isolate and through the
-  `RATE_LIMITER` binding; at most 3 requests in flight per client; at most 20 upstream
-  requests per minute per isolate and 60 per minute per Cloudflare location through the
-  `UPSTREAM_LIMITER` binding; at most 4 upstream requests in flight per isolate. A binding
-  error answers `busy` rather than letting the request through. Cloudflare documents the
-  Rate Limiting binding as approximate and per location, and advises against IP keys
-  because many people can share one IP; with no user accounts there is no better key,
-  so the limits are deliberately modest and the shared upstream limit uses one key.
-- Logs: event name, code, venue, upstream status. Never an IP address, URL or header.
-- Headers: `Content-Security-Policy: default-src 'none'`, `X-Content-Type-Options: nosniff`,
-  `Referrer-Policy: no-referrer`, HSTS.
+- CORS: `ALLOWED_ORIGINS`; a browser request from another origin is refused. Requests
+  with **no** `Origin` (the desktop apps) are accepted only when `ALLOW_NO_ORIGIN =
+  "true"`. CORS is not authentication; abuse is bounded by the allowlists, the limits
+  above, the cache and Cloudflare's free daily cap.
+- Logs: event name, code, venue, upstream status, cooldown length. Never an IP address,
+  URL or header. Workers Logs are disabled (`[observability] enabled = false`).
+- Headers: `Content-Security-Policy: default-src 'none'`, `X-Content-Type-Options:
+  nosniff`, `Referrer-Policy: no-referrer`, HSTS.
 
-## Caching
+## Workers Free plan (checked 2026-11-04)
 
-- Quotes are reused for **5 minutes**, history for **6 hours** (per symbol and range).
-- `retrievedAt` is always the time of the upstream request; a cached answer reports
-  `cache.status: "hit"` with its age, and the pages label it ("gateway copy, N min old").
-  Expired entries are not served. There is no stale-if-error: an upstream failure is an
-  error, not an old price.
-- Two layers: a small in-memory cache in each isolate (always works, per isolate), and the
-  Cache API (`caches.default`, per Cloudflare data center). Cloudflare documents that
-  Workers on a **custom domain** have functional Cache API operations; on a `workers.dev`
-  address, Cloudflare staff have said the Cache API has no effect (the documentation is not
-  explicit). The gateway works either way; to share the cache across isolates, add a
-  custom domain route.
-- Browsers keep their own copy (10 minutes for quotes, 6 hours for history) in local
-  storage, labelled "saved copy" with its age.
+From <https://developers.cloudflare.com/workers/platform/limits/> (updated 2026-10-29):
+100,000 requests per day, reset at 00:00 UTC (above it Cloudflare answers error 1027; the
+Free plan does not bill), 10 ms CPU per request, 128 MB memory, 50 subrequests and 6
+simultaneous outgoing connections per request, Cache API objects up to 512 MB and 50
+cache operations per request. The Rate Limiting binding
+(<https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/>, updated
+2026-10-21) needs Wrangler 4.36.0 or later, takes a period of 10 or 60 s, is approximate
+and per location; its page does not state plan availability. Wrangler 4.157.0 (current
+on 2026-11-04) validates this configuration (`deploy --dry-run --env production` lists
+both bindings). Each request makes at most one upstream subrequest plus at most a few
+Cache API operations. No KV, D1, R2, Durable Objects, Queues or paid feature is used.
+**Do not upgrade the account for this.**
 
-## Workers Free plan (Cloudflare documentation, checked 2026-11-03)
+The Cache API is functional on a custom domain; on a `workers.dev` address Cloudflare does
+not document it, so the shared cache and shared cooldown may be per isolate only there.
+The in-memory cache, cooldown and limits work either way.
 
-From <https://developers.cloudflare.com/workers/platform/limits/> (page dated 2026-10-29):
-100,000 requests per day (reset at 00:00 UTC; above it Cloudflare returns error 1027 and
-does not bill), 10 ms CPU time per request, 128 MB memory, 50 subrequests and 6
-simultaneous outgoing connections per request, Cache API objects up to 512 MB and 50 cache
-operations per request. The Rate Limiting binding takes a period of 10 or 60 seconds
-(<https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/>, dated
-2026-10-21); its page does not state plan availability, so if `wrangler deploy` rejects it,
-remove the two `[[ratelimits]]` blocks (the in-memory limits still apply).
+## Deploy (owner, on the owner's own computer)
 
-Each request makes at most one upstream subrequest and one JSON parse (a 5-year daily
-history is roughly 150–250 KB from the upstream). The Rebalancer's 14-holding sample costs
-14 gateway requests (none when cached in the browser); a Stock comparison costs one per
-ticker. 100,000 requests a day is about 7,000 sample portfolios. Uses no KV, D1, R2,
-Durable Objects, Queues or paid feature. **Do not upgrade the account for this.**
+Needs a free Cloudflare account, Node.js 20 or later and a clone of this repository on
+the `claude/loving-brown-48hctl` branch (or `main` after merge). No payment method is
+needed for Workers Free.
 
-## Deploy on a free Cloudflare account (owner; only after approval)
+```bash
+cd _services/market-data-gateway
+```
 
-Not done by any automated session. Needs a Cloudflare account (free), Node.js 20 or later
-and this repository. Deploying with the source switched off is safe: it serves only
-health and refusals.
+```bash
+npx wrangler@4 login
+```
 
-1. Sign up or sign in at <https://dash.cloudflare.com/sign-up>; choose the **Free** plan (no
-   payment method needed for Workers Free).
-2. From this folder:
+`login` opens Cloudflare in your browser; approve it there (no password or token is
+typed into a terminal or chat).
 
-   ```bash
-   cd _services/market-data-gateway
-   ```
+```bash
+npx wrangler@4 deploy --env production
+```
 
-   ```bash
-   npx wrangler@4 login
-   ```
+Wrangler prints the address, `https://market-data-gateway.<your-subdomain>.workers.dev`.
+If it says the `ratelimits` binding is unavailable on your plan, delete the four
+`[[ratelimits]]` / `[[env.production.ratelimits]]` blocks and deploy again (the in-memory
+limits still apply). If namespace ids 21011 or 21012 are already used in your account,
+choose other integers.
 
-3. Deploy (Wrangler prints `https://market-data-gateway.<your-subdomain>.workers.dev`):
-
-   ```bash
-   npx wrangler@4 deploy
-   ```
-
-   If Wrangler says the `ratelimits` binding is unavailable, delete both `[[ratelimits]]`
-   blocks from `wrangler.toml` and deploy again. If namespace ids 21011 or 21012 are used
-   in the account already, choose other integers. Optional: in the dashboard (Workers &
-   Pages → market-data-gateway → Settings → Domains & Routes) add a custom domain so the
-   Cache API is shared.
-4. Verify (next section). With the source off, `/v1/health` says `"enabled": false`.
-5. Point the website at it: in `_data/market_data.yml` set
-
-   ```yaml
-   gateway: "https://market-data-gateway.<your-subdomain>.workers.dev"
-   ```
-
-   (https, no trailing slash), commit on a branch, review and merge. Both pages then show
-   "switched off" (while the source is off) instead of "not set up". This is the **only**
-   website setting; there is no other URL to change.
-6. **Activation (only with written permission):** set the two gate values, either in
-   `wrangler.toml` `[vars]` and redeploy, or in the dashboard (Settings → Variables):
-   `KEYLESS_SOURCE = "yahoo-chart"` and `SOURCE_AUTHORIZATION = "<who, when, document
-   reference>"`. Then run the approved live smoke test (below) before announcing it.
+Then verify (next section), run the capped live smoke test, and only then put the address
+in `_data/market_data.yml` (`gateway: "https://…workers.dev"`, https, no trailing slash)
+and in `DEFAULT_GATEWAY_URL` of `_tools/shared_py/market_data/gateway.py`, run
+`python _tools/sync_shared_py.py` and `python _tools/build_project_zips.py`, commit,
+review and merge.
 
 ## Verify
 
@@ -234,26 +225,18 @@ curl -sS -H "Origin: https://elmatthe.github.io" "$GATEWAY/v1/quote?symbol=AAPL&
 ```
 
 ```bash
-curl -sS -H "Origin: https://elmatthe.github.io" "$GATEWAY/v1/quote?symbol=AAPL"
+curl -sS -H "Origin: https://elmatthe.github.io" "$GATEWAY/v1/quote?symbol=%5EGSPC"
 ```
 
-Expected: health `{"status":"ok", …, "keyless": {"enabled": false, …}}` with the reason
-while the gate is closed; preflight `204` with `Access-Control-Allow-Origin:
+Expected: health `"enabled": true`, `"activation": "owner_attestation"`, `"upstream":
+{"state": "ok", …}`; preflight `204` with `Access-Control-Allow-Origin:
 https://elmatthe.github.io`; the foreign origin `origin_not_allowed`; the extra parameter
-`invalid_request`; the allowed quote `source_disabled` (HTTP 503), with nothing sent
-upstream. The gate is checked before the symbol, so while it is closed every well-formed
-data request answers `source_disabled`. After activation, `symbol=%5EGSPC` answers
-`unsupported_listing` without an upstream request.
+`invalid_request`; the index `unsupported_listing`. None of these reaches Yahoo.
 
-These exact requests were run on 2026-11-03 against this Worker in Cloudflare's local
-runtime (`wrangler dev`, workerd, Wrangler 4.157.0, no account, `KEYLESS_SOURCE` set and
-`SOURCE_AUTHORIZATION` empty) with the results above; both Rate Limiting bindings were
-accepted in local mode. No request reached Yahoo.
-
-**Live smoke test (after activation, separately approved, capped).** At most seven quote
-requests and one history request, one per listing, spaced at least five seconds apart,
-from a normal connection, with no retry loop, no browser-imitating headers and no
-circumvention of any refusal:
+**Live smoke test (capped).** At most seven quote requests and one history request, one
+per listing, spaced at least five seconds apart, from a normal connection, no retries,
+no browser-imitating headers. Stop at the first `upstream_rate_limited` or
+`upstream_blocked` answer; do not work around it.
 
 ```bash
 for s in AAPL VEQT.TO YNVD.NE 7203.T SAP.DE VOD.L 600519.SS; do curl -sS -H "Origin: https://elmatthe.github.io" "$GATEWAY/v1/quote?symbol=$s"; echo; sleep 5; done
@@ -264,21 +247,24 @@ curl -sS -H "Origin: https://elmatthe.github.io" "$GATEWAY/v1/history?symbol=VEQ
 ```
 
 Record for each: HTTP status, `listing.exchangeCode`, `currency`/`rawCurrency`,
-`tradingDate`. Compare two or three prices with your broker. If an answer is
-`listing_mismatch` for a correct listing, the exchange code in `src/venues.js` needs
-correcting (from the recorded answer) before use. If Yahoo answers `upstream_blocked` or
-`upstream_rate_limited`, stop: do not try to work around it.
+`unitScale`, `price`, `tradingDate`, `sourceTime`. Compare two or three prices with a
+broker. A `listing_mismatch` for a correct listing means the exchange code in
+`src/venues.js` needs correcting from the recorded answer.
 
-## Roll back or stop
+## Roll back, disable or remove
 
-- Close the gate: remove `KEYLESS_SOURCE` or `SOURCE_AUTHORIZATION` (dashboard → Variables)
-  and redeploy. Pages immediately show "switched off" and send no price requests.
-- Remove the site's pointer: set `gateway: ""` in `_data/market_data.yml` and merge. Pages
-  show "not set up" and contact no gateway.
-- Previous version: Workers & Pages → market-data-gateway → Deployments → roll back, or
-  `npx wrangler@4 rollback`.
-- Delete the service: `npx wrangler@4 delete` in this folder.
-- Usage: dashboard → Workers & Pages → market-data-gateway → Metrics.
+- **Switch the data source off (fastest, keeps the Worker):** in the dashboard (Workers &
+  Pages → market-data-gateway → Settings → Variables and Secrets) delete
+  `OWNER_ATTESTATION` (or set it to empty) and save, or deploy the top-level settings with
+  `npx wrangler@4 deploy` (both values empty). Every data request then answers
+  `source_disabled`; the tools say Yahoo Finance is switched off and use the user's other
+  sources.
+- **Previous version:** dashboard → Deployments → Rollback, or `npx wrangler@4 rollback`.
+- **Stop the tools from using it:** set `gateway: ""` in `_data/market_data.yml` and
+  `DEFAULT_GATEWAY_URL = ""`, sync, rebuild the ZIPs and merge. The tools then contact no
+  gateway.
+- **Delete the Worker:** `npx wrangler@4 delete --env production` in this folder.
+- **Usage:** dashboard → Workers & Pages → market-data-gateway → Metrics.
 
 ## Local development
 
@@ -286,32 +272,33 @@ correcting (from the recorded answer) before use. If Yahoo answers `upstream_blo
 npx wrangler@4 dev --port 8788 --var ALLOW_HTTP:true --var "ALLOWED_ORIGINS:https://elmatthe.github.io,http://127.0.0.1:4000"
 ```
 
-Then open `http://127.0.0.1:4000/projects/portfolio-rebalancer/?mdgateway=http://127.0.0.1:8788`
-(or the Stock page) on a locally served build. The pages honour `mdgateway` only when they
-are themselves served from `127.0.0.1` or `localhost`, so a link cannot point production
-visitors at another server. Leave the gate closed locally unless a live request is
-intended and approved.
+This runs the top-level settings (source switched off), so nothing reaches Yahoo. Open
+`http://127.0.0.1:4000/projects/portfolio-rebalancer/?mdgateway=http://127.0.0.1:8788` on a
+locally served build; the pages honour `mdgateway` (a URL, or `none`) only when they are
+served from `127.0.0.1` or `localhost`. Use `--env production` locally only for requests
+that cannot reach Yahoo (health, CORS, refusals), as done on 2026-11-04 in workerd.
 
 ## Tests
 
-From the repository root (no network; Yahoo replaced by `_tools/tests/fixtures/yahoo-chart.mjs`):
+From the repository root (no network; Yahoo replaced by
+`_tools/tests/fixtures/yahoo-chart.mjs`):
 
 ```bash
-node --test _tools/tests/unit/market-gateway.test.mjs
+node --test _tools/tests/unit/market-gateway.test.mjs _tools/tests/unit/keyless.test.mjs _tools/tests/unit/sources.test.mjs
 ```
 
 ```bash
-node --test _tools/tests/unit/keyless.test.mjs
+cd _tools/tests && python3 -m pytest -q test_desktop_gateway.py
 ```
 
-The first runs this Worker module in Node: activation gate, fixed upstream URL and
-headers, venue list equal to the browser adapter's, seven listings (AAPL, VEQT.TO,
-YNVD.NE, 7203.T, SAP.DE, VOD.L in pence, 600519.SS) and DLR-U.TO, history bases and missing
-values, refused symbols and parameters, mismatched/malformed/invalid answers, HTTP 429,
-403, 503, redirects, oversize bodies, timeouts and network errors, CORS and methods, rate
-limits and fail-closed bindings, in-memory and Cache API caching with expiry, and logs. The
-second runs the browser adapter against this Worker in the same process.
-`_tools/tests/browser/freesource.test.js` drives both web apps in Chromium against this
-Worker code (see `_tools/README.md`). Mocked tests are not proof that Yahoo answers, that
-the exchange codes are right, or that the use is permitted: the activation gate and the
-live smoke test are.
+`market-gateway.test.mjs` covers the activation settings (including `wrangler.toml`),
+the fixed upstream URL and headers, the seven smoke listings and DLR-U.TO, history bases,
+refused symbols and parameters, mismatched/malformed answers, HTTP 429/403/503,
+redirects, oversize bodies, timeouts, CORS, per-client and shared limits, spacing and the
+15 s queue, coalescing, remembered refusals, the circuit breaker (and its Cache API
+sharing), no-Origin clients, caching and logs. `keyless.test.mjs` runs the browser
+adapter against this Worker (pauses, fallback, order). `test_desktop_gateway.py` runs the
+desktop package against this Worker served on 127.0.0.1 by `gateway_server.mjs`.
+`_tools/tests/browser/freesource.test.js` and `sources.test.js` drive both web apps
+against it in Chromium. Mocked tests are not proof that Yahoo answers or that the
+exchange codes are right: the live smoke test is.

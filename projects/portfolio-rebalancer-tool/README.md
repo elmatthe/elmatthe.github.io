@@ -20,16 +20,21 @@ downloading anything: <https://elmatthe.github.io/projects/portfolio-rebalancer/
   target weight % and, optionally, the account type (TFSA, RRSP, Margin, …).
 - **Automatic identity and prices:** when you finish typing a ticker (Enter or Tab),
   the program identifies the listing (exchange, currency, pence or pounds) without any
-  request, then fetches its latest price from the source you chose, with **your own
-  key**: Alpha Vantage, Marketstack, Finnhub or Alpaca. Each holding shows the price,
-  provider, price type (for example the end-of-day close), trading date and currency.
-  Prices are not called real-time unless the provider says so.
+  request, then fetches its latest price from the first source in **your source list**
+  that covers it: **Yahoo Finance** (no key needed; through the site's data gateway,
+  briefly cached, may be delayed) and the providers you add with **your own key**
+  (Alpha Vantage, Marketstack, Finnhub, Alpaca). **Sources…** shows the list: change the
+  order with Move up / Move down, Alt+Up / Alt+Down or by dragging, and switch sources on
+  or off. If a source cannot give a usable price, the next one is tried; each holding
+  shows which source priced it and why earlier ones were skipped or failed. Prices are
+  not called real-time unless the source says so.
 - **Identity before price:** `YNVD.NE` (and `YNVD.TO`, as Questrade shows the same
   fund) is the NVIDIA (NVDA) Yield Shares Purpose ETF on **Cboe Canada**, in CAD. The
   program keeps your text, treats both spellings as the same instrument, never prices
-  it as a Toronto Stock Exchange symbol (or from NVIDIA shares or another ETF), and
-  says that the free sources do not cover it. You can then supply its price yourself;
-  it is labelled as user-supplied.
+  it as a Toronto Stock Exchange symbol (or from NVIDIA shares or another ETF). Yahoo
+  Finance is asked for `YNVD.NE` on Cboe Canada and its answer is used only if it is that
+  listing in CAD; the free plans of the key providers do not cover it. You can always
+  supply a price yourself; it is labelled as user-supplied.
 - **One list for every market:** Canadian, US and international holdings (Tokyo in
   JPY, Xetra in EUR, London quoted in pence and converted to pounds, Shanghai in CNY)
   use the same row, the same **Get prices** action, the same quota checks and the same
@@ -78,8 +83,8 @@ website repository for every provider's limits and terms.
 
 Everything except Python installs into a self-contained `.venv` folder inside this
 folder — nothing is installed system-wide, and you can move or delete the folder
-freely. Earlier versions used Yahoo Finance through `yfinance`; it is no longer used
-(Yahoo's terms do not permit automated collection).
+freely. The `yfinance` library is not used: Yahoo Finance is reached only through the
+site's data gateway, one request at a time. No browser or local web server is needed.
 
 ---
 
@@ -145,10 +150,11 @@ The full illustrated guide, including troubleshooting, is at <https://elmatthe.g
 2. **Enter each holding** — ticker exactly as your broker shows it, shares (fractions
    allowed), target weight % and, optionally, the account type. Weights are relative;
    the tool normalizes them. Press Enter or Tab: the ticker is identified and priced.
-3. **Add your own key** under **API keys…** (Alpha Vantage, Marketstack, Finnhub or
-   Alpaca), then press **Get prices** for every holding without a usable price. The
-   line above the holdings estimates the requests first, per provider, and names the
-   holdings outside Canada and the US and any no saved source covers.
+3. **Press Get prices** for every holding without a usable price. With no key, Yahoo
+   Finance is used. Optionally add your own key under **API keys…** (Alpha Vantage,
+   Marketstack, Finnhub or Alpaca): it joins **Sources…** below Yahoo Finance; move it up
+   to try it first. The line above the holdings estimates the requests first, per
+   source, and names the holdings outside Canada and the US and any no source covers.
 4. **Set the reporting currency** (and a budget, in New Money mode), choose fractional
    or whole shares, and press **Calculate plan**. Export CSV or Excel when it is ready.
 
@@ -156,9 +162,8 @@ The full illustrated guide, including troubleshooting, is at <https://elmatthe.g
 and no prices: VEQT.TO 305 (63%), CNQ.TO 48 (9%), XQQ.TO 27 (6.3%), HEWB.TO 14 (4.5%),
 AAPL 2 (1.8%), VFV.TO 8 (0.9%), SPCX 1 (0.9%), CBRS 4 (0.9%), YNVD.NE 4 (1.8%),
 VST 1 (0.9%), and one share each of 7203.T, SAP.DE, VOD.L and 600519.SS at 2.5%.
-CAD reporting, New Money, budget 3,000. **Remove international examples** removes the
-last four only while they are exactly as loaded; edited rows, and the same securities
-added by you, stay.
+CAD reporting, New Money, budget 3,000. All fourteen are ordinary holdings, priced and
+planned by the same rules.
 
 ---
 

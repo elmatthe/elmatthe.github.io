@@ -1,4 +1,4 @@
-# Browser and desktop parity (2026-11-03)
+# Browser and desktop parity (2026-11-04)
 
 What each version of the four tools does, where they differ, and why. "Equivalent" means
 the same rules and results, checked by an automated test named in the last column.
@@ -9,18 +9,19 @@ macOS and Excel behaviour is **not** verified by these Linux tests (see the last
 
 | Provider | Web | Desktop | Notes |
 |---|---|---|---|
-| Alpha Vantage | Quotes (Rebalancer), daily/weekly history (Stock) | Quotes and history | User's own key; burst vs daily notices classified (fixtures `alphavantage-notices.json`). |
-| Marketstack | Quotes (Rebalancer) | Quotes and daily history (Stock) | User's own key; free plan 100 requests/month for testing and evaluation; YNVD (Cboe Canada) is a recorded coverage gap. The web Stock page does not offer Marketstack history yet. |
+| Alpha Vantage | Quotes (Rebalancer), daily/weekly history and snapshot (Stock) | Quotes and history | User's own key; burst vs daily notices classified (fixtures `alphavantage-notices.json`). |
+| Marketstack | Quotes (Rebalancer) | Quotes and daily history (Stock) | User's own key; free plan 100 requests/month for testing and evaluation; YNVD (Cboe Canada) is a recorded coverage gap. **Difference:** the web lists Marketstack as latest prices only (never asked for history there); the desktop uses its history. |
 | Finnhub | Quotes (Rebalancer, US; international on paid plans) | Quotes | User's own key. |
 | Alpaca | **Unsupported** | Quotes and history (US, IEX feed on Basic) | The key secret is a trading credential: never in a web page. |
 | Massive | Deferred | Deferred | Needs the owner's written confirmation of Market Data Terms §1 (see `PROVIDER_MATRIX.md`). |
-| Automatic (route by market) | Yes | Yes | A routing mode, not a provider; same `ROUTES` table (`catalog.js` / `catalog.py`, parity-tested). |
-| Free source (no key, site's market-data gateway) | **Prepared, switched off** | — | Web only, by design: a separate tier outside the five-provider catalog (`keyless.js`), used after the visitor's keys in Automatic mode. Not deployed; gated off pending licensing (`PROVIDER_MATRIX.md` §10). Desktop apps use the user's own keys or CSV files and do not call the gateway. Tests: `keyless.test.mjs`, `market-gateway.test.mjs`, `freesource.test.js`. The Python catalog and routing parity are unchanged. |
+| Yahoo Finance (no key, site's data gateway) | Quotes (Rebalancer), daily history and snapshot (Stock) | Quotes (Rebalancer), daily history (Stock) | Same gateway contract, symbol mapping, answer checks and error meanings (`keyless.js` / `gateway.py`, tables parity-tested); one request at a time; pause after any slow-down answer kept across reloads/restarts. Desktop sends no `Origin` (the production gateway allows that). Tests: `market-gateway.test.mjs`, `keyless.test.mjs`, `test_desktop_gateway.py` (desktop package against the real Worker code), `freesource.test.js`. |
+| **Ordered source list** | ✔ | ✔ | **Equivalent** — same defaults (Yahoo Finance first, keys join below it), moves, on/off rules, key add/remove notes, legacy migration, per-request plan (operation, coverage, availability) and failure wording: `test_source_list_changes_identical`, `test_source_plans_identical_for_every_ticker_order_state_operation_and_platform`. Editor: web `sources-ui.js` (drag, Move up/down, arrow keys, Home/End) — desktop `sources_tk.py` (drag, Move up/down, Alt+Up/Down, Alt+Home/End). Saved: web `localStorage` (shared by both web tools); desktop `files/runtime/market-data-settings.json` (per app). Identical on Windows and macOS (no platform-specific code). |
+| Stock history frequency rule | Run frequency = first usable history source's frequency; others skipped | Sources coarser than the chosen analysis frequency skipped (series are resampled) | **Different by design** (the desktop resamples, the web does not); both never mix frequencies silently. Tests: `sources.test.js` §7, `test_provider_source.py`. |
 
-Never more than five providers; keys stay in the browser (session storage unless
-"remember") or on the desktop (`keys.json` only when remembered, permissions 600). No
-shared or owner key, no relay, no scraping. Quotes are end-of-day or latest-trading-day
-values, never presented as real time.
+Never more than five personal-key providers; keys stay in the browser (session storage
+unless "remember") or on the desktop (`keys.json` only when remembered, permissions 600)
+and are never sent to the gateway. No shared or owner key, no public relay, no scraping.
+Quotes are never presented as real time.
 
 ## Portfolio Rebalancer
 
@@ -33,7 +34,8 @@ values, never presented as real time.
 | Sample: 14 ordinary holdings (targets 100.0%, YNVD.NE, four international at 1 share / 2.5%), no prices | ✔ | ✔ | Identical — `test_sample_portfolio_identical` |
 | One *Get prices* for every holding (no separate international group), incomplete holdings named | ✔ | ✔ | Equivalent — `rebalancer.test.js`, `test_ui_smoke.py` |
 | 14-holding plan with identical reference prices and FX (JPY, EUR, GBP pence, CNY) | ✔ | ✔ | Equivalent to 1e-12 — `test_sample_plan_identical_with_reference_prices` |
-| *Remove international examples* (unchanged sample rows only) | ✔ | ✔ | Equivalent — `rebalancer-sample.test.mjs`, `test_model.py` |
+| International sample holdings are ordinary rows (no *Remove international examples*, no tag) | ✔ | ✔ | Identical — `rebalancer-sample.test.mjs`, `test_model.py`, `test_sample_portfolio_identical` (sample schema v3) |
+| Prices from the ordered list; fallback shown per holding and in exports (*Sources tried first*, *Sources skipped*, *Source order*) | ✔ | ✔ | Equivalent — `rebalancer.test.js`, `freesource.test.js`, `sources.test.js`, `test_model.py`, `test_ui_smoke.py` |
 | Provider notice and error classification | ✔ | ✔ | Equivalent — shared fixtures `fixtures/providers/*.json` |
 | Automatic price on ticker commit | ✔ (Enter/Tab/blur) | ✔ (Enter/Tab, or *Get prices*) | Equivalent behaviour |
 | FX | BoC daily (ECB fallback), editable | BoC daily, editable | Equivalent rates; the web also falls back to ECB |
@@ -91,6 +93,9 @@ values, never presented as real time.
   prompt), the CPI COM write and merge on a real workbook, and the Monte Carlo/Rebalancer
   workbooks in Excel.
 - Real provider responses with real keys (every automated test uses mocked responses).
+- Yahoo Finance answers beyond the capped live smoke test recorded in `md-instructions/Handoff.md`;
+  the desktop Tk source editor's drag gesture on Windows and macOS (keyboard and buttons are
+  covered by the Linux Xvfb test).
 - The CPI data gateway deployed on Cloudflare, called from https://elmatthe.github.io with
   a real FRED key (it was run in Cloudflare's local runtime against the real FRED API with
   a made-up key only).

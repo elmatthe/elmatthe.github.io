@@ -177,7 +177,7 @@ export function createMarketData({
   reference = null, // instrument reference object (tests); the site loads the shipped JSON
   platform = "browser",
   referenceFetch = (...a) => globalThis.fetch(...a),
-  gatewayUrl = "", // the site's market-data gateway (free source); "" = not configured
+  gatewayUrl = "", // the site's market-data gateway (Yahoo Finance); "" = not configured
 } = {}) {
   // Without usable storage everything lives in memory for this page view, so request
   // counts and caches still work until the page is closed.
@@ -565,7 +565,7 @@ export function createMarketData({
   function buildKeylessQuote(identity, raw) {
     const cur = settleCurrency(KEYLESS_ID, identity, raw, null);
     const price = Number((raw.rawPrice * cur.unitScale).toPrecision(12));
-    if (!(price > 0) || !Number.isFinite(price)) throw new DataError(`The free source returned an invalid price for ${identity.displayTicker}.`, { kind: "invalid", provider: KEYLESS_NAME });
+    if (!(price > 0) || !Number.isFinite(price)) throw new DataError(`Yahoo Finance returned an invalid price for ${identity.displayTicker}.`, { kind: "invalid", provider: KEYLESS_NAME });
     const fromBrowser = raw.browserCacheAgeMs !== null && raw.browserCacheAgeMs !== undefined;
     return {
       schema: QUOTE_SCHEMA,
