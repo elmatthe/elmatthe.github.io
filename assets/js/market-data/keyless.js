@@ -99,7 +99,7 @@ const MESSAGES = {
 // always for rate limits and refusals; for an outage or timeout only when the gateway's
 // own circuit breaker is open (Retry-After of a minute or more), so one failed listing
 // does not stop the others.
-const ERRORS = {
+export const GATEWAY_ERRORS = {
   source_disabled: ["unavailable", "Yahoo Finance is switched off on this site at the moment.", { definitive: true }],
   origin_not_allowed: ["unavailable", "This site's data gateway does not accept requests from this page.", { definitive: true }],
   rate_limited: ["rate_limited", "Too many Yahoo Finance requests from this browser. Requests pause for a minute.", { quotaScope: "minute", pause: true }],
@@ -220,7 +220,7 @@ export function createKeylessSource({ baseUrl = "", fetchImpl = (...a) => global
         if (Number.isFinite(sec) && sec >= 0 && sec <= 7200) bodyAfterMs = sec * 1000;
       }
     } catch (_) { /* not JSON */ }
-    const entry = ERRORS[code];
+    const entry = GATEWAY_ERRORS[code];
     if (code === "source_disabled") setStatus({ state: "disabled", message: MESSAGES.disabled, reason: null });
     if (code === "origin_not_allowed") setStatus({ state: "unreachable", message: `${MESSAGES.unreachable} (it does not accept this page)` });
     if (!entry) return new DataError(`The data gateway answered HTTP ${res.status}.`, { kind: res.status >= 500 ? "unavailable" : "http", status: res.status, provider: KEYLESS_NAME });

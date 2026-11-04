@@ -3,7 +3,7 @@
 
 [project]
 name = "Stock Comparison & Analytics Tool"
-version = "0.5.0"
+version = "0.6.0"
 profile = "python-desktop"
 platforms = ["windows", "macos"]
 

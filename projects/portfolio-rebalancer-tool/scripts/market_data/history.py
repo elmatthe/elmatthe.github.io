@@ -1,6 +1,8 @@
-"""Daily price history for the desktop Stock Comparison tool, with the user's own keys.
+"""Daily price history for the desktop Stock Comparison tool, by the user's source list.
 
-Providers (same catalog and pacing as quotes):
+Sources (same list, catalog and pacing as quotes):
+  Yahoo Finance  through the site's data gateway (./gateway.py), no key: daily close
+                 (split-adjusted) and adjusted close (splits and distributions), 1mo-5y.
   Alpha Vantage  TIME_SERIES_DAILY (compact, ~100 sessions, AS TRADED) for windows up to
                  135 days, else TIME_SERIES_WEEKLY_ADJUSTED (close and adjusted close).
                  Daily adjusted closes are a premium Alpha Vantage feature.
@@ -21,11 +23,14 @@ from urllib.parse import quote as urlquote, urlencode
 from . import alphavantage as av
 from .adapters import date_in, normalize_currency
 from .catalog import PROVIDERS, venue_matches
+from . import sources as src
 from .errors import DataError
 from .fx import BOC_BASE, BOC_CURRENCIES, BOC_PROVIDER
+from .gateway import GATEWAY_ID
 
 DAILY_WINDOW_DAYS = 135
-HISTORY_PROVIDERS = ["alphavantage", "marketstack", "alpaca"]
+HISTORY_PROVIDERS = ["yahoo", "alphavantage", "marketstack", "alpaca"]
+_FINENESS = {"daily": 0, "weekly": 1, "monthly": 2}
 _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -33,10 +38,35 @@ def history_kind(start: str, end: str) -> str:
     return "daily" if (dt.date.fromisoformat(end) - dt.date.fromisoformat(start)).days <= DAILY_WINDOW_DAYS else "weekly"
 
 
+def native_frequency(pid: str, start: str, end: str) -> str:
+    """The series a source gives for a window, before anything is fetched."""
+    return history_kind(start, end) if pid == "alphavantage" else "daily"
+
+
+def history_by_sources(md, identity: dict, start: str, end: str, analysis_frequency: str | None = None, cancelled=lambda: False) -> dict:
+    """History from the first source in the user's list that can give it (fetch_history's
+    shape, plus "sourceId", "attempts" and "skipped"). With `analysis_frequency`, a source
+    whose series would be coarser than it (Alpha Vantage's weekly closes for a Daily
+    analysis) is skipped, so a comparison never silently mixes frequencies; finer series
+    are resampled by the caller."""
+    def require(pid: str):
+        if not analysis_frequency:
+            return None
+        native = native_frequency(pid, start, end)
+        if _FINENESS.get(native, 0) > _FINENESS.get(analysis_frequency.lower(), 0):
+            return f"would give {native} prices for this period, and this comparison uses {analysis_frequency.lower()} prices"
+        return None
+    plan = md.route(identity, "history", require=require)
+    h, attempts, used = md.try_sources(identity, "history", plan, lambda c: fetch_history(md, c["id"], identity, start, end, cancelled), "usable price history")
+    return {**h, "sourceId": used, "sourceName": src.source_name(used), "attempts": attempts, "skipped": [x for x in plan["skipped"] if x["code"] != "off"]}
+
+
 def fetch_history(md, pid: str, identity: dict, start: str, end: str, cancelled=lambda: False) -> dict:
     """{"observations": [(date, close, adjClose)], "currency", "basisNote", "frequency", "provider", "symbol"}."""
     if pid not in HISTORY_PROVIDERS:
         raise DataError(f"{PROVIDERS.get(pid, {}).get('name', pid)} does not provide price history here.", kind="not_covered", definitive=True)
+    if pid == GATEWAY_ID:
+        return md.gateway.history(identity, start, end, cancelled)
     s = md._session(pid)
     name = PROVIDERS[pid]["name"]
     if not s:

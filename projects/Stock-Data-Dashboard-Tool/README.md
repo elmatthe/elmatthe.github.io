@@ -1,7 +1,7 @@
 # Stock Comparison & Analytics Tool
 
 ## What It Does
-Stock Comparison & Analytics Tool v0.5.0 is a Python desktop app for comparing stocks,
+Stock Comparison & Analytics Tool v0.6.0 is a Python desktop app for comparing stocks,
 ETFs and funds. It downloads historical prices from the provider you choose with **your own
 key** (Alpha Vantage, Marketstack or Alpaca), or loads them from your CSV files, can convert
 every security into one common currency with official Bank of Canada rates, computes

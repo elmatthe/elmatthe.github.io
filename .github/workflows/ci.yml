@@ -41,7 +41,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: _tools/tests/requirements.txt
-      - name: JavaScript unit tests (market data, providers, integrity, analytics, Monte Carlo, CPI engine, both gateways, free source; mocked network)
+      - name: JavaScript unit tests (market data, source list, providers, integrity, analytics, Monte Carlo, CPI engine, both gateways, Yahoo Finance adapter; mocked network)
         run: node --test _tools/tests/unit/*.test.mjs
       - name: Desktop copies of the shared market_data package match _tools/shared_py
         run: python _tools/sync_shared_py.py --check
@@ -49,7 +49,7 @@ jobs:
         run: python _tools/cpi_public_workbook.py --check
       - name: Install Python test dependencies
         run: python -m pip install -r _tools/tests/requirements.txt
-      - name: Python reference and parity tests (browser engines vs desktop engines incl. CPI CSV byte parity, numpy/scipy, hand-calculated cases)
+      - name: Python reference and parity tests (browser engines vs desktop engines incl. CPI CSV byte parity and the source list, numpy/scipy, hand-calculated cases; the desktop market-data layer against the real gateway Worker code on 127.0.0.1)
         working-directory: _tools/tests
         run: python -m pytest -q -rfs -m "not e2e"
       - name: Downloadable ZIPs match a fresh deterministic build
@@ -117,10 +117,13 @@ jobs:
         working-directory: _tools/tests/browser
         run: node cpi.test.js
       # The market-data gateway's Worker code runs in this job with synthetic Yahoo
-      # answers; no gateway is deployed and no live request is made.
-      - name: Free source (keyless market-data gateway) in the Rebalancer and Stock web apps
+      # answers; the deployed gateway and Yahoo Finance are never contacted.
+      - name: Yahoo Finance through the data gateway in the Rebalancer and Stock web apps
         working-directory: _tools/tests/browser
         run: node freesource.test.js
+      - name: Ordered source list (reordering, persistence, keys, fallback chain, mobile) in both web apps
+        working-directory: _tools/tests/browser
+        run: node sources.test.js
 
   desktop:
     name: Desktop tests on Linux (${{ matrix.tool }})

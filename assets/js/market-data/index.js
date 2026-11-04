@@ -726,7 +726,7 @@ export function createMarketData({
     const reasons = [...attempts.map(a => `${a.provider}: ${shortFailure(a)}`), ...describeSkipped(plan.skipped, { short: true })];
     const anyAvailable = hasPriceSource(op);
     const kinds = attempts.map(a => a.kind);
-    const kind = !plan.candidates.length ? (anyAvailable ? "not_covered" : "not_configured")
+    const kind = !plan.candidates.length ? (anyAvailable || plan.skipped.some(x => x.code === "not_covered") ? "not_covered" : "not_configured")
       : kinds.includes("auth") ? "auth" : kinds.includes("rate_limited") ? "rate_limited" : kinds.every(k => ["not_found", "not_covered"].includes(k)) ? "not_found" : kinds[kinds.length - 1] || "unavailable";
     const error = new DataError(`${plan.candidates.length ? "No source in your list could give" : "No source in your list can give"} ${label}${reasons.length ? ` (${reasons.join("; ")})` : ""}.`, {
       kind, definitive: !plan.candidates.length || kinds.every(k => ["not_found", "not_covered", "ambiguous", "currency_mismatch"].includes(k)),

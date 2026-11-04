@@ -36,9 +36,10 @@ from config import (
     ensure_directory,
     parse_normalization_choice,
 )
-from data_sources import DataSourceError, OfflineCsvSource, get_data_source
+from data_sources import MARKET_SOURCE, DataSourceError, OfflineCsvSource, get_data_source
 from market_data.catalog import PROVIDERS
 from market_data.service import MarketData
+from market_data.sources_tk import SourceListDialog, order_summary
 from exports import export_plot_images, export_results_to_csv_folder, export_results_to_excel
 from plots import (
     plot_correlation_heatmap,
@@ -52,8 +53,10 @@ from plots import (
 )
 
 
-APP_VERSION = "v0.5.0"
-SOURCES = ["Alpha Vantage (your key)", "Marketstack (your key)", "Alpaca (your key)", "Offline CSV"]
+APP_VERSION = "v0.6.0"
+# Market data follows the user's ordered source list (Sources…): Yahoo Finance through the
+# site's data gateway (no key; first by default) and providers with the user's own keys.
+SOURCES = [MARKET_SOURCE, "Offline CSV"]
 RUNTIME_DIR = Path(__file__).resolve().parents[1] / "files" / "runtime"
 
 MULTI_CURRENCY_WARNING = (
@@ -135,7 +138,7 @@ def build_offline_csv_not_enough_data_message(failed_tickers: dict[str, str]) ->
         [
             "",
             "To test Offline CSV with the included sample, use 2024-01-02 to 2024-01-04.",
-            "For live 2025-2026 market data, switch Data Source to a provider with your own key.",
+            "For live 2025-2026 market data, switch Data Source to Market data (your source list).",
             "",
             "At least two valid securities are required for comparison, but the main issue appears to be that the selected date range does not overlap the Offline CSV data.",
         ]
@@ -156,7 +159,7 @@ def build_offline_csv_failure_summary(failed_tickers: dict[str, str]) -> str:
                 "The requested tickers were found, but the selected date range does not overlap the CSV data."
                 if not missing
                 else "Some requested tickers were found, but the selected date range does not overlap the CSV data for those tickers.",
-                "Use the CSV's available date range or switch to a provider with your own key for live data.",
+                "Use the CSV's available date range or switch to Market data (your source list) for live data.",
                 "",
             ]
         )
@@ -173,7 +176,7 @@ def build_offline_csv_failure_summary(failed_tickers: dict[str, str]) -> str:
         lines.extend(date_overlap)
         lines.append("")
         lines.append("The sample CSV in test-files/sample_prices.csv uses dates from 2024-01-02 to 2024-01-04.")
-        lines.append("Use that date range for Offline CSV sample testing, or switch Data Source to a provider with your own key for live 2025-2026 market data.")
+        lines.append("Use that date range for Offline CSV sample testing, or switch Data Source to Market data (your source list) for live 2025-2026 market data.")
     if other:
         lines.append("")
         lines.append("Other Offline CSV issues:")
@@ -190,6 +193,9 @@ class StockAnalyticsApp(tk.Tk):
         self.minsize(1000, 660)
 
         self.market = MarketData(RUNTIME_DIR)
+        # One health check of the site's data gateway, off the UI thread.
+        import threading
+        threading.Thread(target=self._check_gateway, daemon=True).start()
         self.ticker_rows: list[dict[str, tk.Variable]] = []
         self.current_results: dict[str, object] = {}
         self.plot_image_ref: tk.PhotoImage | None = None
@@ -261,7 +267,11 @@ class StockAnalyticsApp(tk.Tk):
                 combo.bind("<<ComboboxSelected>>", lambda _event: self._update_offline_helper_visibility())
             row += 1
 
-        ttk.Button(parent, text="API keys…", command=self._keys_dialog).grid(row=row, column=1, columnspan=2, sticky="ew", pady=2)
+        ttk.Button(parent, text="Sources…", command=self._sources_dialog).grid(row=row, column=1, sticky="ew", pady=2)
+        ttk.Button(parent, text="API keys…", command=self._keys_dialog).grid(row=row, column=2, sticky="ew", pady=2)
+        row += 1
+        self.sources_line = ttk.Label(parent, text=order_summary(self.market, "history"), wraplength=330, justify="left", foreground="#3f5066")
+        self.sources_line.grid(row=row, column=0, columnspan=3, sticky="w", pady=(0, 4))
         row += 1
         for label, variable in (("Start date", self.start_var), ("End date", self.end_var), ("Risk-free rate (% per year)", self.risk_free_var), ("Benchmark", self.benchmark_var)):
             ttk.Label(parent, text=label).grid(row=row, column=0, sticky="w", pady=2)
@@ -475,7 +485,8 @@ class StockAnalyticsApp(tk.Tk):
             settings = self._collect_settings()
             source = get_data_source(settings["source"], settings["offline_folder"], self.market)
             if not source.is_configured():
-                messagebox.showwarning("Data source unavailable", f"{settings['source']} needs your own key: use API keys… to add it, or choose Offline CSV.")
+                messagebox.showwarning("Data source unavailable", "No source in your list can give price history right now. Open Sources… (Yahoo Finance needs no key), "
+                                       "add your own key under API keys…, or choose Offline CSV.")
                 return
             is_offline_csv = isinstance(source, OfflineCsvSource)
             if is_offline_csv:
@@ -491,6 +502,7 @@ class StockAnalyticsApp(tk.Tk):
             selected_currencies: dict[str, str] = {}
             warnings: list[str] = []
             failed_tickers: dict[str, str] = {}
+            series_sources: dict[str, str] = {}
             for ticker_info in settings["tickers"]:
                 ticker = ticker_info["ticker"]
                 try:
@@ -500,6 +512,9 @@ class StockAnalyticsApp(tk.Tk):
                     if result.currency:
                         currencies[ticker] = _normalize_currency(result.currency)
                     warnings.extend(result.warnings)
+                    if result.source:
+                        extra = (f"; tried first: {'; '.join(result.tried)}" if result.tried else "") + (f"; skipped: {'; '.join(result.skipped)}" if result.skipped else "")
+                        series_sources[ticker] = f"{result.source}{extra}"
                 except Exception as exc:
                     if is_offline_csv:
                         failed_tickers[ticker] = str(exc)
@@ -619,6 +634,12 @@ class StockAnalyticsApp(tk.Tk):
             for _, reg in regressions.iterrows() if not regressions.empty else []:
                 if isinstance(reg.get("note"), str) and reg.get("note"):
                     warnings.append(f"{reg['Y Ticker']} vs {reg['X Ticker']}: {reg['note']}")
+            if series_sources:
+                used = sorted(set(v.split(";")[0] for v in series_sources.values()))
+                if len(used) > 1:
+                    warnings.append(f"This comparison combines sources ({', '.join(used)}); their prices are calculated differently, so compare like with like where it matters.")
+                settings["source_order"] = "; ".join(f"{x['position']}. {x['name']}{'' if x['enabled'] else ' (off)'}" for x in self.market.sources_list())
+                settings["series_sources"] = " | ".join(f"{t}: {v}" for t, v in series_sources.items())
             self.current_results = {
                 "settings": {k: v for k, v in settings.items() if k not in ("export_folder",)},
                 "metrics": metrics,
@@ -863,13 +884,27 @@ class StockAnalyticsApp(tk.Tk):
             self._write_logs([*self.current_results.get("warnings", []), f"Export failed: {exc}"])
             messagebox.showwarning("Export failed", str(exc))
 
+    def _check_gateway(self) -> None:
+        self.market.gateway.check()
+        try:
+            self.after(0, self._refresh_sources_line)
+        except (RuntimeError, tk.TclError):  # the window is already closed
+            pass
+
+    def _refresh_sources_line(self) -> None:
+        self.sources_line.configure(text=order_summary(self.market, "history"))
+
+    def _sources_dialog(self) -> None:
+        self.sources_window = SourceListDialog(self, self.market, op="history", on_change=lambda message: (self._refresh_sources_line(), self._write_logs([message])))
+
     def _keys_dialog(self) -> None:
         """Your own keys for Alpha Vantage, Marketstack and Alpaca (kept until you close the
         program unless you tick Remember, which saves them in files/runtime/keys.json)."""
         top = tk.Toplevel(self)
         top.title("API keys")
         ttk.Label(top, wraplength=520, justify="left", text=(
-            "Each key is yours and is sent only to its own provider. Free plans are for personal, non-commercial use. "
+            "Each key is yours and is sent only to its own provider (never to this site's data gateway). A new key switches its provider on "
+            "where it stands in Sources… (below Yahoo Finance by default). Free plans are for personal, non-commercial use. "
             "Alpha Vantage: 25 requests per day free. Marketstack: 100 per month free (each symbol is one request). "
             "Alpaca: US listings (IEX exchange on the free plan). Finnhub's free plan has no price history, and "
             "Massive is not offered (its terms restrict applications used by others).")).pack(padx=10, pady=8, anchor="w")
@@ -892,11 +927,13 @@ class StockAnalyticsApp(tk.Tk):
                     self.market.set_key(pid, key.get(), secret.get() or None, remember.get())
                     key.set("")
                     secret.set("")
-                    message.configure(text="Key saved.")
+                    notes = " ".join(self.market.take_notes())
+                    message.configure(text=f"Key saved. {notes}".strip())
+                    self._refresh_sources_line()
                 except ValueError as exc:
                     message.configure(text=str(exc))
             ttk.Button(box, text="Save key", command=save).grid(row=0, column=2, padx=4)
-            ttk.Button(box, text="Remove key", command=lambda pid=pid, message=message: (self.market.set_key(pid, ""), message.configure(text="Key removed."))).grid(row=0, column=3, padx=4)
+            ttk.Button(box, text="Remove key", command=lambda pid=pid, message=message: (self.market.set_key(pid, ""), message.configure(text=f"Key removed. {' '.join(self.market.take_notes())}".strip()), self._refresh_sources_line())).grid(row=0, column=3, padx=4)
 
     def clear_outputs(self) -> None:
         self.current_results = {}

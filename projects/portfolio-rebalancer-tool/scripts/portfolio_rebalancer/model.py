@@ -17,11 +17,13 @@ import time
 from dataclasses import dataclass, field
 
 from market_data.freshness import freshness_of
+from market_data.sources import describe_skipped, short_failure
 from portfolio_rebalancer import core
 
 ACCOUNT_TYPES = ["", "TFSA", "RRSP", "RESP", "RRIF", "FHSA", "LIRA", "Margin", "Non-Registered", "Individual", "Crypto", "Other"]
 REPORTING = ["CAD", "USD", "EUR", "GBP", "JPY", "CNY", "HKD", "CHF", "AUD"]
-PRICE_TYPE = {"latest_trading_day": "latest price for trading day", "eod_close": "close", "previous_close": "previous close", "last_trade": "last price"}
+PRICE_TYPE = {"latest_trading_day": "latest price for trading day", "eod_close": "close", "previous_close": "previous close", "last_trade": "last price",
+              "regular_market_price": "latest regular-session price (may be delayed)"}
 SYMBOLS = {"CAD": "C$", "USD": "US$", "EUR": "€", "GBP": "£", "JPY": "¥", "CNY": "CN¥", "HKD": "HK$", "AUD": "A$", "CHF": "CHF "}
 ZERO_DECIMALS = {"JPY", "KRW", "IDR"}
 MINOR_UNIT_CODES = {"GBX": "GBP", "ZAC": "ZAR", "ILA": "ILS"}
@@ -234,9 +236,15 @@ def plan_notes(run: dict) -> dict:
     for w in run["plan"]["warnings"]:
         (info if ("scaled down" in w or "No sells are needed" in w) else attention).append(w)
     info += core.weight_warnings(run["positions"])
+    serious = lambda f: f.get("kind") == "auth" or (f.get("kind") == "rate_limited" and f.get("quotaScope") in ("daily", "monthly"))  # noqa: E731
     for r in run["rows"]:
         if r.quote and r.quote.get("fallbackFrom"):
-            info.append(f"{r.ticker}: priced by {r.quote['provider']} because {', '.join(f['provider'] for f in r.quote['fallbackFrom'])} could not.")
+            why = ", ".join(f"{f['provider']} ({short_failure(f)})" for f in r.quote["fallbackFrom"])
+            line = f"{r.ticker}: priced by {r.quote['provider']} because {why} could not."
+            (attention if any(serious(f) for f in r.quote["fallbackFrom"]) else info).append(line)
+    free = [r.ticker for r in run["rows"] if r.quote and not r.manual and r.quote.get("sourceTier") == "free"]
+    if free:
+        info.append(f"Priced by Yahoo Finance through this site's data gateway (no key; may be delayed; not official exchange data): {', '.join(free)}.")
     pence = [r.ticker for r in run["rows"] if r.quote and r.quote.get("quoteUnit") == "minor"]
     if pence:
         info.append(f"{', '.join(pence)}: quoted in pence and converted to pounds (÷100).")
@@ -276,12 +284,15 @@ def export_table(run: dict) -> list[list]:
     results = whole["results"] if whole else run["plan"]["results"]
     header = ["Ticker (as entered)", "Listing", "Instrument", "Account type", "Currency", "Shares", "Price (local)", "Price source", "Provider symbol",
               "Price type", "Trading date", "Retrieved at (UTC)", "Currency evidence", f"FX to {rep}", "FX source", f"Current value ({rep})", "Target weight",
-              f"Target value ({rep})", "Action", f"Trade value ({rep})", "Trade value (local)", "Trade shares", "Post-trade shares"]
+              f"Target value ({rep})", "Action", f"Trade value ({rep})", "Trade value (local)", "Trade shares", "Post-trade shares",
+              "Sources tried first", "Sources skipped"]
     body = []
     for r in results:
         row = run["rows"][r["rowIndex"]]
         q = None if row.manual else row.quote
-        source = f"{q['provider']} (provider)" if q else row.manual["label"]
+        source = (f"{q['provider']} (no key, this site's data gateway)" if q.get("sourceTier") == "free" else f"{q['provider']} (your own key)") if q else row.manual["label"]
+        tried = "; ".join(f"{f['provider']}: {short_failure(f)}" for f in (q or {}).get("fallbackFrom") or [])
+        skipped = "; ".join(describe_skipped((q or {}).get("skippedSources") or []))
         retrieved = q["retrievedAt"] if q else dt.datetime.fromtimestamp(row.manual["at"], dt.timezone.utc).isoformat().replace("+00:00", "Z")
         fx_source = "reporting currency" if r["currencyKey"] == rep else run["fx"][r["currencyKey"]].get("label", "")
         body.append([r["ticker"], (row.identity or {}).get("canonicalId", ""), (row.identity or {}).get("name") or "", r.get("accountType", ""),
@@ -290,7 +301,7 @@ def export_table(run: dict) -> list[list]:
                      q["currencyEvidence"] if q else "user", r["fxToReporting"], fx_source, r["currentValue"], r["targetWeightNorm"], r["targetValue"],
                      r["wholeAction"] if whole else r["action"], r["wholeTradeValue"] if whole else r["tradeValue"],
                      r["wholeTradeValueLocal"] if whole else r["tradeValueLocal"], r["wholeShares"] if whole else r["tradeShares"],
-                     r["wholePostTradeShares"] if whole else r["postTradeShares"]])
+                     r["wholePostTradeShares"] if whole else r["postTradeShares"], tried, skipped])
     return [header, *body]
 
 
@@ -305,6 +316,7 @@ def export_meta(run: dict) -> list[list]:
             ["Reporting currency", run["settings"].reporting],
             ["Share quantities", "Whole shares" if whole else "Fractional shares"],
             ["Prices", f"Includes {manual} user-supplied price(s); the rest verified by providers" if manual else "All verified by providers"],
+            *([["Source order (first tried first)", run["sourceOrder"]]] if run.get("sourceOrder") else []),
             ["Total current", s["totalCurrent"]], ["Target pool", s["pool"]],
             ["Total buys", whole["totalBuys"] if whole else s["totalBuys"]], ["Total sells", whole["totalSells"] if whole else s["totalSells"]]]
     if s["mode"] == "new_money":

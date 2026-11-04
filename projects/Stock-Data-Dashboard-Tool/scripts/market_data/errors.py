@@ -16,7 +16,7 @@ class DataError(Exception):
     def __init__(self, message: str, *, kind: str = "network", status: int | None = None, definitive: bool = False,
                  provider: str | None = None, retry_after_ms: int | None = None, quota_scope: str | None = None,
                  notice: str | None = None, hint: str | None = None, instrument: str | None = None,
-                 retryable: bool | None = None) -> None:
+                 retryable: bool | None = None, paused: bool = False, gateway_code: str | None = None) -> None:
         super().__init__(message)
         self.message = message
         self.kind = kind
@@ -29,7 +29,10 @@ class DataError(Exception):
         self.hint = hint
         self.instrument = instrument
         self._retryable = retryable
+        self.paused = paused  # nothing was sent: the source is pausing after a "slow down" or an outage
+        self.gateway_code = gateway_code  # the data gateway's own error code, when it answered
         self.attempts: list[dict] = []
+        self.skipped: list[dict] = []
 
     def __str__(self) -> str:
         return self.message

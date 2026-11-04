@@ -60,7 +60,7 @@ def test_offline_csv_not_enough_data_message_prioritizes_date_overlap_guidance()
     assert "XIU.TO" in message
     assert "VEQT.TO" in message
     assert "use 2024-01-02 to 2024-01-04" in message
-    assert "switch Data Source to a provider with your own key" in message
+    assert "switch Data Source to Market data (your source list)" in message
     assert (
         "At least two valid securities are required for comparison, but the main issue appears to be that the selected date range does not overlap the Offline CSV data."
         in message
@@ -90,7 +90,7 @@ def test_offline_csv_failure_summary_starts_with_date_mismatch_context():
 
     assert summary.startswith("Offline CSV date range mismatch detected.")
     assert "The requested tickers were found, but the selected date range does not overlap the CSV data." in summary
-    assert "Use the CSV's available date range or switch to a provider with your own key for live data." in summary
+    assert "Use the CSV's available date range or switch to Market data (your source list) for live data." in summary
     assert "The following tickers exist in the Offline CSV data" in summary
     assert "AAPL" in summary
     assert "MSFT" in summary

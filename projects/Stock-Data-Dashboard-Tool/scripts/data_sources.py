@@ -1,8 +1,10 @@
-"""Market data sources: your own provider key (Alpha Vantage, Marketstack, Alpaca)
-through the shared market_data package, or your own CSV files.
+"""Market data sources: your ordered source list (Yahoo Finance through the site's data
+gateway, no key; Alpha Vantage, Marketstack or Alpaca with your own key) through the
+shared market_data package, or your own CSV files.
 
-Yahoo Finance (yfinance) is no longer used: Yahoo's terms do not permit automated
-collection. Every price series records its provider, symbol and price basis.
+The `yfinance` library is not used: Yahoo Finance is reached only through the site's
+data gateway, which spaces and caches requests. Every price series records the source
+it came from, the sources tried or skipped before it, its symbol and its price basis.
 """
 
 from __future__ import annotations
@@ -16,7 +18,10 @@ import pandas as pd
 
 from config import get_files_dir
 from market_data.errors import DataError
-from market_data.history import boc_history, fetch_history
+from market_data.history import boc_history, history_by_sources
+from market_data.sources import describe_skipped, short_failure
+
+MARKET_SOURCE = "Market data (your source list)"
 
 
 class DataSourceError(Exception):
@@ -38,6 +43,9 @@ class PriceDataResult:
     currency: Optional[str]
     prices: pd.DataFrame
     warnings: list[str] = field(default_factory=list)
+    source: Optional[str] = None  # the source the series came from
+    tried: list[str] = field(default_factory=list)  # sources that failed first, with the reason
+    skipped: list[str] = field(default_factory=list)  # sources not asked, with the reason
 
 
 class BaseDataSource:
@@ -398,17 +406,16 @@ class OfflineCsvSource(BaseDataSource):
         return get_offline_fx_rate(rates, from_currency, to_currency)
 
 
-class ProviderHistorySource(BaseDataSource):
-    """Daily history from a provider with the user's own key, via market_data."""
+class SourceListHistorySource(BaseDataSource):
+    """Daily history from the first source in the user's list that can give it."""
 
-    def __init__(self, market, provider_id: str) -> None:
+    name = MARKET_SOURCE
+
+    def __init__(self, market) -> None:
         self.md = market
-        self.pid = provider_id
-        from market_data.catalog import PROVIDERS
-        self.name = f"{PROVIDERS[provider_id]['name']} (your key)"
 
     def is_configured(self) -> bool:
-        return self.pid in self.md.configured()
+        return self.md.has_price_source("history")
 
     def validate_ticker(self, ticker: str) -> TickerValidationResult:
         identity = self.md.resolve(ticker)
@@ -418,21 +425,26 @@ class ProviderHistorySource(BaseDataSource):
     def fetch_prices(self, ticker: str, start_date: str, end_date: str, price_type: str, frequency: str) -> PriceDataResult:
         identity = self.md.resolve(ticker)
         if identity["status"] != "resolved":
+            if identity.get("instrumentType") == "index":
+                raise DataSourceError(f"{identity['displayTicker']}: market indexes are not available from these sources (they serve stocks, ETFs and funds). Use an index ETF, or Offline CSV.")
             raise DataSourceError(f"{identity['displayTicker']}: {identity.get('reason')}")
         try:
-            h = fetch_history(self.md, self.pid, identity, start_date, end_date)
+            h = history_by_sources(self.md, identity, start_date, end_date, analysis_frequency=frequency)
         except DataError as exc:
-            raise DataSourceError(f"{identity['displayTicker']}: {exc.message}") from exc
+            details = "; ".join(f"{a['provider']}: {a['message']}" for a in getattr(exc, "attempts", []) or [])
+            raise DataSourceError(f"{identity['displayTicker']}: {exc.message}{f' Details: {details}' if details else ''}") from exc
         if not h["observations"]:
             raise DataSourceError(f"{identity['displayTicker']}: no prices in the selected window.")
         frame = pd.DataFrame(h["observations"], columns=["Date", "Close", "Adj Close"]).set_index("Date")
         frame.index = pd.to_datetime(frame.index)
-        warnings = [f"{identity['displayTicker']}: {h['basisNote']}"]
+        tried = [f"{a['provider']}: {short_failure(a)}" for a in h["attempts"]]
+        skipped = describe_skipped(h["skipped"])
+        warnings = [f"{identity['displayTicker']}: from {h['sourceName']}. {h['basisNote']}"]
+        if tried:
+            warnings.append(f"{identity['displayTicker']}: {h['sourceName']} was used because {'; '.join(tried)}.")
         if _canonical_price_column(price_type) == "Adj Close" and not h["hasAdjusted"]:
             frame["Adj Close"] = frame["Close"]
             warnings.append(f"{identity['displayTicker']}: adjusted closes are not available from {h['provider']} for this window; plain closes (price return) are used.")
-        if h["frequency"] == "weekly" and frequency.strip().lower() == "daily":
-            warnings.append(f"{identity['displayTicker']}: {h['provider']} supplied weekly data for this window; choose Weekly or Monthly frequency for a consistent comparison.")
         frame = frame.dropna(how="all")
         frame = _resample_prices(frame, frequency)
         if identity.get("listedFrom") and start_date < identity["listedFrom"]:
@@ -441,7 +453,8 @@ class ProviderHistorySource(BaseDataSource):
         currency = h["currency"] if h["currencyVerified"] else None
         if currency:
             frame["Currency"] = currency
-        return PriceDataResult(identity["displayTicker"], identity.get("name") or identity["displayTicker"], currency, frame, warnings)
+        return PriceDataResult(identity["displayTicker"], identity.get("name") or identity["displayTicker"], currency, frame, warnings,
+                               source=h["sourceName"], tried=tried, skipped=skipped)
 
     def fetch_fx_rate(self, from_currency: str, to_currency: str, start_date: str, end_date: str, frequency: str) -> Optional[pd.Series]:
         """`to` units per one `from` unit, from Bank of Canada daily averages (derived through CAD)."""
@@ -462,11 +475,9 @@ class ProviderHistorySource(BaseDataSource):
 
 
 def get_data_source(name: str, offline_folder: str | None = None, market=None) -> BaseDataSource:
-    """Offline CSV, or a provider with the user's own key (by display name)."""
+    """Offline CSV, or market data from the user's ordered source list."""
     if name == OfflineCsvSource.name:
         return OfflineCsvSource(offline_folder)
-    from market_data.catalog import PROVIDERS
-    for pid in ("alphavantage", "marketstack", "alpaca"):
-        if name.startswith(PROVIDERS[pid]["name"]):
-            return ProviderHistorySource(market, pid)
+    if name == MARKET_SOURCE:
+        return SourceListHistorySource(market)
     raise DataSourceError(f"Unknown data source: {name}")

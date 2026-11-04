@@ -199,7 +199,7 @@ const OP_GAP = {
 };
 
 // The sources to try, in order, for one identity and operation, and why the others are
-// skipped. `state[id]` is { available, code, reason } (missing = available); `require`
+// skipped (checked in this order: switched off, operation, coverage, availability, extra). `state[id]` is { available, code, reason } (missing = available); `require`
 // is an optional extra check (id) => reason | null (for example a history frequency).
 // Returns { candidates: [{ id, symbol }], skipped: [{ id, code, reason }] }.
 export function planSources(identity, op, { priority, platform = "browser", state = {}, plans = {}, require = null } = {}) {
@@ -209,10 +209,11 @@ export function planSources(identity, op, { priority, platform = "browser", stat
     if (!offeredSources(platform).includes(id)) continue;
     if (!priority.enabled[id]) { skipped.push({ id, code: "off", reason: "switched off in your source list" }); continue; }
     if (!capabilities(id, platform).includes(op)) { skipped.push({ id, code: "no_capability", reason: OP_GAP[op] || `does not provide ${op}` }); continue; }
-    const st = state[id];
-    if (st && st.available === false) { skipped.push({ id, code: st.code || "unavailable", reason: st.reason || "not available right now", short: st.short || st.reason || "not available right now" }); continue; }
+    // Coverage first: "does not cover this exchange" is a lasting reason, availability a passing one.
     const gap = coverageGap(id, identity, { plans });
     if (gap) { skipped.push({ id, code: "not_covered", reason: gap }); continue; }
+    const st = state[id];
+    if (st && st.available === false) { skipped.push({ id, code: st.code || "unavailable", reason: st.reason || "not available right now", short: st.short || st.reason || "not available right now" }); continue; }
     const extra = require ? require(id) : null;
     if (extra) { skipped.push({ id, code: "incompatible", reason: extra }); continue; }
     candidates.push({ id, symbol: symbolFor(id, identity, { plans }) });

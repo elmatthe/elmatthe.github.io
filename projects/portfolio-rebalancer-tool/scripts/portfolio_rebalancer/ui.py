@@ -1,5 +1,9 @@
 """Tkinter window for the Portfolio Rebalancer (same workflow and rules as the web app).
 
+Prices come from the user's ordered source list (market_data/sources.py): Yahoo
+Finance through the site's data gateway (no key; first by default) and providers with
+the user's own keys, tried one after another; "Sources…" opens the list editor.
+
 Layout: settings and market data at the top; holdings on the left and the trade
 plan on the right in a resizable pane (stacked on narrow screens). Holdings are a
 scrollable list (ticker, shares, target %, optional account, status line); the plan
@@ -30,11 +34,13 @@ from market_data.catalog import PROVIDERS, providers_for
 from market_data.errors import DataError
 from market_data.freshness import freshness_of
 from market_data.service import MarketData
+from market_data.sources import describe_skipped, short_failure, source_name
+from market_data.sources_tk import SourceListDialog, order_summary
 from portfolio_rebalancer import core
 from portfolio_rebalancer.export import write_csv_export, write_excel_export
 from portfolio_rebalancer.model import (ACCOUNT_TYPES, REPORTING, Row, Settings, action_lines, build_plan, money, qty, quote_label,
                                          rows_from_sample)
-from portfolio_rebalancer.sample import SAMPLE_PORTFOLIO, is_unchanged_international_example, target_total_basis_points
+from portfolio_rebalancer.sample import SAMPLE_PORTFOLIO, target_total_basis_points
 
 TOOL_ROOT = Path(__file__).resolve().parents[2]
 RUNTIME = TOOL_ROOT / "files" / "runtime"
@@ -78,6 +84,7 @@ class RebalancerApp:
         self._render_rows()
         self._poll()
         self.pool.submit(self._load_fx, STARTUP_FX, "CAD")
+        self.pool.submit(self._check_gateway)
         self._status("Ready. Enter your holdings, or load the sample portfolio.")
 
     # ------------------------------------------------------------------ layout
@@ -93,13 +100,10 @@ class RebalancerApp:
         self.budget = tk.StringVar(value="3000")
         self.rounding = tk.StringVar(value="Fractional shares")
         self.show_accounts = tk.BooleanVar(value=False)
-        self.source = tk.StringVar(value="Automatic (route by market)")
-        self.fallback = tk.BooleanVar(value=self.md.prefs["fallback"])
         fields = [("Reporting currency", ttk.Combobox(top, textvariable=self.reporting, values=REPORTING, width=8, state="readonly")),
                   ("Mode", ttk.Combobox(top, textvariable=self.mode, values=["New Money (buy only)", "Rebalance (sells fund buys)"], width=24, state="readonly")),
                   ("New money budget", ttk.Entry(top, textvariable=self.budget, width=12)),
-                  ("Share quantities", ttk.Combobox(top, textvariable=self.rounding, values=["Fractional shares", "Whole shares"], width=16, state="readonly")),
-                  ("Price source", ttk.Combobox(top, textvariable=self.source, values=self._source_names(), width=26, state="readonly"))]
+                  ("Share quantities", ttk.Combobox(top, textvariable=self.rounding, values=["Fractional shares", "Whole shares"], width=16, state="readonly"))]
         for i, (label, widget) in enumerate(fields):
             ttk.Label(top, text=label).grid(row=1, column=i, sticky="w", padx=(0, 10))
             widget.grid(row=2, column=i, sticky="we", padx=(0, 10))
@@ -108,14 +112,14 @@ class RebalancerApp:
             var.trace_add("write", lambda *_: self._after_change())
         self.reporting.trace_add("write", lambda *_: (self.pool.submit(self._load_fx, [], self.reporting.get()), self._after_change()))
         self.budget.trace_add("write", lambda *_: self._after_change())
-        self.source.trace_add("write", lambda *_: self._on_source())
         bar = ttk.Frame(top)
         bar.grid(row=3, column=0, columnspan=8, sticky="w", pady=(6, 0))
         ttk.Checkbutton(bar, text="Show account types", variable=self.show_accounts, command=self._render_rows).pack(side="left", padx=(0, 12))
-        ttk.Checkbutton(bar, text="If the chosen source cannot price a holding, try my other saved sources", variable=self.fallback,
-                        command=lambda: self.md.set_routing(fallback=self.fallback.get())).pack(side="left", padx=(0, 12))
+        ttk.Button(bar, text="Sources…", command=self._sources_dialog).pack(side="left", padx=(0, 6))
         ttk.Button(bar, text="API keys…", command=self._keys_dialog).pack(side="left", padx=(0, 6))
         ttk.Button(bar, text="Exchange rates…", command=self._fx_dialog).pack(side="left")
+        self.sources_line = ttk.Label(top, text="", wraplength=1200, justify="left", foreground=COLORS[""])
+        self.sources_line.grid(row=4, column=0, columnspan=8, sticky="w", pady=(4, 0))
 
         self.panes = ttk.PanedWindow(r, orient="horizontal" if r.winfo_screenwidth() >= 1100 else "vertical")
         self.panes.pack(fill="both", expand=True, padx=10, pady=(4, 4))
@@ -128,8 +132,7 @@ class RebalancerApp:
         tools.pack(fill="x")
         # Two rows of buttons so nothing is cut off on a 1366-pixel screen at 125% scaling.
         for i, (text, cmd) in enumerate((("Add holding", self._add_row), ("Load sample", self._load_sample), ("Get prices", self._price_all),
-                                         ("Clear", self._clear), ("Remove international examples", self._remove_international),
-                                         ("Import CSV…", self._import_holdings), ("Export CSV…", self._export_holdings))):
+                                         ("Clear", self._clear), ("Import CSV…", self._import_holdings), ("Export CSV…", self._export_holdings))):
             ttk.Button(tools, text=text, command=cmd).grid(row=i // 4, column=i % 4, padx=(0, 4), pady=(0, 4), sticky="we")
         self.estimate = ttk.Label(left, text="", wraplength=560, justify="left", foreground=COLORS[""])
         self.estimate.pack(fill="x")
@@ -175,18 +178,32 @@ class RebalancerApp:
         self.details = tk.Text(right, height=10, wrap="word", relief="flat", background=r.cget("background"))
         self.details.pack(fill="both", expand=False)
         self.details.configure(state="disabled")
-        ttk.Label(r, text="Illustrative planning only; not financial, investment or trading advice. Prices are the latest available from your chosen "
-                          "provider, not real-time unless the source says so. Verify prices at your broker before trading.",
+        ttk.Label(r, text="Illustrative planning only; not financial, investment or trading advice. Prices are the latest available from the source shown "
+                          "for each holding and may be delayed; not real-time unless the source says so. Verify prices at your broker before trading.",
                   wraplength=1200, foreground=COLORS[""]).pack(fill="x", padx=10, pady=(0, 6))
         r.bind("<Configure>", self._on_window_resize)
         r.protocol("WM_DELETE_WINDOW", self._close)
 
-    def _source_names(self) -> list[str]:
-        return ["Automatic (route by market)"] + [PROVIDERS[p]["name"] for p in DESKTOP_PROVIDERS]
+    # ------------------------------------------------------------------ sources
+    def _check_gateway(self) -> None:
+        """One health check of the site's data gateway (worker thread)."""
+        self.md.gateway.check()
+        self.events.put(("gateway",))
 
-    def _source_id(self) -> str:
-        name = self.source.get()
-        return next((p for p in DESKTOP_PROVIDERS if PROVIDERS[p]["name"] == name), "auto")
+    def _sources_dialog(self) -> None:
+        self.sources_window = SourceListDialog(self.root, self.md, op="quote", on_change=self._on_sources_changed)
+
+    def _on_sources_changed(self, message: str) -> None:
+        """Order changes apply to prices fetched from now on; switching a source off clears the prices it gave."""
+        enabled = {s["id"]: s["enabled"] for s in self.md.sources_list()}
+        cleared = [r for r in self.rows if (r.quote and not enabled.get(r.quote.get("providerId"), True)) or r.status == "pricing"]
+        for r in cleared:
+            r.reset_quote()
+        self._paint_all()
+        self._after_change()
+        tail = f" Prices it gave were cleared ({', '.join(r.ticker for r in cleared)}); press Get prices to fetch them from your other sources." if cleared else \
+            (" The new order applies to prices fetched from now on." if "moved" in message else "")
+        self._status(message + tail)
 
     def _on_canvas_resize(self, event) -> None:
         self.canvas.itemconfigure(self.rows_window, width=event.width)
@@ -281,19 +298,23 @@ class RebalancerApp:
             if eff["source"]["kind"] == "provider":
                 state, missed = freshness_of(eff["source"]["tradingDate"], self.md.now(), ident.get("timeZone") if ident else None)
                 note = {"stale": f" · older than the latest session ({missed} missed)", "too_old": " · too old to use", "unknown": " · date unknown"}.get(state, "")
-                cached = " (saved copy)" if row.quote.get("cacheStatus") == "cached" else ""
-                return head + f"Verified {money(eff['price'], eff['currency'])} · {quote_label(row.quote)}{cached}{note} · value {money(value, eff['currency'])}", "ok" if state == "current" else "warn"
+                q = row.quote
+                cached = {"cached": " (saved copy)", "gateway_cache": f" (gateway copy, {round((q.get('cachedAgeS') or 0) / 60)} min old)"}.get(q.get("cacheStatus"), "")
+                used = f" · used because {'; '.join(f['provider'] + ': ' + short_failure(f) for f in q['fallbackFrom'])}" if q.get("fallbackFrom") else ""
+                serious = any(f.get("kind") == "auth" or (f.get("kind") == "rate_limited" and f.get("quotaScope") in ("daily", "monthly")) for f in q.get("fallbackFrom") or [])
+                tone = "ok" if state == "current" and not serious else "warn"
+                return head + f"Verified {money(eff['price'], eff['currency'])} · {quote_label(q)}{cached}{note} · value {money(value, eff['currency'])}{used}", tone
             return head + f"User-supplied {money(eff['price'], eff['currency'])} · {eff['source']['label']} · value {money(value, eff['currency'])}", "warn"
         if row.error:
             covered = row.error.get("kind") in ("not_covered", "not_configured", "budget_withheld")
             return head + ("Not covered: " if covered else "Price unavailable: ") + row.error.get("message", ""), "warn" if covered else "error"
         if not row.active:
             return head + "Not priced: 0 shares and a 0% target (not part of the plan).", ""
-        if not self.md.configured():
-            return head + "No price source yet: add your own key under API keys…, or use My price.", ""
-        r = self.md.route(ident) if ident else None
+        if not self.md.has_price_source():
+            return head + "No source in your list is available yet: open Sources… or API keys…, or use My price.", ""
+        r = self.md.route(ident, "quote") if ident else None
         if r is not None and not r["candidates"]:
-            reasons = "; ".join(f"{PROVIDERS[x['id']]['name']}: {x['reason']}" for x in r["skipped"])
+            reasons = "; ".join(describe_skipped(r["skipped"])) or "no source switched on"
             return head + f"Not covered: {reasons}. Use My price, or add a source that covers it.", "warn"
         return head + "Not priced yet.", ""
 
@@ -313,7 +334,7 @@ class RebalancerApp:
         row.apply_identity(self.md.resolve(row.ticker))
         self._paint_row(row)
         self._after_change()
-        if row.status == "resolved" and row.active and self.md.configured():
+        if row.status == "resolved" and row.active and self.md.has_price_source():
             self._price(row)
 
     def _price(self, row: Row, force: bool = False) -> None:
@@ -323,11 +344,12 @@ class RebalancerApp:
             self._paint_row(row)
             return
         token = row.token()
-        route = self.md.route(row.identity)
+        route = self.md.route(row.identity, "quote")
         if not route["candidates"]:
-            reasons = "; ".join(f"{PROVIDERS[x['id']]['name']}: {x['reason']}" for x in route["skipped"])
-            kind = "not_covered" if self.md.configured() else "not_configured"
-            row.apply_error(token, {"kind": kind, "message": f"Not covered by your saved sources ({reasons})." if self.md.configured() else "No price source is set up yet."})
+            reasons = "; ".join(describe_skipped(route["skipped"]))
+            available = self.md.has_price_source()
+            row.apply_error(token, {"kind": "not_covered" if available else "not_configured",
+                                    "message": f"Not covered by the sources switched on in your list ({reasons})." if available else f"No source in your list is available ({reasons or 'none switched on'}). Open Sources… or API keys…, or use My price."})
             self._paint_row(row)
             self._after_change()
             return
@@ -344,7 +366,8 @@ class RebalancerApp:
                 quote = self.md.price_instrument(identity, use_cache=not force, cancelled=lambda: self.closing)
                 self.events.put(("quote", row, token, quote))
             except DataError as error:
-                self.events.put(("error", row, token, {**error.to_contract(), "kind": error.kind, "provider": error.provider}))
+                self.events.put(("error", row, token, {**error.to_contract(), "kind": error.kind, "provider": error.provider,
+                                                      "attempts": list(error.attempts), "skipped": list(getattr(error, "skipped", []))}))
             except Exception as error:  # noqa: BLE001 - shown to the user, never silently ignored
                 self.events.put(("error", row, token, {"kind": "failed", "message": f"{type(error).__name__}: {error}"}))
         self.pool.submit(work)
@@ -364,7 +387,7 @@ class RebalancerApp:
         for r in targets:
             if r.identity["status"] != "resolved" or r.effective():
                 continue
-            first = (self.md.route(r.identity)["candidates"] or [None])[0]
+            first = (self.md.route(r.identity, "quote")["candidates"] or [None])[0]
             if first and first["id"] in remaining:
                 cost = PROVIDERS[first["id"]]["requestCost"](r.identity)
                 if cost > remaining[first["id"]]:
@@ -387,9 +410,9 @@ class RebalancerApp:
         if r.identity["status"] != "resolved":
             return r.identity.get("reason") or "ticker not recognised"
         kind = (r.error or {}).get("kind")
-        return {"not_covered": "not covered by your saved sources", "not_configured": "no price source set up",
-                "budget_withheld": "not requested: allowance used up", "rate_limited": "provider limit reached"}.get(
-            kind, "price unavailable" if r.error else "no price yet")
+        return {"not_covered": "not covered by your sources", "not_configured": "no source available",
+                "budget_withheld": "not requested: allowance used up", "rate_limited": "sources limited or paused", "auth": "key rejected"}.get(
+            kind, "no source gave a usable price" if r.error else "no price yet")
 
     def _batch_report(self) -> None:
         """Once every holding of the last Get prices has an answer, name the ones still without a usable price."""
@@ -420,7 +443,7 @@ class RebalancerApp:
                     row, token, error = payload
                     if row in self.rows and row.apply_error(token, error):
                         self._paint_row(row)
-                elif kind == "fx":
+                elif kind in ("fx", "gateway"):
                     self._paint_all()
                 elif kind == "status":
                     self._status(*payload)
@@ -458,17 +481,23 @@ class RebalancerApp:
             parts.append(f"targets {bp / 100:.2f}%{' (the plan scales them to 100%)' if bp not in (0, 10000) else ''}")
         self.summary.configure(text=" · ".join(parts) if main else "")
         pending = [r.identity for r in self.rows if r.active and r.identity and r.identity["status"] == "resolved" and not r.effective()]
-        if not self.md.configured():
-            self.estimate.configure(text="To get prices automatically, add your own key for at least one source under API keys…. You can also use My price on each holding.")
+        self.sources_line.configure(text=order_summary(self.md, "quote"))
+        if not self.md.has_price_source():
+            self.estimate.configure(text="No source in your list is available: open Sources… (Yahoo Finance needs no key) or add your own key under API keys…. You can also use My price on each holding.")
         elif pending:
             est = self.md.estimate(pending)
-            parts = [f"about {e['requests']} {PROVIDERS[p]['name']} request{'s' if e['requests'] != 1 else ''} for {e['rows']} holding{'s' if e['rows'] != 1 else ''}"
-                     f" (this computer sent {e['sentToday']} today{', ' + str(e['sentMonth']) + ' this month' if e['period'] == 'month' else ''})" for p, e in est["perProvider"].items()]
+            parts = []
+            for p, e in est["perProvider"].items():
+                n = f"about {e['requests']} {source_name(p)} request{'s' if e['requests'] != 1 else ''} for {e['rows']} holding{'s' if e['rows'] != 1 else ''}"
+                if p == "yahoo":
+                    parts.append(f"{n} (no key; sent one at a time through this site's data gateway)")
+                else:
+                    parts.append(f"{n} (this computer sent {e['sentToday']} today{', ' + str(e['sentMonth']) + ' this month' if e['period'] == 'month' else ''})")
             unc = ", ".join(u["displayTicker"] for u in est["uncovered"])
             abroad = ", ".join(f"{i['displayTicker']} ({i['venueName']}, {i['currency']})" for i in pending if i.get("currency") not in ("CAD", "USD"))
-            self.estimate.configure(text=f"Get prices: {'; '.join(parts) or 'no requests'}."
-                                         f"{' Listings outside Canada and the US: ' + abroad + '; they count against the same allowances.' if abroad else ''}"
-                                         f"{' Not covered by your saved sources: ' + unc + '.' if unc else ''}")
+            self.estimate.configure(text=f"Get prices: {'; '.join(parts) or 'no requests'}, from the first source in your list that covers each holding."
+                                         f"{' Listings outside Canada and the US: ' + abroad + '; they follow the same list and allowances.' if abroad else ''}"
+                                         f"{' Not covered by the sources switched on: ' + unc + '.' if unc else ''}")
         else:
             self.estimate.configure(text="")
         mode_new = self.mode.get().startswith("New")
@@ -486,16 +515,6 @@ class RebalancerApp:
     def _remove_row(self, row: Row) -> None:
         self.rows = [r for r in self.rows if r is not row] or [Row()]
         self._render_rows()
-
-    def _remove_international(self) -> None:
-        """Removes the four sample international examples only while they are exactly as loaded."""
-        removed = [r for r in self.rows if is_unchanged_international_example(r)]
-        if not removed:
-            self._status("No unchanged international examples to remove (edited rows and holdings you added are kept).")
-            return
-        self.rows = [r for r in self.rows if not is_unchanged_international_example(r)] or [Row()]
-        self._render_rows()
-        self._status(f"Removed {', '.join(r.ticker for r in removed)}. The remaining targets are scaled to 100% in the plan.")
 
     def _clear(self) -> None:
         self.rows = [Row()]
@@ -515,16 +534,17 @@ class RebalancerApp:
         total = target_total_basis_points(SAMPLE_PORTFOLIO["rows"]) / 100
         self._clear_plan(f"Sample portfolio loaded: {len(self.rows)} holdings (targets total {total:.1f}%), with no prices. Press Get prices; nothing is fetched until you do.")
 
-    def _on_source(self) -> None:
-        self.md.set_routing(mode=self._source_id())
-        self._sources_changed("Price source changed.")
-
-    def _sources_changed(self, message: str) -> None:
+    def _sources_changed(self, message: str, pid: str | None = None) -> None:
+        """A key change retires the prices fetched with that key (all key-based prices for "Forget all keys")."""
         for r in self.rows:
-            r.reset_quote()
+            if r.status == "pricing" or r.error or (r.quote and (r.quote.get("providerId") == pid if pid else r.quote.get("providerId") != "yahoo")):
+                r.reset_quote()
+        notes = " ".join(self.md.take_notes())
         self._paint_all()
         self._after_change()
-        self._status(f"{message} Fetched prices were cleared; press Get prices to fetch them again.")
+        if getattr(self, "sources_window", None) and self.sources_window.top.winfo_exists():
+            self.sources_window.render()
+        self._status(f"{message}{' ' + notes if notes else ''} Prices fetched with that key were cleared; press Get prices to fetch them again.")
 
     # ------------------------------------------------------------------ exchange rates
     def _load_fx(self, codes: list[str], reporting: str) -> None:
@@ -620,7 +640,8 @@ class RebalancerApp:
         top = tk.Toplevel(self.root)
         top.title("API keys")
         ttk.Label(top, wraplength=560, justify="left", text=(
-            "Each key is yours: it stays on this computer and is sent only to its own provider. A key is kept until you close the "
+            "Each key is yours: it stays on this computer and is sent only to its own provider (never to this site's data gateway). "
+            "A new key switches its provider on where it stands in Sources… (below Yahoo Finance by default). A key is kept until you close the "
             "program unless you tick Remember (then it is saved in files/runtime/keys.json in this folder, never in exports). "
             "Free plans are for personal, non-commercial use.")).pack(padx=10, pady=8, anchor="w")
         for pid in DESKTOP_PROVIDERS:
@@ -653,11 +674,11 @@ class RebalancerApp:
                 key.set("")
                 secret.set("")
                 message.configure(text=f"{p['name']} key saved{' on this computer' if remember.get() else ' for this session'}.")
-                self._sources_changed(f"{p['name']} key saved.")
+                self._sources_changed(f"{p['name']} key saved.", pid)
             except ValueError as e:
                 message.configure(text=str(e))
         ttk.Button(box, text="Save key", command=save).grid(row=2, column=2, padx=4)
-        ttk.Button(box, text="Remove key", command=lambda: (self.md.set_key(pid, ""), message.configure(text="Key removed."), self._sources_changed(f"{p['name']} key removed."))).grid(row=2, column=3, padx=4)
+        ttk.Button(box, text="Remove key", command=lambda: (self.md.set_key(pid, ""), message.configure(text="Key removed."), self._sources_changed(f"{p['name']} key removed.", pid))).grid(row=2, column=3, padx=4)
         plan = tk.StringVar(value=st["plan"]["label"])
         labels = {pl["label"]: pl["id"] for pl in p["plans"]}
         ttk.Label(box, text="Your plan").grid(row=3, column=0, sticky="w")
@@ -695,6 +716,7 @@ class RebalancerApp:
     def _calculate(self, quiet: bool = False) -> None:
         self.plan_requested = True
         run = build_plan(self.rows, self._settings(), self.fx, now=self.md.now())  # the clock the quotes were dated with
+        run["sourceOrder"] = "; ".join(f"{x['position']}. {x['name']}{'' if x['enabled'] else ' (off)'}" for x in self.md.sources_list())
         self._clear_plan()
         v = run["valuation"]
         if not run["plan"]:
@@ -757,7 +779,12 @@ class RebalancerApp:
                  f"Price: {money(r['price'], r['currencyKey'])} · {eff['source']['label']}"]
         if row.quote and not row.manual:
             q = row.quote
-            parts.append(f"Provider symbol {q['providerSymbol']} · retrieved {q['retrievedAt']} · currency evidence: {q['currencyEvidence']}")
+            via = f"through {q['via']}" if q.get("sourceTier") == "free" else "with your own key"
+            parts.append(f"Source {q['provider']} ({via}) · symbol {q['providerSymbol']} · retrieved {q['retrievedAt']} · currency evidence: {q['currencyEvidence']}")
+            for f in q.get("fallbackFrom") or []:
+                parts.append(f"Tried first: {f['provider']}: {f['message']}")
+            for t in describe_skipped(q.get("skippedSources") or []):
+                parts.append(f"Skipped: {t}")
         if r["currencyKey"] != rep:
             parts.append(f"Exchange rate: 1 {r['currencyKey']} = {r['fxToReporting']:.6g} {rep} · {self.run['fx'][r['currencyKey']].get('label', '')}")
         parts += [f"Shares held: {qty(r['shares'])} · current value {money(r['currentValue'], rep)} · target value {money(r['targetValue'], rep)}",

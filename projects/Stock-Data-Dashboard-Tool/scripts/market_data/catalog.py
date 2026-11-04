@@ -1,15 +1,16 @@
 """Provider catalog for the desktop apps; mirrors assets/js/market-data/catalog.js.
 
 Source of every fact: _tools/PROVIDER_MATRIX.md (checked 2026-11-03).
-_tools/tests/test_market_data_parity.py checks that routing, plans, coverage and
-symbol translation agree with the web catalog.
+_tools/tests/test_market_data_parity.py checks that plans, coverage and symbol
+translation agree with the web catalog. The order in which sources are tried is the
+user's own list (./sources.py).
 """
 from __future__ import annotations
 
 import math
 import re
 
-CATALOG_VERSION = "2026-11-03.1"
+CATALOG_VERSION = "2026-11-04.1"
 
 US_FAMILY = ["US", "XNYS", "XNAS", "ARCX", "BATS", "XASE"]
 YAHOO_SUFFIX = {"XTSE": ".TO", "XTSX": ".V", "NEOE": ".NE", "XCNQ": ".CN", "XLON": ".L", "XETR": ".DE", "XFRA": ".F",
@@ -143,20 +144,6 @@ PROVIDERS: dict[str, dict] = {
 }
 PROVIDER_IDS = list(PROVIDERS)
 
-ROUTES = {
-    "US": ["finnhub", "alpaca", "alphavantage", "marketstack", "massive"],
-    "XTSE": ["alphavantage", "marketstack", "finnhub"],
-    "XTSX": ["alphavantage", "marketstack", "finnhub"],
-    "NEOE": ["marketstack", "finnhub"],
-    "XLON": ["alphavantage", "marketstack", "finnhub"],
-    "XETR": ["alphavantage", "marketstack", "finnhub"],
-    "XSHG": ["alphavantage", "marketstack", "finnhub"],
-    "XSHE": ["alphavantage", "marketstack", "finnhub"],
-    "XBOM": ["alphavantage", "marketstack"],
-    "default": ["marketstack", "finnhub"],
-}
-
-
 def provider_available(pid: str, platform: str = "desktop") -> bool:
     return PROVIDERS.get(pid, {}).get("status", {}).get(platform) == "enabled"
 
@@ -198,33 +185,3 @@ def coverage_gap(pid: str, identity: dict | None, plan: dict | None) -> str | No
     if not provider["symbolFor"](identity, plan):
         return f"{provider['name']} has no documented symbol for this listing"
     return None
-
-
-def route_instrument(identity: dict, mode: str = "auto", configured: list[str] | None = None,
-                     plans: dict | None = None, platform: str = "desktop") -> dict:
-    """{"candidates": [{"id", "symbol"}], "skipped": [{"id", "reason"}]} in routing order."""
-    configured = configured or []
-    plans = plans or {}
-    mic = (identity or {}).get("mic")
-    if mode == "auto":
-        order = ROUTES["US"] if is_us_venue(mic) else ROUTES.get(mic, ROUTES["default"])
-    else:
-        order = [mode]
-    candidates, skipped = [], []
-    for pid in order:
-        if pid not in PROVIDERS:
-            continue
-        if not provider_available(pid, platform):
-            if mode != "auto":
-                skipped.append({"id": pid, "reason": PROVIDERS[pid].get("unsupportedReason", "not available here")})
-            continue
-        if pid not in configured:
-            skipped.append({"id": pid, "reason": f"no {PROVIDERS[pid]['name']} key saved"})
-            continue
-        plan = plans.get(pid) or plan_of(pid)
-        gap = coverage_gap(pid, identity, plan)
-        if gap:
-            skipped.append({"id": pid, "reason": gap})
-            continue
-        candidates.append({"id": pid, "symbol": PROVIDERS[pid]["symbolFor"](identity, plan)})
-    return {"candidates": candidates, "skipped": skipped}
