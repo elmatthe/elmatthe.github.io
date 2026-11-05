@@ -481,7 +481,7 @@ Cloudflare account:
 
 ```bash
 npm install --no-save --no-package-lock --prefix /tmp/wrangler wrangler@4.157.0
-NODE_PATH=/tmp/wrangler/node_modules node --test --test-concurrency=1 _tools/tests/worker-runtime/gateway-runtime.test.cjs
+NODE_PATH=/tmp/wrangler/node_modules node --expose-gc _tools/tests/worker-runtime/gateway-runtime.test.cjs
 ```
 
 `_tools/tests/r3_reproduction.mjs` runs the review's counterexamples against any checkout: it exits 1

@@ -76,7 +76,7 @@ jobs:
           npm install --no-save --no-package-lock --prefix "$RUNNER_TEMP/wrangler" "wrangler@$WRANGLER_VERSION"
           echo "NODE_PATH=$RUNNER_TEMP/wrangler/node_modules" >> "$GITHUB_ENV"
       - name: Coordinator, isolates, SQLite and restarts in workerd; wrangler deploy --dry-run for both configurations
-        run: node --test --test-concurrency=1 _tools/tests/worker-runtime/gateway-runtime.test.cjs
+        run: node --expose-gc _tools/tests/worker-runtime/gateway-runtime.test.cjs
 
   browser:
     name: Site build and browser tests (mocked providers)

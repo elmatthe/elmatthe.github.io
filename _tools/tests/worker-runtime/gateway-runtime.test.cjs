@@ -6,7 +6,7 @@
 // is the coordinator's clock, which can be moved forward (test-entry.mjs); the tests of the
 // unmodified entry point use real time.
 //
-//   NODE_PATH=<folder with wrangler installed>/node_modules node --test _tools/tests/worker-runtime/gateway-runtime.test.cjs
+//   NODE_PATH=<folder with wrangler installed>/node_modules node --expose-gc _tools/tests/worker-runtime/gateway-runtime.test.cjs
 //
 // Miniflare and workerd come with the pinned Wrangler (see .github/workflows/ci.yml), so these
 // are the same runtime and bundler the deployment uses. They are test tools only.
@@ -81,6 +81,13 @@ function syntheticYahoo() {
 }
 const refusal = (seconds, status = 429) => new Response("x", { status, headers: seconds === null ? {} : { "Retry-After": String(seconds) } });
 
+// A response from Miniflare must be read as soon as it arrives: once its inner object is garbage
+// collected, its unread body is cancelled and reading it fails with "Body has already been
+// consumed". So every answer is read here. With --expose-gc, as in CI, collection is frequent, so
+// a test that holds an unread response fails every time instead of now and then.
+if (typeof global.gc === "function") setInterval(global.gc, 100).unref();
+const readNow = async response => new Response(await response.text(), { status: response.status, headers: response.headers });
+
 // One coordinator and several isolates. `isolate-a` hosts the Durable Object, as in production
 // every isolate of the one Worker addresses it. `real` runs the unmodified src/worker.js.
 async function startWorld({ real = false, env = {}, coordinatorEnv = {}, persist = null, yahoo = syntheticYahoo(), storage = "sqlite", extra = [] } = {}) {
@@ -135,8 +142,8 @@ async function startWorld({ real = false, env = {}, coordinatorEnv = {}, persist
   const world = {
     mf,
     yahoo,
-    ask: (name, symbol) => callers.fetch(callerUrl("ask", name, `/v1/quote?symbol=${encodeURIComponent(symbol)}`)),
-    askPath: (name, target) => callers.fetch(callerUrl("ask", name, target)),
+    ask: (name, symbol) => callers.fetch(callerUrl("ask", name, `/v1/quote?symbol=${encodeURIComponent(symbol)}`)).then(readNow),
+    askPath: (name, target) => callers.fetch(callerUrl("ask", name, target)).then(readNow),
     async health(name = "isolate-b") {
       return (await callers.fetch(callerUrl("ask", name, "/v1/health"))).json();
     },
