@@ -7,7 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { createGateway } from "../../../_services/market-data-gateway/src/gateway.js";
+import { testGateway } from "../fixtures/local-coordinator.mjs";
 import { yahooFetch } from "../fixtures/yahoo-chart.mjs";
 import { createMarketData, selectBasis } from "../../../assets/js/market-data/index.js";
 import { cutToListing } from "../../../assets/js/market-data/instruments.js";
@@ -37,7 +37,7 @@ function world({ mode = {}, local = memoryStorage(), reference = REFERENCE, rewr
   let t = NOW;
   const calls = { history: [], av: [] };
   const upstreamMode = { ...mode };
-  const gw = createGateway({ fetchImpl: yahooFetch({ now: () => t, mode: upstreamMode }), now: () => t, log: () => {}, cache: null, limits: { upstreamMinSpacingMs: 0 }, sleep: async () => {} });
+  const gw = testGateway({ fetchImpl: yahooFetch({ now: () => t, mode: upstreamMode }), now: () => t, limits: { upstreamMinSpacingMs: 0 }, sleep: async () => {} });
   const fetchImpl = async (url, init = {}) => {
     const u = new URL(String(url));
     if (u.origin === GATEWAY) {

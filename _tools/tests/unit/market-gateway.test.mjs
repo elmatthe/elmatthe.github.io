@@ -8,6 +8,7 @@ import { createGateway, sourceState, parseOrigins, LIMITS, CACHE_TTL_SECONDS, CO
 import { VENUES, parseSymbol } from "../../../_services/market-data-gateway/src/venues.js";
 import { chartUrl, HISTORY_RANGES } from "../../../_services/market-data-gateway/src/yahoo-chart.js";
 import { yahooFetch } from "../fixtures/yahoo-chart.mjs";
+import { localCoordinator } from "../fixtures/local-coordinator.mjs";
 import { KEYLESS_VENUES } from "../../../assets/js/market-data/keyless.js";
 
 const ORIGIN = "https://elmatthe.github.io";
@@ -25,13 +26,16 @@ function setup({ mode = {}, env = ON, cache = null, limits = {}, spaced = false,
   const upstream = yahooFetch({ now: () => t, mode });
   const fetchImpl = async (url, init) => { calls.push({ url: String(url), init, at: t }); return upstream(url, init); };
   const sleep = async ms => { sleeps.push(ms); if (sleepAdvancesClock) t += ms; };
-  const gw = createGateway({ fetchImpl, now: () => t, log: e => logs.push(JSON.stringify(e)), cache, limits: spaced ? limits : { upstreamMinSpacingMs: 0, ...limits }, sleep });
+  const applied = spaced ? limits : { upstreamMinSpacingMs: 0, ...limits };
+  const log = e => logs.push(JSON.stringify(e));
+  const coordinator = localCoordinator({ fetchImpl, now: () => t, sleep, log, limits: applied });
+  const gw = createGateway({ now: () => t, log, cache, limits: applied });
   const get = async (path, { origin = ORIGIN, ip = "198.51.100.7", method = "GET", headers = {}, e = env } = {}) => {
-    const r = await gw.handle(new Request(`${BASE}${path}`, { method, headers: { ...(origin ? { Origin: origin } : {}), "CF-Connecting-IP": ip, ...headers } }), e);
+    const r = await gw.handle(new Request(`${BASE}${path}`, { method, headers: { ...(origin ? { Origin: origin } : {}), "CF-Connecting-IP": ip, ...headers } }), { UPSTREAM_COORDINATOR: coordinator, ...e });
     const text = await r.text();
     return { status: r.status, headers: Object.fromEntries(r.headers), body: text ? JSON.parse(text) : null };
   };
-  return { gw, get, calls, logs, sleeps, advance: ms => { t += ms; }, now: () => t };
+  return { gw, get, calls, logs, sleeps, coordinator, advance: ms => { t += ms; }, now: () => t };
 }
 const quote = s => `/v1/quote?symbol=${encodeURIComponent(s)}`;
 const history = (s, range = "1y") => `/v1/history?symbol=${encodeURIComponent(s)}&range=${range}&interval=1d`;
@@ -82,9 +86,10 @@ test("wrangler.toml: fresh top-level settings are off; only [env.production] car
   assert.match(prod, /^KEYLESS_SOURCE = "yahoo-chart"$/m);
   assert.match(prod, new RegExp(`^OWNER_ATTESTATION = "${OWNER_ATTESTATION_VALUE}"$`, "m"));
   assert.match(prod, /^ALLOWED_ORIGINS = "https:\/\/elmatthe\.github\.io"$/m);
-  assert.equal((prod.match(/\[\[env\.production\.ratelimits\]\]/g) || []).length, 2, "both rate-limit bindings repeated (not inherited)");
+  assert.equal((prod.match(/\[\[env\.production\.ratelimits\]\]/g) || []).length, 1, "the client-limit binding repeated (not inherited)");
+  assert.doesNotMatch(toml.replace(/^#.*$/gm, ""), /UPSTREAM_LIMITER/, "the coordinator's global budget replaced the per-location one");
   assert.ok(!/SOURCE_AUTHORIZATION|letter|correspondence|grant number/i.test(toml.replace(/^#.*$/gm, "")), "no authorization document or reference in the settings");
-  assert.ok(!/kv_namespaces|d1_databases|r2_buckets|durable_objects|queues|usage_model/.test(toml), "no paid or storage products");
+  assert.ok(!/kv_namespaces|d1_databases|r2_buckets|queues|usage_model|new_classes|legacy-kv/.test(toml.replace(/^#.*$/gm, "")), "no paid product, and no storage but the SQLite-backed coordinator");
 });
 
 test("health: no secrets; reports activation, upstream state and limits", async () => {
@@ -304,9 +309,6 @@ test("upstream budget: the shared limit stops new upstream requests but cached a
   const cached = await get(quote("AAPL"), { ip: "4" });
   assert.equal(cached.status, 200);
   assert.equal(cached.body.cache.status, "hit");
-  const binding = setup({ env: { ...ON, UPSTREAM_LIMITER: { limit: async ({ key }) => ({ success: key !== "yahoo-chart" }) } } });
-  assert.equal((await binding.get(quote("AAPL"))).body.error.code, "throttled");
-  assert.equal(binding.calls.length, 0);
 });
 
 /* ---------------- caching ---------------- */
@@ -478,29 +480,6 @@ test("circuit breaker: HTTP 403 stops upstream requests for 30 minutes; three co
   assert.equal((await e.get(quote("BRK-B"))).status, 200, "the failure count restarts after a success");
 });
 
-test("circuit breaker: the cooldown is shared with other isolates through the Cache API, never longer than its own length", async () => {
-  const store = new Map();
-  const fake = {
-    match: async key => (store.has(key) ? new Response(store.get(key)) : undefined),
-    put: async (key, response) => { store.set(key, await response.text()); },
-    delete: async key => store.delete(key),
-  };
-  const a = setup({ cache: fake, mode: { limited: true } });
-  await a.get(quote("AAPL"));
-  const b = setup({ cache: fake }); // another isolate in the same data center
-  const r = await b.get(quote("MSFT"));
-  assert.equal(r.body.error.code, "upstream_rate_limited");
-  assert.equal(b.calls.length, 0);
-  // A corrupted or far-future entry is ignored: it can never stop the source for longer
-  // than the cooldown that was actually started.
-  const key = [...store.keys()].find(k => k.endsWith("/state/cooldown"));
-  for (const bad of [{ code: "upstream_rate_limited", until: NOW + 365 * 86400000 }, { code: "upstream_rate_limited", startedAt: NOW, until: NOW + 365 * 86400000 }, { code: "other", startedAt: NOW, until: NOW + 1000 }]) {
-    store.set(key, JSON.stringify(bad));
-    const c = setup({ cache: fake });
-    assert.equal((await c.get(quote("MSFT"))).status, 200, JSON.stringify(bad));
-  }
-});
-
 test("clients without an Origin header (desktop apps) only when ALLOW_NO_ORIGIN is true; unlisted origins always refused", async () => {
   const off = setup();
   assert.equal((await off.get(quote("AAPL"), { origin: null })).body.error.code, "origin_not_allowed");
@@ -581,19 +560,34 @@ function heldGateway({ limits = {}, env = ON, cache = null, ignoreAbort = false 
       });
     } finally { inFlight -= 1; }
   };
-  const gw = createGateway({ fetchImpl, now: clock.now, sleep: clock.sleep, log: () => {}, cache, limits: { upstreamTimeoutMs: 600000, ...limits } });
+  const applied = { upstreamTimeoutMs: 600000, ...limits };
+  const coordinator = localCoordinator({ fetchImpl, now: clock.now, sleep: clock.sleep, limits: applied });
+  const bound = { UPSTREAM_COORDINATOR: coordinator, ...env };
+  const gw = createGateway({ now: clock.now, log: () => {}, cache, limits: applied });
   let client = 0;
   const ask = (symbol, { signal, ctx } = {}) => {
     client += 1;
-    return gw.handle(new Request(`${BASE}${quote(symbol)}`, { signal, headers: { Origin: ORIGIN, "CF-Connecting-IP": `10.50.0.${client}` } }), env, ctx);
+    return gw.handle(new Request(`${BASE}${quote(symbol)}`, { signal, headers: { Origin: ORIGIN, "CF-Connecting-IP": `10.50.0.${client}` } }), bound, ctx);
   };
-  return { clock, held, starts, ask, gw, peak: () => peak };
+  // Requests started together can reach the coordinator in any order: the Worker hashes the client
+  // address first, asynchronously. This makes the order definite, so that an assertion about first
+  // come first served means what it says.
+  const askAll = async symbols => {
+    const answers = [];
+    for (const symbol of symbols) {
+      const before = coordinator.arrivals.length;
+      answers.push(ask(symbol));
+      await until(() => coordinator.arrivals.length > before, `${symbol} reaches the coordinator`);
+    }
+    return answers;
+  };
+  return { clock, held, starts, ask, askAll, gw, bound, coordinator, peak: () => peak };
 }
 const gaps = starts => starts.slice(1).map((s, i) => s.at - starts[i].at);
 
 test("B2: requests released together never start together: actual starts stay 1 s apart (was [0, 1000, 7000, 7000])", async () => {
-  const { clock, held, starts, ask, peak } = heldGateway();
-  const answers = ["AAPL", "MSFT", "SPY", "VST"].map(s => ask(s));
+  const { clock, held, starts, askAll, peak } = heldGateway();
+  const answers = await askAll(["AAPL", "MSFT", "SPY", "VST"]);
   await until(() => starts.length === 1, "first start");
   assert.equal(starts[0].at, 0);
   await clock.advance(1000);
@@ -617,9 +611,9 @@ test("B2: requests released together never start together: actual starts stay 1 
 });
 
 test("B2: many staggered completions keep spacing, the in-flight limit and order", async () => {
-  const { clock, held, starts, ask, peak } = heldGateway();
+  const { clock, held, starts, askAll, peak } = heldGateway();
   const symbols = ["AAPL", "MSFT", "SPY", "VST", "SAP.DE", "VOD.L", "7203.T", "VEQT.TO"];
-  const answers = symbols.map(s => ask(s));
+  const answers = await askAll(symbols);
   await until(() => starts.length === 1, "first start");
   for (let round = 0; round < 40 && starts.length < symbols.length; round += 1) {
     await clock.advance(700);
@@ -635,8 +629,8 @@ test("B2: many staggered completions keep spacing, the in-flight limit and order
 });
 
 test("B2: a request waits at most 15 s for capacity, then is refused and never sent", async () => {
-  const { clock, held, starts, ask } = heldGateway();
-  const first = [ask("AAPL"), ask("MSFT")];
+  const { clock, held, starts, ask, askAll } = heldGateway();
+  const first = await askAll(["AAPL", "MSFT"]);
   await until(() => starts.length === 1, "first start");
   await clock.advance(1000);
   await until(() => starts.length === 2, "second start");
@@ -663,9 +657,8 @@ test("B2: a request waits at most 15 s for capacity, then is refused and never s
 });
 
 test("B2: failed upstream requests give their place back", async () => {
-  const { clock, held, starts, ask } = heldGateway({ limits: { upstreamInFlight: 1, upstreamMinSpacingMs: 100 } });
-  const a = ask("AAPL");
-  const b = ask("MSFT");
+  const { clock, held, starts, askAll } = heldGateway({ limits: { upstreamInFlight: 1, upstreamMinSpacingMs: 100 } });
+  const [a, b] = await askAll(["AAPL", "MSFT"]);
   await until(() => starts.length === 1, "first start");
   held.shift().reject(new TypeError("fetch failed"));
   assert.equal((await a).status, 502);
@@ -677,7 +670,8 @@ test("B2: failed upstream requests give their place back", async () => {
 
 test("B2: a place held by a request that can never finish (its context ended) is reclaimed", async () => {
   const { clock, starts, ask, held } = heldGateway({ limits: { upstreamInFlight: 1, upstreamMinSpacingMs: 100, upstreamTimeoutMs: 1000 }, ignoreAbort: true });
-  ask("AAPL").catch(() => {}); // never answered
+  const stuck = new AbortController(); // ended below, so its real-time watchdog ends
+  const never = ask("AAPL", { signal: stuck.signal }); // never answered
   await until(() => starts.length === 1, "first start");
   held.shift(); // nothing will ever settle this request, and it ignores its abort
   assert.equal(clock.pending(), 0);
@@ -686,11 +680,13 @@ test("B2: a place held by a request that can never finish (its context ended) is
   await until(() => starts.length === 2, "the lost place to be reclaimed");
   held.shift().ok();
   assert.equal((await next).status, 200);
+  stuck.abort();
+  assert.equal((await never).status, 499);
 });
 
 test("B2: a client that goes away while queued leaves the queue at once; no upstream request is sent for it", async () => {
-  const { clock, held, starts, ask } = heldGateway();
-  const first = [ask("AAPL"), ask("MSFT")];
+  const { clock, held, starts, ask, askAll } = heldGateway();
+  const first = await askAll(["AAPL", "MSFT"]);
   await until(() => starts.length === 1, "first start");
   await clock.advance(1000);
   await until(() => starts.length === 2, "second start");
@@ -713,8 +709,8 @@ test("B2: a client that goes away while queued leaves the queue at once; no upst
 });
 
 test("B2: shared (coalesced) work is cancelled only when every client has gone; an in-flight request is aborted without counting as an outage", async () => {
-  const { clock, held, starts, ask, gw } = heldGateway();
-  const blockers = [ask("AAPL"), ask("MSFT")];
+  const { clock, held, starts, ask, askAll, gw, bound } = heldGateway();
+  const blockers = await askAll(["AAPL", "MSFT"]);
   await until(() => starts.length === 1, "first start");
   await clock.advance(1000);
   await until(() => starts.length === 2, "second start");
@@ -743,7 +739,7 @@ test("B2: shared (coalesced) work is cancelled only when every client has gone; 
     c.abort();
     assert.equal((await r).status, 499);
   }
-  const h = await gw.handle(new Request(`${BASE}/v1/health`, { headers: { Origin: ORIGIN } }), ON);
+  const h = await gw.handle(new Request(`${BASE}/v1/health`, { headers: { Origin: ORIGIN } }), bound);
   assert.equal((await h.json()).upstream.state, "ok", "client cancellations are not upstream failures");
 });
 
@@ -760,8 +756,8 @@ test("B2: a cooldown that starts while requests are queued stops them; none of t
 });
 
 test("B2: the upstream budget counts requests actually started, so a cancelled wait does not use it up", async () => {
-  const { clock, held, starts, ask } = heldGateway({ limits: { upstreamPerMinute: 3 } });
-  const blockers = [ask("AAPL"), ask("MSFT")];
+  const { clock, held, starts, ask, askAll } = heldGateway({ limits: { upstreamPerMinute: 3 } });
+  const blockers = await askAll(["AAPL", "MSFT"]);
   await until(() => starts.length === 1, "first start");
   await clock.advance(1000);
   await until(() => starts.length === 2, "second start");
@@ -913,42 +909,10 @@ test("B3: concurrent refusals keep the longest deadline; repeated refusals exten
   assert.equal(s.calls.length, 2);
 });
 
-function memoryCache() {
-  const store = new Map();
-  return { store, match: async key => (store.has(key) ? new Response(store.get(key)) : undefined), put: async (key, response) => { store.set(key, await response.text()); }, delete: async key => store.delete(key) };
-}
-
-test("B3: the absolute deadline survives a new isolate through the Cache API, with the time really left", async () => {
-  const cache = memoryCache();
-  const a = retryAfterSetup({ cache });
-  a.mode.limited = true;
-  a.mode.retryAfter = "3600";
-  await a.get(quote("AAPL"));
-  const b = setup({ cache });
-  b.advance(1000000);
-  const r = await b.get(quote("MSFT"));
-  assert.equal(r.body.error.code, "upstream_rate_limited");
-  RA(r, 3600 - 1000);
-  assert.equal(b.calls.length, 0, "the other isolate stays away too");
-  const c = setup({ cache });
-  c.advance(3600000);
-  assert.equal((await c.get(quote("MSFT"))).status, 200, "the entry expires at the deadline, not later");
-  // Corrupted entries are not honoured.
-  const key = [...cache.store.keys()].find(k => /\/state\/cooldown/.test(k));
-  const bad = [{ code: "upstream_rate_limited", startedAt: "x", until: NOW + 3600000 }, { code: "upstream_rate_limited", startedAt: NOW, until: NOW + 1000 }, { code: "upstream_rate_limited", startedAt: NOW + 7200000, until: NOW + 9000000 }, { code: "upstream_rate_limited", startedAt: NOW, until: NOW + 90000000 }, { code: "upstream_rate_limited", startedAt: NOW, halted: "yes" }];
-  for (const [i, entry] of bad.entries()) {
-    cache.store.set(key, JSON.stringify(entry));
-    const fresh = setup({ cache });
-    assert.equal((await fresh.get(quote(["SPY", "VST", "SAP.DE", "VOD.L", "7203.T"][i]))).status, 200, JSON.stringify(entry));
-    assert.equal(fresh.calls.length, 1, "the corrupted entry did not stop this request");
-  }
-});
-
 test("B3: a wait beyond the permitted maximum stops the source until the owner reactivates it; it is never retried early", async () => {
   assert.equal(MAX_COOLDOWN_SECONDS, 86400);
   for (const value of ["172800", "99999999999999999999999", new Date(NOW + 30 * 86400000).toUTCString()]) {
-    const cache = memoryCache();
-    const { get, calls, advance, mode } = retryAfterSetup({ cache });
+    const { get, calls, advance, mode, coordinator } = retryAfterSetup();
     mode.limited = true;
     mode.retryAfter = value;
     const first = await get(quote("AAPL"));
@@ -961,18 +925,10 @@ test("B3: a wait beyond the permitted maximum stops the source until the owner r
     advance(60 * 86400000); // long after any date the source named
     RA(await get(quote("MSFT"), { ip: "b" }), MAX_COOLDOWN_SECONDS);
     assert.equal(calls.length, 1, "no automatic retry, however long it has been");
-    // Another isolate restores the stop from the cache, whatever the clock says.
-    const other = setup({ cache });
-    other.advance(60 * 86400000);
-    assert.equal((await other.get(quote("MSFT"))).body.error.code, "upstream_rate_limited");
-    assert.equal(other.calls.length, 0);
     // The owner's explicit reactivation (a new UPSTREAM_REACTIVATION_ID) clears it.
-    const env = { ...ON, UPSTREAM_REACTIVATION_ID: "2026-11-05" };
-    assert.equal((await get(quote("MSFT"), { ip: "c", e: env })).status, 200, value);
+    coordinator.env.UPSTREAM_REACTIVATION_ID = "2026-11-05";
+    assert.equal((await get(quote("MSFT"), { ip: "c" })).status, 200, value);
     assert.equal(calls.length, 2);
-    const reactivated = setup({ cache, env });
-    reactivated.advance(60 * 86400000);
-    assert.equal((await reactivated.get(quote("SPY"))).status, 200, "a new isolate with the new id is not stopped by the old entry");
   }
   // Exactly the maximum is still an ordinary cooldown that ends by itself.
   const edge = retryAfterSetup();

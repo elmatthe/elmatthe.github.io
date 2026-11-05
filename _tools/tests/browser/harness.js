@@ -52,7 +52,7 @@ const GATEWAY_ROUTE = SITE_GATEWAY ? new RegExp(`^(https://md\\.gateway\\.test|$
 const GATEWAY_ON = { KEYLESS_SOURCE: "yahoo-chart", OWNER_ATTESTATION: "owner-confirms-yahoo-permission" };
 let gatewayModules = null;
 const loadGateway = () => (gatewayModules ||= Promise.all([
-  import(pathToFileURL(path.join(ROOT, "_services/market-data-gateway/src/gateway.js")).href),
+  import(pathToFileURL(path.join(ROOT, "_tools/tests/fixtures/local-coordinator.mjs")).href),
   import(pathToFileURL(path.join(ROOT, "_tools/tests/fixtures/yahoo-chart.mjs")).href),
 ]));
 
@@ -223,10 +223,10 @@ async function mockMarketData(context, mode = {}) {
   mode.yahoo.calls = calls.yahoo;
   await context.route(GATEWAY_ROUTE, async route => {
     const req = route.request();
-    const [{ createGateway }, { yahooFetch }] = await loadGateway();
+    const [{ testGateway }, { yahooFetch }] = await loadGateway();
     // Upstream spacing (1 s per request) is tested in unit tests; here it is shortened
     // so a 14-holding run does not take 14 s, unless a test sets its own limits.
-    mode.gatewayInstance ||= createGateway({ fetchImpl: yahooFetch({ mode: mode.yahoo }), log: () => {}, cache: null, limits: { upstreamMinSpacingMs: 50, ...(mode.gatewayLimits || {}) } });
+    mode.gatewayInstance ||= testGateway({ fetchImpl: yahooFetch({ mode: mode.yahoo }), limits: { upstreamMinSpacingMs: 50, ...(mode.gatewayLimits || {}) } });
     const sent = req.headers();
     calls.gateway.push({ url: req.url(), method: req.method(), headers: sent, body: req.postData() });
     if (mode.gatewayHold) await mode.gatewayHold;

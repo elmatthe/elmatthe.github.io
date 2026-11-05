@@ -4,14 +4,14 @@
 //   * https://query1.finance.yahoo.com/v8/finance/chart/{symbol} is Yahoo Finance's chart
 //     endpoint. Yahoo publishes no API documentation or service levels for it. It is not
 //     the Python `yfinance` library (an independent open-source client of the same
-//     endpoint); the gateway calls it directly from the Worker.
+//     endpoint); the gateway calls it directly, from its coordinator (./coordinator.js).
 //   * The site owner has confirmed that their own written permission from Yahoo covers
 //     automated retrieval through this Worker, temporary caching and display to visitors.
 //     The gateway still keeps the source OFF unless its operator activates it
 //     (KEYLESS_SOURCE + OWNER_ATTESTATION; README.md, "Activation").
 //   * Running it through a Cloudflare Worker does not remove Yahoo's rate limits. The
 //     gateway spaces, budgets, coalesces and caches its requests, and stops contacting
-//     Yahoo for a while after any refusal (./gateway.js).
+//     Yahoo for a while after any refusal (./coordinator.js).
 //   * This adapter sends an honest, identifying User-Agent. It does not imitate a
 //     browser, obtain cookies or "crumbs", rotate addresses or otherwise work around a
 //     refusal. If Yahoo refuses the request, the gateway reports it and stops.

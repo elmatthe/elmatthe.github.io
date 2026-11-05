@@ -16,7 +16,8 @@
 // is answered with `source_disabled` and no upstream request is made. A fresh deployment
 // of wrangler.toml's top-level settings is therefore always switched off.
 //
-// Security properties (each covered by _tools/tests/unit/market-gateway.test.mjs):
+// Security properties (each covered by _tools/tests/unit/market-gateway.test.mjs and
+// upstream-coordinator.test.mjs):
 //   * no credentials, keys or secrets exist in this gateway, its requests or its answers;
 //   * a fixed upstream origin and path (./yahoo-chart.js); the only client input copied
 //     into the upstream URL is an allowlisted symbol (./venues.js) and an allowlisted
@@ -31,26 +32,31 @@
 //     any Origin. Abuse is bounded by the per-client and per-upstream rate limits, the
 //     allowlists, the cache and Cloudflare's free-plan daily cap. Requests with no Origin
 //     at all (the desktop apps) are accepted only when ALLOW_NO_ORIGIN = "true";
-//   * the data source is protected first: upstream requests are spaced (one actual start
-//     per second per isolate, first come first served, at most 2 in flight, waiting at most
-//     15 s), budgeted (20 started per minute per isolate, plus a per-location binding),
-//     coalesced (one upstream request for identical concurrent requests), cached (answers
-//     10 min / 12 h, definitive refusals 30 min), and stopped entirely for 15 minutes after
-//     Yahoo answers 429 and 30 minutes after 401/403, or for as long as Yahoo's own
-//     Retry-After says when that is longer (a circuit breaker; no retry is ever sent
-//     upstream). A wait above MAX_COOLDOWN_SECONDS stops the source until the owner
-//     reactivates it (UPSTREAM_REACTIVATION_ID);
+//   * the data source is protected first, by one coordinator worldwide (./coordinator.js,
+//     a SQLite-backed Durable Object), which is also the only code that contacts it: one
+//     actual start per second, first come first served, at most 2 in flight, waiting at most
+//     15 s; at most 20 starts in any 60 seconds; one upstream request for identical
+//     concurrent requests; and stopped entirely for 15 minutes after Yahoo answers 429 and
+//     30 minutes after 401/403, or for as long as Yahoo's own Retry-After says when that is
+//     longer (a circuit breaker; no retry is ever sent upstream). A wait above
+//     MAX_COOLDOWN_SECONDS halts the source until the owner reactivates it
+//     (UPSTREAM_REACTIVATION_ID). If the coordinator cannot be reached or its state cannot
+//     be verified, nothing is sent (fail closed). This file makes no upstream request;
+//   * answers are cached (10 min / 12 h, definitive refusals 30 min). The caches are for
+//     speed only: no safety decision depends on them;
 //   * logs hold an event name, a code, a venue and a status: never an IP address or a URL.
 //
-// Free-plan design: at most one upstream subrequest per request, one JSON parse, a small
-// in-memory cache per isolate plus the Cache API (functional on a custom domain; see
-// README.md), optional Rate Limiting bindings. No KV, D1, R2, Durable Objects or paid
+// Free-plan design: this Worker makes one coordinator call per health or uncached data request
+// (and one more if the client disconnects) and one JSON parse, with a small in-memory cache per isolate plus the Cache API (functional on a custom
+// domain; see README.md) and an optional per-client Rate Limiting binding. The coordinator
+// is a SQLite-backed Durable Object, the only kind Workers Free offers. No KV, D1, R2 or paid
 // feature is used.
 
 import { VENUES, parseSymbol } from "./venues.js";
-import { SOURCE_ID, SOURCE_INFO, HISTORY_RANGES, HISTORY_INTERVALS, UpstreamError, chartUrl, normalizeQuote, normalizeHistory } from "./yahoo-chart.js";
+import { SOURCE_ID, SOURCE_INFO, HISTORY_RANGES, HISTORY_INTERVALS, UpstreamError, normalizeQuote, normalizeHistory } from "./yahoo-chart.js";
+import { VERSION, COOLDOWN_SECONDS, COORDINATOR_UNAVAILABLE, UNVERIFIED_RETRY_SECONDS, UPSTREAM_LIMITS } from "./coordinator.js";
 
-export const VERSION = "1.2.0";
+export { VERSION, COOLDOWN_SECONDS, MAX_COOLDOWN_SECONDS, FAILURES_BEFORE_COOLDOWN, parseUpstreamRetryAfter } from "./coordinator.js";
 
 // The exact value of OWNER_ATTESTATION that switches the source on (with KEYLESS_SOURCE).
 export const OWNER_ATTESTATION_VALUE = "owner-confirms-yahoo-permission";
@@ -59,28 +65,12 @@ export const DEFAULT_ORIGINS = Object.freeze(["https://elmatthe.github.io"]);
 // Limits are deliberately conservative: a slow answer is better than an upstream block.
 export const LIMITS = Object.freeze({
   maxUrlLength: 256,
-  maxUpstreamBytes: 2 * 1024 * 1024,
-  upstreamTimeoutMs: 8000,
   perClientPerMinute: 30, // in-memory, per isolate (the RATE_LIMITER binding is cross-isolate)
   perClientInFlight: 2,
-  upstreamPerMinute: 20, // per isolate (the UPSTREAM_LIMITER binding is per Cloudflare location)
-  upstreamInFlight: 2,
-  upstreamMinSpacingMs: 1000, // between the actual starts of two upstream requests in one isolate
-  upstreamQueueMaxWaitMs: 15000, // a request waits at most this long for its turn
-  upstreamQueuePollMs: 200, // how often a waiting request looks again (see acquireSlot)
-  upstreamLeaseGraceMs: 2000, // an in-flight place is reclaimed this long after its timeout
   memoryCacheEntries: 300,
+  coordinatorStatusWaitMs: 3000, // how long health waits for the coordinator
+  ...UPSTREAM_LIMITS,
 });
-
-// After the data source refuses the gateway, no upstream request is sent for this long
-// (seconds). Answers already cached are still served.
-export const COOLDOWN_SECONDS = Object.freeze({ upstream_rate_limited: 900, upstream_blocked: 1800, upstream_unavailable: 120 });
-// The longest wait the gateway keeps by itself. A longer Retry-After from the data source
-// is never shortened into an early retry: the source stays stopped until the owner
-// reactivates it by setting a new UPSTREAM_REACTIVATION_ID.
-export const MAX_COOLDOWN_SECONDS = 86400;
-// Consecutive 5xx / timeout / network failures before the short cooldown starts.
-export const FAILURES_BEFORE_COOLDOWN = 3;
 
 // How long an answer is reused. Ages are always reported; a cached answer is never
 // presented as newly retrieved (retrievedAt stays the time of the upstream request).
@@ -130,26 +120,6 @@ const DEFINITIVE = new Set(["invalid_symbol", "unsupported_listing", "symbol_not
 
 const ENDPOINT_PARAMS = { "/v1/quote": ["symbol"], "/v1/history": ["interval", "range", "symbol"] };
 
-// The data source's Retry-After as an absolute time in ms, or null when it does not
-// extend anything: delta seconds or an IMF-fixdate (RFC 9110). Malformed, negative and past
-// values are ignored, so the minimum cooldown always stands. A number too large to
-// represent is a very long wait, not a malformed one (Infinity).
-const HTTP_DATE = /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/;
-export function parseUpstreamRetryAfter(value, nowMs) {
-  const raw = String(value ?? "").trim();
-  if (!raw || raw.length > 64) return null;
-  if (/^\d+$/.test(raw)) {
-    const at = nowMs + Number(raw) * 1000;
-    if (!Number.isSafeInteger(at)) return Infinity;
-    return at > nowMs ? at : null;
-  }
-  if (!HTTP_DATE.test(raw)) return null;
-  const at = Date.parse(raw);
-  // The round trip refuses dates that do not exist, such as 31 February.
-  if (!Number.isFinite(at) || new Date(at).toUTCString() !== raw) return null;
-  return at > nowMs ? at : null;
-}
-
 // Whether the keyless source may be used, and why not. Both settings are required.
 export function sourceState(env = {}) {
   const configured = String(env.KEYLESS_SOURCE ?? "").trim();
@@ -182,25 +152,6 @@ async function sha256Hex(text) {
   return [...new Uint8Array(digest)].slice(0, 12).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-// Reads at most `limit` bytes of a body; null when it is larger.
-async function readCapped(stream, limit) {
-  if (!stream) return "";
-  const reader = stream.getReader();
-  const chunks = [];
-  let size = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    size += value.byteLength;
-    if (size > limit) { try { await reader.cancel(); } catch (_) { /* closed */ } return null; }
-    chunks.push(value);
-  }
-  const all = new Uint8Array(size);
-  let at = 0;
-  for (const c of chunks) { all.set(c, at); at += c.byteLength; }
-  return new TextDecoder().decode(all);
-}
-
 // Fixed-window counter keyed by a string, bounded in size.
 function windowCounter(limit, windowMs, now) {
   const windows = new Map();
@@ -218,21 +169,14 @@ function windowCounter(limit, windowMs, now) {
 }
 
 export function createGateway({
-  fetchImpl = (...a) => fetch(...a),
   now = () => Date.now(),
   log = entry => console.log(JSON.stringify(entry)),
   cache = globalThis.caches?.default || null, // Cache API (per data center); null in tests or where unavailable
   limits = {}, // tests only: shorter timeouts or smaller limits
-  sleep = ms => new Promise(resolve => setTimeout(resolve, ms)),
 } = {}) {
   const L = { ...LIMITS, ...limits };
   const allowClient = windowCounter(L.perClientPerMinute, 60000, now);
-  const allowUpstream = windowCounter(L.upstreamPerMinute, 60000, now);
   const clientInFlight = new Map();
-  let cooldown = null; // { code, until } or { code, halted: true } while the data source is not contacted
-  let reactivationId = ""; // the owner's current UPSTREAM_REACTIVATION_ID
-  let consecutiveFailures = 0;
-  const pending = new Map(); // cache key -> in-flight upstream work (coalescing)
   const memory = new Map(); // cache key -> { body, storedAt, ttl }
 
   const securityHeaders = () => ({
@@ -287,228 +231,99 @@ export function createGateway({
     if (ctx?.waitUntil) ctx.waitUntil(put); else await put;
   }
 
-  /* ---------------- upstream protection: cooldown, spacing, budget ---------------- */
-  // The cooldown is kept in this isolate and, best effort, in the Cache API so other
-  // isolates in the same data center respect it too. It is an absolute deadline, or
-  // { halted: true }: no deadline at all, until the owner reactivates the source.
-  const cooldownUrl = base => `${base}/__cache/${SOURCE_ID}/${VERSION}/state/cooldown${reactivationId ? `/${reactivationId}` : ""}`;
-  function cooldownLeft() {
-    if (!cooldown) return 0;
-    if (cooldown.halted) return MAX_COOLDOWN_SECONDS;
-    const left = Math.ceil((cooldown.until - now()) / 1000);
-    if (left <= 0) { cooldown = null; return 0; }
-    return left;
-  }
-  // The owner's explicit reactivation: a new value of the non-sensitive setting
-  // UPSTREAM_REACTIVATION_ID ends a stop and leaves the stored one behind.
-  function applyReactivation(env) {
-    const raw = String(env.UPSTREAM_REACTIVATION_ID ?? "").trim();
-    const id = /^[A-Za-z0-9._-]{1,40}$/.test(raw) ? raw : "";
-    if (id === reactivationId) return;
-    reactivationId = id;
-    if (cooldown?.halted) cooldown = null;
-  }
-  async function loadCooldown(base) {
-    if (cooldownLeft() || !cache) return;
+  /* ---------------- the upstream coordinator ---------------- */
+  // Everything that protects the data source is decided by the coordinator, the only code
+  // that contacts it. A coordinator that is missing, failing or silent means no upstream
+  // request: no fallback exists here, and a failed call is never repeated, because it may
+  // have started the upstream request.
+  function coordinatorStub(env) {
     try {
-      const response = await cache.match(cooldownUrl(base));
-      if (!response) return;
-      const entry = await response.json();
-      if (!Object.hasOwn(COOLDOWN_SECONDS, entry?.code) || !Number.isFinite(entry.startedAt) || entry.startedAt > now() + 60000) return;
-      if (entry.halted !== undefined) {
-        if (entry.halted === true) cooldown = { code: entry.code, until: null, halted: true };
-        return;
-      }
-      // Only a well-formed entry is honoured: started in the past, at least its minimum and
-      // at most the maximum long. A corrupted or far-future entry is ignored, so it can
-      // never stop the source for longer than intended. (An outage that named a short wait
-      // of its own has no minimum: it was started without one.)
-      const length = entry.until - entry.startedAt;
-      const minimum = entry.code === "upstream_unavailable" ? 1 : COOLDOWN_SECONDS[entry.code] * 1000;
-      if (Number.isFinite(entry.until) && length >= minimum && length <= MAX_COOLDOWN_SECONDS * 1000 && entry.until > now()) {
-        cooldown = { code: entry.code, until: entry.until };
-      }
-    } catch (_) { /* optional */ }
-  }
-  // Starts or extends the cooldown: the configured minimum (unless `useMinimum` is false)
-  // or the data source's own deadline, whichever is later. It is never shortened.
-  function startCooldown(base, code, ctx, { directedUntil = null, useMinimum = true } = {}) {
-    if (!Object.hasOwn(COOLDOWN_SECONDS, code) || cooldown?.halted) return;
-    const startedAt = now();
-    const until = Math.max(useMinimum ? startedAt + COOLDOWN_SECONDS[code] * 1000 : 0, directedUntil ?? 0);
-    if (until <= startedAt) return;
-    const halted = until - startedAt > MAX_COOLDOWN_SECONDS * 1000;
-    if (!halted && cooldown && cooldown.until >= until) return;
-    cooldown = halted ? { code, until: null, halted: true } : { code, until };
-    const seconds = halted ? null : Math.ceil((until - startedAt) / 1000);
-    log({ event: "cooldown_started", code, seconds, ...(halted ? { halted: true } : {}) });
-    if (!cache) return;
-    const entry = halted ? { code, startedAt, halted: true } : { code, startedAt, until };
-    const put = cache.put(cooldownUrl(base), new Response(JSON.stringify(entry), { headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${halted ? 31536000 : seconds}` } })).catch(() => {});
-    if (ctx?.waitUntil) ctx.waitUntil(put);
-  }
-  // Waits for this isolate's next upstream start, first come first served. The decision
-  // and the start happen in one uninterrupted step, so no two requests can pass together:
-  // at most upstreamInFlight in flight, at least upstreamMinSpacingMs between actual
-  // starts, and a wait of at most upstreamQueueMaxWaitMs. Returns { lease } or { refused }.
-  //
-  // Each waiter runs on its own timers and looks again on its own. In a Worker a request's
-  // timers and promises end with that request, so a waiter must never depend on another
-  // request to wake it. For the same reason a place in flight is a lease that expires: a
-  // request whose context ended can no longer give its place back.
-  const slotQueue = [];
-  const leases = new Set();
-  let lastUpstreamStart = -Infinity;
-  const inFlightAt = t => {
-    for (const lease of leases) if (lease.expiresAt <= t) leases.delete(lease);
-    return leases.size;
-  };
-  async function acquireSlot(signal) {
-    if (signal?.aborted) return { refused: "cancelled" };
-    const arrived = now();
-    // A queue this long could not be served in time: refused at once, and it stays bounded.
-    const ahead = Math.max(0, lastUpstreamStart + L.upstreamMinSpacingMs - arrived) + slotQueue.length * L.upstreamMinSpacingMs;
-    if (ahead > L.upstreamQueueMaxWaitMs) return { refused: "throttled" };
-    const ticket = { deadline: arrived + L.upstreamQueueMaxWaitMs };
-    slotQueue.push(ticket);
-    const leave = () => { const i = slotQueue.indexOf(ticket); if (i >= 0) slotQueue.splice(i, 1); };
-    signal?.addEventListener("abort", leave, { once: true });
-    let waited = 0; // also ends the wait if the clock does not move
-    try {
-      for (;;) {
-        if (signal?.aborted) return { refused: "cancelled" };
-        // The cooldown may have started while this request waited for its turn.
-        if (cooldownLeft()) return { refused: cooldown.code, cooling: true };
-        const t = now();
-        // A waiter whose context ended cannot leave by itself; its deadline removes it.
-        while (slotQueue[0] && slotQueue[0] !== ticket && slotQueue[0].deadline <= t) slotQueue.shift();
-        const first = slotQueue[0] === ticket;
-        const spacingLeft = lastUpstreamStart + L.upstreamMinSpacingMs - t;
-        const room = inFlightAt(t) < L.upstreamInFlight;
-        if (first && room && spacingLeft <= 0) {
-          // The budget counts requests that really start.
-          if (!allowUpstream("upstream")) return { refused: "throttled" };
-          lastUpstreamStart = t;
-          const lease = { expiresAt: t + L.upstreamTimeoutMs + L.upstreamLeaseGraceMs };
-          leases.add(lease);
-          return { lease };
-        }
-        const left = Math.min(ticket.deadline - t, L.upstreamQueueMaxWaitMs - waited);
-        if (left <= 0) return { refused: "throttled" };
-        const wait = Math.min(left, first && room ? spacingLeft : L.upstreamQueuePollMs);
-        waited += wait;
-        await sleep(wait);
-      }
-    } finally {
-      leave();
-      signal?.removeEventListener("abort", leave);
+      return env.UPSTREAM_COORDINATOR.getByName(SOURCE_ID);
+    } catch (error) {
+      log({ event: "coordinator_unreachable", error: error?.name || "Error" });
+      return null;
     }
+  }
+  // An answer that is not understood is not trusted.
+  function validReply(reply) {
+    if (reply && Object.hasOwn(STATUS, reply.code)) return reply;
+    if (reply && reply.code === COORDINATOR_UNAVAILABLE) return reply;
+    if (reply && !reply.code && (typeof reply.text === "string" || reply.text === null) && Number.isFinite(reply.retrievedAt)) return reply;
+    log({ event: "coordinator_unreachable", error: "malformed answer" });
+    return { code: COORDINATOR_UNAVAILABLE };
   }
 
-  async function upstream(url, env, signal) {
-    if (cooldownLeft()) return { error: cooldown.code, cooling: true };
-    if (env.UPSTREAM_LIMITER && typeof env.UPSTREAM_LIMITER.limit === "function") {
-      try {
-        const { success } = await env.UPSTREAM_LIMITER.limit({ key: SOURCE_ID });
-        if (!success) return { error: "throttled" };
-      } catch (_) { return { error: "busy" }; } // fail closed
-    }
-    const slot = await acquireSlot(signal);
-    if (slot.refused) return { error: slot.refused, cooling: Boolean(slot.cooling), cancelled: slot.refused === "cancelled" };
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), L.upstreamTimeoutMs);
-    const cancel = () => controller.abort();
-    signal?.addEventListener("abort", cancel, { once: true });
+  // One client's request for upstream data. A client that leaves stops waiting at once, and
+  // the coordinator is told so it can drop work nobody is waiting for.
+  async function askCoordinator(request, env, ctx, signal) {
+    const stub = coordinatorStub(env);
+    if (!stub) return { code: COORDINATOR_UNAVAILABLE };
+    if (signal?.aborted) return { code: "cancelled" };
+    const client = crypto.randomUUID();
+    const leave = () => {
+      let told;
+      try { told = Promise.resolve(stub.cancel(client)).catch(() => {}); } catch (_) { return; }
+      if (ctx?.waitUntil) ctx.waitUntil(told);
+    };
+    let interrupt;
+    const interrupted = new Promise(resolve => { interrupt = resolve; });
+    const onAbort = () => { leave(); interrupt({ code: "cancelled" }); };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    // The coordinator answers within its own limits; anything longer means it cannot be trusted.
+    const timer = setTimeout(() => {
+      log({ event: "coordinator_unreachable", error: "timeout" });
+      leave();
+      interrupt({ code: COORDINATOR_UNAVAILABLE });
+    }, L.upstreamQueueMaxWaitMs + L.upstreamTimeoutMs + L.upstreamLeaseGraceMs);
     try {
-      const response = await fetchImpl(url, {
-        method: "GET",
-        headers: { Accept: "application/json", "User-Agent": `market-data-gateway/${VERSION} (+https://elmatthe.github.io/projects/portfolio-rebalancer/)` },
-        redirect: "manual",
-        signal: controller.signal,
+      const call = (async () => stub.fetchChart({ ...request, client }))().then(validReply, error => {
+        log({ event: "coordinator_unreachable", error: error?.name || "Error" });
+        return { code: COORDINATOR_UNAVAILABLE };
       });
-      // The only upstream header ever read, and only on a refusal.
-      const retryAfterAt = response.status === 200 ? null : parseUpstreamRetryAfter(response.headers?.get?.("Retry-After"), now());
-      const text = await readCapped(response.body, response.status === 200 ? L.maxUpstreamBytes : 4096);
-      return { status: response.status, text, retryAfterAt };
-    } catch (error) {
-      if (signal?.aborted) return { error: "cancelled", cancelled: true };
-      return { error: controller.signal.aborted ? "upstream_timeout" : "upstream_unavailable", name: error?.name || "Error" };
+      return await Promise.race([call, interrupted]);
     } finally {
       clearTimeout(timer);
-      signal?.removeEventListener("abort", cancel);
-      leases.delete(slot.lease);
+      signal?.removeEventListener("abort", onAbort);
     }
   }
-  function statusCode(status, text) {
-    if (status >= 300 && status < 400) return "upstream_invalid"; // redirects are never followed
-    if (status === 404) return /not ?found|no data/i.test(text || "") ? "symbol_not_found" : "upstream_invalid";
-    if (status === 429) return "upstream_rate_limited";
-    if (status === 401 || status === 403) return "upstream_blocked";
-    if (status >= 500) return "upstream_unavailable";
-    return "upstream_rejected";
-  }
-  // Updates the circuit breaker after an upstream outcome (a code, or null for success).
-  // `directedUntil` is the data source's own Retry-After, as an absolute time.
-  function recordOutcome(base, code, ctx, directedUntil = null) {
-    if (code === "upstream_rate_limited" || code === "upstream_blocked") { consecutiveFailures = 0; startCooldown(base, code, ctx, { directedUntil }); return; }
-    if (code === "upstream_unavailable" || code === "upstream_timeout") {
-      consecutiveFailures += 1;
-      if (consecutiveFailures >= FAILURES_BEFORE_COOLDOWN) { consecutiveFailures = 0; startCooldown(base, "upstream_unavailable", ctx, { directedUntil }); }
-      // One outage that names its own wait is honoured for that wait, without the minimum.
-      else if (directedUntil !== null) startCooldown(base, "upstream_unavailable", ctx, { directedUntil, useMinimum: false });
-      return;
-    }
-    consecutiveFailures = 0;
-  }
-  // A refusal answered while the source is cooling down carries the time really left.
-  const failCooling = (code, origin) => fail(code, origin, { "Retry-After": String(Math.max(1, cooldownLeft())) }, cooldown?.halted ? { retryable: false, manualReactivationRequired: true } : {});
 
-  // One upstream fetch and its normalization. Returns { body } or { code }.
-  async function fetchAndNormalize(base, kind, parsed, range, env, ctx, signal) {
-    const url = chartUrl(parsed.symbol, { kind, range });
-    const res = await upstream(url, env, signal);
-    if (res.error) {
-      if (!res.cooling && !res.cancelled) { // a client leaving says nothing about the source
-        log({ event: "upstream_error", code: res.error, mic: parsed.mic, error: res.name || null });
-        recordOutcome(base, res.error, ctx);
-      }
-      return { code: res.error, cooling: Boolean(res.cooling) };
+  // The upstream state for health. Only asked when the source is on: a source that is off
+  // contacts nothing, and needs no coordinator.
+  async function upstreamStatus(env) {
+    const unverified = reason => ({ state: "unverified", code: null, retryAfterSeconds: UNVERIFIED_RETRY_SECONDS, reason });
+    const stub = coordinatorStub(env);
+    if (!stub) return unverified("coordinator_binding_missing");
+    let timer;
+    try {
+      const silent = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("timeout")), L.coordinatorStatusWaitMs); });
+      const status = await Promise.race([(async () => stub.status())(), silent]);
+      return ["ok", "cooling_down", "halted", "unverified"].includes(status?.state) ? status : unverified("coordinator_unreachable");
+    } catch (error) {
+      log({ event: "coordinator_unreachable", error: error?.name || "Error" });
+      return unverified("coordinator_unreachable");
+    } finally {
+      clearTimeout(timer);
     }
-    if (res.status !== 200) {
-      const code = statusCode(res.status, res.text);
-      log({ event: "upstream_status", code, mic: parsed.mic, status: res.status });
-      recordOutcome(base, code, ctx, res.retryAfterAt);
-      return { code, cooling: Boolean(cooldownLeft()) && Object.hasOwn(COOLDOWN_SECONDS, code) };
-    }
-    recordOutcome(base, null, ctx);
-    if (res.text === null) { log({ event: "upstream_too_large", mic: parsed.mic }); return { code: "upstream_invalid" }; }
+  }
+
+  // A refusal answered while the source is stopped carries the time really left.
+  const failCooling = (out, origin) => fail(out.code, origin, { "Retry-After": String(Math.max(1, out.retryAfterSeconds)) }, out.halted ? { retryable: false, manualReactivationRequired: true } : {});
+
+  // One upstream answer and its normalization. Returns { body, shared } or { code, ... }.
+  async function fetchAndNormalize(kind, parsed, range, env, ctx, signal) {
+    const reply = await askCoordinator({ kind, symbol: parsed.symbol, range }, env, ctx, signal);
+    if (reply.code) return reply;
+    if (reply.text === null) { log({ event: "upstream_too_large", mic: parsed.mic }); return { code: "upstream_invalid" }; }
     try {
       const args = { symbol: parsed.symbol, mic: parsed.mic, venue: parsed.venue, range, now: now() };
-      const body = kind === "quote" ? normalizeQuote(res.text, args) : normalizeHistory(res.text, args);
-      body.retrievedAt = new Date(now()).toISOString();
-      return { body };
+      const body = kind === "quote" ? normalizeQuote(reply.text, args) : normalizeHistory(reply.text, args);
+      body.retrievedAt = new Date(reply.retrievedAt).toISOString();
+      return { body, shared: Boolean(reply.shared) };
     } catch (error) {
       const code = error instanceof UpstreamError && MESSAGES[error.code] ? error.code : "upstream_invalid";
       log({ event: "upstream_refused", code, mic: parsed.mic, detail: error instanceof UpstreamError ? error.detail : "exception" });
       return { code };
     }
-  }
-
-  // One client's wait for shared work. A client that leaves stops waiting at once; the
-  // work itself is cancelled only when no client is left.
-  function waitForWork(work, signal) {
-    work.clients += 1;
-    if (!signal) return work.promise;
-    return new Promise((resolve, reject) => {
-      const leave = () => {
-        work.clients -= 1;
-        if (work.clients === 0) work.controller.abort();
-        resolve({ code: "cancelled" });
-      };
-      if (signal.aborted) { leave(); return; }
-      signal.addEventListener("abort", leave, { once: true });
-      work.promise.then(value => { signal.removeEventListener("abort", leave); resolve(value); }, error => { signal.removeEventListener("abort", leave); reject(error); });
-    });
   }
 
   async function data(base, kind, params, env, origin, ctx, signal) {
@@ -527,49 +342,31 @@ export function createGateway({
       const ageSeconds = Math.max(0, Math.floor((now() - hit.storedAt) / 1000));
       return json(200, { ...hit.body, cache: { status: "hit", ageSeconds, ttlSeconds: hit.ttl } }, origin);
     }
-    await loadCooldown(base);
-    if (cooldownLeft()) return failCooling(cooldown.code, origin);
-    // Identical concurrent requests in this isolate share one upstream request.
-    let work = pending.get(key);
-    const shared = Boolean(work);
-    if (!work) {
-      const controller = new AbortController();
-      const promise = fetchAndNormalize(base, kind, parsed, range, env, ctx, controller.signal)
-        .then(async out => {
-          // Stored here, not by the first client, which may already have left.
-          if (out.body) await cachePut(base, key, out.body, ttl, ctx);
-          else if (DEFINITIVE.has(out.code)) await cachePut(base, key, { refusal: out.code }, CACHE_TTL_SECONDS.refusal, ctx);
-          return out;
-        })
-        .finally(() => pending.delete(key));
-      work = { promise, controller, clients: 0 };
-      pending.set(key, work);
-      // Keeps the request's context alive until its place in the queue or in flight has
-      // been given back, even if this client disconnects.
-      if (ctx?.waitUntil) ctx.waitUntil(promise.catch(() => {}));
-    }
-    const out = await waitForWork(work, signal);
+    const out = await fetchAndNormalize(kind, parsed, range, env, ctx, signal);
     if (out.code) {
+      if (out.code === COORDINATOR_UNAVAILABLE) return fail("busy", origin, { "Retry-After": String(UNVERIFIED_RETRY_SECONDS) });
       if (out.code === "cancelled") return fail("cancelled", origin);
-      return out.cooling || (Object.hasOwn(COOLDOWN_SECONDS, out.code) && cooldownLeft()) ? failCooling(out.code, origin) : fail(out.code, origin);
+      if (DEFINITIVE.has(out.code)) await cachePut(base, key, { refusal: out.code }, CACHE_TTL_SECONDS.refusal, ctx);
+      return out.cooling ? failCooling(out, origin) : fail(out.code, origin);
     }
-    return json(200, { ...out.body, cache: { status: shared ? "hit" : "miss", ageSeconds: 0, ttlSeconds: ttl } }, origin);
+    await cachePut(base, key, out.body, ttl, ctx);
+    return json(200, { ...out.body, cache: { status: out.shared ? "hit" : "miss", ageSeconds: 0, ttlSeconds: ttl } }, origin);
   }
 
-  function health(env, origin) {
+  async function health(env, origin) {
     const state = sourceState(env);
+    // Whether the data source is being left alone after it refused this gateway, according to
+    // the coordinator. `unverified` means that could not be confirmed: nothing is sent then.
+    const upstream = state.enabled ? await upstreamStatus(env) : { state: "ok", code: null, retryAfterSeconds: 0 };
     return json(200, {
-      schema: "md-gateway.health.v1", status: "ok", service: "market-data-gateway", version: VERSION,
+      schema: "md-gateway.health.v1", status: upstream.state === "unverified" ? "degraded" : "ok", service: "market-data-gateway", version: VERSION,
       keyless: {
         enabled: state.enabled, source: state.source, reason: state.reason, activation: state.activation,
         provider: state.source === SOURCE_ID ? SOURCE_INFO.provider : null,
         attribution: state.enabled ? SOURCE_INFO.attribution : null,
         official: false,
       },
-      // Whether the data source is being left alone after it refused this gateway.
-      upstream: !cooldownLeft() ? { state: "ok", code: null, retryAfterSeconds: 0 }
-        : cooldown.halted ? { state: "halted", code: cooldown.code, retryAfterSeconds: MAX_COOLDOWN_SECONDS, manualReactivationRequired: true }
-          : { state: "cooling_down", code: cooldown.code, retryAfterSeconds: cooldownLeft() },
+      upstream,
       endpoints: Object.keys(ENDPOINT_PARAMS),
       venues: Object.keys(VENUES),
       history: { ranges: Object.keys(HISTORY_RANGES), intervals: HISTORY_INTERVALS },
@@ -586,12 +383,10 @@ export function createGateway({
     const origin = originHeader && origins.has(originHeader) ? originHeader : null;
     if (url.protocol !== "https:" && env.ALLOW_HTTP !== "true") return fail("https_required", origin);
     if (request.url.length > L.maxUrlLength) return fail("invalid_request", origin);
-    applyReactivation(env);
 
     if (url.pathname === "/v1/health") {
       if (!["GET", "HEAD"].includes(request.method)) return fail("method_not_allowed", origin, { Allow: "GET, HEAD" });
       if (url.search) return fail("invalid_request", origin);
-      await loadCooldown(url.origin);
       return health(env, origin);
     }
     const expected = ENDPOINT_PARAMS[url.pathname];

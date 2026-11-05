@@ -6,7 +6,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { createGateway } from "../../../_services/market-data-gateway/src/gateway.js";
+import { testGateway } from "../fixtures/local-coordinator.mjs";
 import { yahooFetch } from "../fixtures/yahoo-chart.mjs";
 import { createMarketData, KEYLESS_ID } from "../../../assets/js/market-data/index.js";
 import { createKeylessSource, keylessSymbol, resolveMarketGateway, historyBucket } from "../../../assets/js/market-data/keyless.js";
@@ -28,7 +28,7 @@ function world({ env = ON, mode = {}, avLimited = false, gatewayDown = false, lo
   let t = NOW;
   const calls = { gateway: [], av: 0, yahoo: [] };
   const upstreamMode = { ...mode, calls: calls.yahoo };
-  const gw = createGateway({ fetchImpl: yahooFetch({ now: () => t, mode: upstreamMode }), now: () => t, log: () => {}, cache: null, limits: { upstreamMinSpacingMs: 0 }, sleep: async () => {} });
+  const gw = testGateway({ fetchImpl: yahooFetch({ now: () => t, mode: upstreamMode }), now: () => t, limits: { upstreamMinSpacingMs: 0 }, sleep: async () => {} });
   const fetchImpl = async (url, init = {}) => {
     const u = new URL(String(url));
     if (u.origin === GATEWAY) {
@@ -157,7 +157,7 @@ test("re-validation in the browser: a gateway answer for another listing, curren
   const tamper = change => ({ answer: u => {
     if (!u.pathname.endsWith("/v1/quote")) return null;
     return (async () => {
-      const gw = createGateway({ fetchImpl: yahooFetch({ now: () => NOW }), now: () => NOW, log: () => {}, cache: null, limits: { upstreamMinSpacingMs: 0 } });
+      const gw = testGateway({ fetchImpl: yahooFetch({ now: () => NOW }), now: () => NOW, limits: { upstreamMinSpacingMs: 0 } });
       const r = await gw.handle(new Request(u.href, { headers: { Origin: ORIGIN } }), ON);
       const body = await r.json();
       change(body);

@@ -12,7 +12,7 @@
 // and read the upstream request count with GET /__calls. These two paths exist only
 // in this test server.
 import http from "node:http";
-import { createGateway } from "../../_services/market-data-gateway/src/gateway.js";
+import { testGateway } from "./fixtures/local-coordinator.mjs";
 import { yahooFetch } from "./fixtures/yahoo-chart.mjs";
 
 let mode = {};
@@ -20,7 +20,7 @@ let calls = [];
 let gateway = null;
 const fresh = () => {
   mode = { calls };
-  gateway = createGateway({ fetchImpl: yahooFetch({ mode: new Proxy({}, { get: (_, k) => mode[k], has: (_, k) => k in mode }) }), log: () => {}, cache: null, limits: { upstreamMinSpacingMs: 0, upstreamTimeoutMs: 300 } });
+  gateway = testGateway({ fetchImpl: yahooFetch({ mode: new Proxy({}, { get: (_, k) => mode[k], has: (_, k) => k in mode }) }), limits: { upstreamMinSpacingMs: 0, upstreamTimeoutMs: 300 } });
 };
 fresh();
 let off = false;
