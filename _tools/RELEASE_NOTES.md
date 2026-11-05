@@ -20,9 +20,11 @@ Nothing below is investment advice. No calculation engine changed.
   desktop apps silently treated every exchange's date as UTC there. They now install one
   (`tzdata`); Tokyo and Shanghai sessions and stale-price warnings are dated correctly.
 - **Gentler on Yahoo Finance when it asks (takes effect when the gateway is next deployed).**
-  The gateway now keeps Yahoo's own `Retry-After` when longer than its minimum, spaces real
-  request starts one second apart, and limits any wait to 15 seconds. The tools wait as long
-  as the gateway says, up to 24 hours at a time.
+  One coordinator now makes every request to Yahoo Finance, worldwide: one a second, first come
+  first served, and no request waits more than 15 seconds. When Yahoo Finance asks the site to
+  wait, that wait is recorded permanently and can only get longer. If the site cannot confirm
+  it is safe to ask, it does not ask, and the tools use the next source in your list. The tools
+  wait as long as the gateway says, up to 24 hours at a time.
 
 ### Portfolio Rebalancer and Stock Comparison (web and desktop)
 - **Yahoo Finance — Free Market Data.** Prices come from Yahoo Finance through this site's

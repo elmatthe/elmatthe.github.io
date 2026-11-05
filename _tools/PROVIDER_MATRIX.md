@@ -130,13 +130,15 @@ README, "Deployment status").
 **Technical and operational safeguards** (README, "Protecting the data source"): fixed
 upstream URL and allowlisted listings; every answer checked for symbol, exchange,
 currency, unit and values, refused rather than repaired; honest User-Agent, no cookie,
-crumb or address tricks; actual upstream starts spaced (1 s per isolate), a hard 15 s
-wait, budgeted (20 started per minute per isolate, 40 per minute per location), coalesced
-and cached (10 min quotes, 12 h history, 30 min refusals); a circuit breaker that stops all
-upstream requests for 15 minutes after HTTP 429 and 30 minutes after 401/403, or for
-Yahoo's own `Retry-After` when longer, with a stop until the owner reactivates when that
-exceeds 24 hours (code 1.2.0, effective when deployed); clients that send one request at a
-time and pause after any slow-down answer. Requests carry only a symbol and a range —
+crumb or address tricks; one coordinator worldwide (a SQLite-backed Durable Object), the only
+code that contacts Yahoo, which spaces actual starts 1 s apart with a hard 15 s wait, allows
+2 in flight and 20 starts in any 60 s, and coalesces identical requests; caches (10 min
+quotes, 12 h history, 30 min refusals); a circuit breaker that stops all upstream requests
+for 15 minutes after HTTP 429 and 30 minutes after 401/403, or for Yahoo's own `Retry-After`
+when longer, never shortened, with a halt until the owner reactivates when that exceeds
+24 hours; no upstream request if the coordinator's state cannot be verified (code 1.3.0,
+effective when deployed); clients that send one request at a time and pause after any
+slow-down answer. Requests carry only a symbol and a range —
 never keys, holdings or account data.
 
 **Display.** Quotes are labelled "latest regular-session price (may be delayed)", with
@@ -151,6 +153,10 @@ dated 2026-10-29 and 2026-10-21): 100,000 requests/day (error 1027 above it, no 
 10 ms CPU per request, 128 MB, 50 subrequests and 6 concurrent outgoing connections per
 request; Cache API functional on custom domains; Rate Limiting binding approximate, per
 location, period 10 or 60 s, Wrangler ≥ 4.36, plan availability not stated on its page.
+Durable Objects (pages dated 2026-10-18 and 2026-10-29): SQLite-backed only on Workers Free;
+100,000 requests, 13,000 GB-s, 5 million rows read and 100,000 written per day, 5 GB stored;
+above an allowance operations fail with an error and nothing is billed. The coordinator stays
+within these by construction (gateway README, "Workers Free plan").
 
 **Coverage** (the gateway's fixed list; exchange codes confirmed by the live smoke test,
 results in `md-instructions/Handoff.md`): US, Toronto (.TO incl. -U units), TSX Venture,

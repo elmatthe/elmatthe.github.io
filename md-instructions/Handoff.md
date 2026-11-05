@@ -1,43 +1,71 @@
 # Handoff — Yahoo Finance gateway activation and ordered source list (2026-11-04)
 
-## Current state: corrections after independent review
+## Current state: B2 and B3 redone with one coordinator (R3); ready for independent re-review
 
-An independent review of `9c88a8b` returned FAIL with four blockers. All four are corrected on this
-branch, with regressions that fail on `9c88a8b` and pass now:
+Snapshot: 2026-11-04, Claude Code on HOME-PC (Windows 11), branch `claude/loving-brown-48hctl`, PR 46
+(draft, not merged). **Next action: independent re-review of this branch.** Nothing was deployed.
 
-| | Defect | Correction |
+A second independent review (Codex, of `de720dc`) returned FAIL: B1 and B4 passed, B2 and B3 failed.
+
+| | What was wrong | Correction |
 |---|---|---|
-| B1 | The website used prices from before a listing date (SPCX, CBRS): a different security under the same ticker | `cutToListing` at every read of a series (`assets/js/market-data/instruments.js`), same rule as the desktop's `cut_to_listing` (`_tools/shared_py/market_data/history.py`) |
-| B2 | Gateway requests could start together after waiting for capacity; a wait for capacity had no limit | First-come queue: decision and start in one step, timers per waiter, hard 15 s wait, budget counted at the start, expiring in-flight places, cancellation |
-| B3 | Yahoo's `Retry-After` was discarded: a one-hour wait became a retry at 901 s | Absolute deadline, shared with new isolates and clients. Above 24 h the source stops until the owner sets a new `UPSTREAM_REACTIVATION_ID` |
-| B4 | The Stock CSVs omitted source order, failures and skips | Rows unchanged, then a marked `#provenance` section per ticker, with XLSX and JSON parity |
+| B2 | `acquireSlot` admitted first and looked at the deadline after: a timer resuming at 20 s started a request despite the 15 s limit (HTTP 200) | The absolute deadline is checked on every wake, before admission. A late ticket is refused, never sent, and uses no budget |
+| B3 | `startCooldown` compared only with its own isolate's memory, then overwrote the one shared Cache API entry: a 900 s refusal replaced a 3600 s one or a manual halt, and a new isolate contacted Yahoo at 901 s | One SQLite-backed Durable Object (`src/coordinator.js`) is now the only code that contacts Yahoo. Deadlines only move later; a halt dominates until a new `UPSTREAM_REACTIVATION_ID` |
 
-**The gateway corrections take effect only when the owner deploys.** The code is 1.2.0; the live Worker
-is still 1.1.0 and was not touched. Until then the live gateway keeps the old spacing and discards
-`Retry-After`, though the clients now honour whatever it sends for up to 24 hours.
+Spacing, the in-flight limit, the budget (now any 60 s, not per minute) and coalescing moved into the
+coordinator too, so they are worldwide and survive restarts. If its state cannot be verified, nothing
+is sent; clients get the existing `busy` code. Why each choice: `Decisions.md`. Semantics, Workers Free
+limits, what it cannot guarantee, deployment and rollback: `_services/market-data-gateway/README.md`.
 
-Also corrected: Rebalancer exports state the order each price was requested under; browser suites can no
-longer reach a real host; ZIP and workbook builds give the same bytes on Windows and Linux; test runners
-read UTF-8 on Windows.
+**The gateway corrections take effect only when the owner deploys.** The code is 1.3.0; the live Worker
+is still 1.1.0 and was not touched. **The first deployment creates a Durable Object class: `wrangler
+rollback` cannot go back across it** (read "Deploy" and "Roll back" first). Workers Free compatibility
+is from Cloudflare's documentation and `wrangler deploy --dry-run`; the live account has not accepted it.
 
-New defect found while testing on Windows and corrected: Windows has no time-zone database, so desktop
-exchange dates silently fell back to UTC. `tzdata` is now pinned for the Rebalancer and Stock tools.
+### Verification (HOME-PC, Windows 11, Node 24, Python 3.13; Yahoo synthetic throughout)
 
-Testing on Windows: the desktop apps were exercised on Windows with real mouse and keyboard input for
-the first time, using a private local verification gate that is not part of this repository. Not tested:
-macOS, and Windows display scaling at 125% or 150%.
+The brief assumed Claude Code Cloud; this ran on HOME-PC. Linux results are in the PR's CI.
 
-**Open, for the owner (not changed here; these tools are outside this PR's change set):**
+| Check | Result |
+|---|---|
+| `r3_reproduction.mjs` | **3 of 3 fail on `de720dc`, 3 of 3 pass now** |
+| Mutation check (scratch, not in CI) | **50 of 50** deliberately broken safety properties caught by named tests |
+| Randomized checker (scratch, from the independent reader) | 500 seeds x 300 steps, no invariant violated |
+| `node --test _tools/tests/unit/*.test.mjs` | 289/289 |
+| `gateway-runtime.test.cjs` in real workerd, including both `wrangler deploy --dry-run` | 21/21 |
+| Python reference and parity tests, socket guard | 134 passed; 0 non-loopback connections |
+| Desktop, CI's selection, socket guard | Rebalancer 18, Stock 57, Monte Carlo 29, CPI 117 + 2 skipped; 0 non-loopback connections |
+| Browser, strict Jekyll build, resolver lock proven | pages 154, stock 74, rebalancer 132, montecarlo 40, cpi 112, freesource 143, sources 89; no failures |
+| `sync_shared_py`, `build_project_zips`, `render`, `cpi_public_workbook` `--check` | all pass |
 
-- CPI Web Scraper, writing through real Excel: failed in testing with a raw COM error,
-  `Call was rejected by callee`, and left a hidden Excel running. The cause is not isolated (product or
-  test environment). Reproduce with `CPI_EXCEL_REGRESSION=1 python -m pytest files/tests/test_workbook_regression.py`.
-- Monte Carlo desktop: a target path that cannot be read (a folder, an exclusive lock) raises in the Tk
-  callback, so Run Simulation silently does nothing. A workbook open in Excel is handled correctly.
-- Accessibility (axe-core): link-in-text-block on three pages and color-contrast on the Stock tabs.
+An independent read found no Critical defect and could not make the coordinator send a request it should
+not. Its 5 Minor findings are fixed with regressions; its suggestions are documented, below.
 
-**Next action:** an independent re-review of this branch. Then the owner decides whether to merge and,
-separately, whether to deploy gateway 1.2.0.
+Not run: the private Windows GUI gate (real mouse and keyboard; it does not replace, and is not replaced
+by, any of the above). Not testable locally: Cloudflare's edge, a real client disconnect (exercised through
+a service binding), output gates under slow storage, idle eviction, the live account.
+
+### Open, for the owner
+
+Decisions from this work:
+
+- A redirect, 400 or 451 that names **no** wait starts no cooldown today (up to 20 a minute can reach Yahoo).
+  Should it count toward the breaker? It would be a small change; left as is because it is a policy choice.
+- Should the coordinator also refuse when the source is switched off? Today only the Worker checks, which
+  matters only while two versions overlap. And a few seconds of per-isolate caching on `/v1/health` would
+  stop anyone spending the coordinator's daily allowance through it.
+- Deploying 1.3.0 is the owner's decision, as is merging.
+
+Found by the independent review, outside this remediation and **not changed here**:
+
+- CPI Web Scraper: the write through real Excel passed in Codex's run, but the canonical workbook-preservation
+  regression failed. (An earlier local run failed with a raw COM error instead; the cause is not isolated.)
+  The canonical workbook was not modified.
+- Monte Carlo desktop: an unreadable output path (a folder, an exclusive lock) makes Run Simulation fail silently.
+- Stock launcher: fails in a long folder path.
+- Accessibility issues on both the base and this branch (axe-core: link-in-text-block, color-contrast).
+- Incomplete coverage: Windows display scaling, macOS, bootstrap end to end.
+- The project-wide private verification gate needs its own tracked migration.
 
 ---
 
@@ -147,8 +175,9 @@ assertions unchanged).
 
 1. **Codex:** independent re-review of PR 46 at its final head (see the PR description).
 2. **Owner, after the review:** decide whether to merge PR 46, and separately whether to deploy
-   gateway 1.2.0 (`npx wrangler@4 deploy --env production`). Until it is merged the live
-   site keeps the previous version. Optional: compare two or three of the recorded prices
-   with a broker; watch Workers & Pages → market-data-gateway → Metrics.
-3. **Switch off, if ever needed:** delete `OWNER_ATTESTATION` in the Worker's settings (or
-   `npx wrangler@4 rollback`); see the gateway README, "Roll back, disable or remove".
+   gateway 1.3.0, after reading the gateway README's "Deploy" and "Roll back". Until it is merged
+   the live site keeps the previous version. Optional: compare two or three of the recorded
+   prices with a broker; watch Workers & Pages → market-data-gateway → Metrics.
+3. **Switch off, if ever needed:** delete `OWNER_ATTESTATION` in the Worker's settings. After 1.3.0
+   is deployed, `wrangler rollback` cannot return to an earlier version; see the gateway README,
+   "Roll back, disable or remove".

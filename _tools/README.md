@@ -22,6 +22,9 @@ Portfolio Rebalancer, and Stock Comparison & Analytics Tool.
 | `tests/test_cpi_public_workbook.py` | The shipped CPI workbook stays clean and structurally intact. |
 | `tests/test_cpi_parity.py` | CPI web app vs the desktop downloader: 19-column schema, gateway allowlist, month rules, daily end-of-month reduction, and byte-identical CSVs from `tests/fixtures/cpi/sources.json` (regenerate with `generate.py`). Uses Node through `tests/cpi_engines.mjs`. |
 | `tests/unit/*.test.mjs` | Node unit tests for `assets/js/market-data/` (including per-key isolation and key storage, CSV calendar dates, the Yahoo Finance adapter, pauses and fallback in `keyless.test.mjs`, the ordered source list in `sources.test.mjs`), the Rebalancer sample, Stock analytics consistency and currency safeguards, the Monte Carlo engine, the CPI engine and clients, the CPI data gateway's security rules, and the market-data gateway Worker (`market-gateway.test.mjs`) (no network). |
+| `tests/worker-runtime/` | The market-data gateway in the real Workers runtime (workerd, real SQLite, restarts from disk, separate isolates, synthetic Yahoo) and `wrangler deploy --dry-run` for both configurations. Needs the pinned Wrangler; no Cloudflare account. |
+| `tests/fixtures/local-coordinator.mjs` | The real upstream coordinator logic in this process, behind the same calls as its Durable Object binding, for tests on a controlled clock. |
+| `tests/r3_reproduction.mjs` | The independent review's B2 and B3 counterexamples, runnable against any checkout: exits 1 on `de720dc`, 0 on the corrected code. Not part of CI. |
 | `tests/fixtures/yahoo-chart.mjs` | Synthetic Yahoo-shaped chart answers (invented values) used as the market-data gateway's upstream in every test; nothing contacts Yahoo. |
 | `tests/browser/*.test.js` | Playwright tests against a locally served build, with every market-data host, Statistics Canada and the CPI data gateway mocked; `freesource.test.js` drives both market-data pages against the real market-data gateway code. |
 | `tests/live_fx_matrix.mjs` | Optional live check of the official FX sources (two requests). |
@@ -77,6 +80,14 @@ node --test _tools/tests/unit/*.test.mjs   # market data, key isolation, CSV dat
 cd _tools/tests
 python3 -m pytest -q -m "not e2e"   # parity, financial/analytics references, mocked bootstrap (seconds)
 python3 -m pytest -q -m e2e         # real venv builds and pip installs for each tool (minutes, needs network)
+```
+
+The market-data gateway in the real Workers runtime (no Cloudflare account; no provider or live
+gateway is contacted; the version is `WRANGLER_VERSION` in `.github/workflows/ci.yml`):
+
+```bash
+npm install --no-save --no-package-lock --prefix /tmp/wrangler wrangler@4.157.0
+NODE_PATH=/tmp/wrangler/node_modules node --test --test-concurrency=1 _tools/tests/worker-runtime/gateway-runtime.test.cjs
 ```
 
 Browser tests need Node, Playwright with Chromium, and a local build:

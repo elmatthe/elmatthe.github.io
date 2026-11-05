@@ -18,7 +18,7 @@ bindings accepted):
 | | |
 |---|---|
 | Address | <https://market-data-gateway.elmatthe.workers.dev> (`workers.dev` subdomain; no custom domain, DNS record or route) |
-| Version | `76998e2b-205d-4645-8f85-7a6fdf0dbad7` (gateway code 1.1.0). **The code in this folder is 1.2.0 and is not deployed**: the rules below marked 1.2.0 take effect only when the owner deploys it |
+| Version | `76998e2b-205d-4645-8f85-7a6fdf0dbad7` (gateway code 1.1.0). **The code in this folder is 1.3.0 and is not deployed**: the coordinator and the rules below marked 1.3.0 take effect only when the owner deploys it, which also creates a Durable Object class and cannot be undone by `wrangler rollback` (see "Deploy" and "Roll back") |
 | Health | `keyless.enabled: true`, `source: yahoo-chart`, `activation: owner_attestation`, `upstream.state: ok`; caches 600 s (quotes) / 43,200 s (history) |
 
 The website reads the address from `_data/market_data.yml`; the desktop apps from
@@ -77,7 +77,8 @@ time. Full record: `md-instructions/Handoff.md`.
   338.32000732421875). The prices were not compared with a broker.
 - **Not exercised live** (it would take many Yahoo requests): upstream spacing, the
   upstream budgets and the circuit breaker. They are covered by `market-gateway.test.mjs`,
-  `test_desktop_gateway.py` and `freesource.test.js` against this same Worker code.
+  `upstream-coordinator.test.mjs`, `gateway-runtime.test.cjs`, `test_desktop_gateway.py` and
+  `freesource.test.js` against this same Worker code.
 
 ## Activation (fail closed)
 
@@ -110,19 +111,27 @@ anything on).
 
 Every limit fails closed: when in doubt, nothing is sent to Yahoo.
 
+**Since 1.3.0 one coordinator decides everything, worldwide, and is the only code that
+contacts Yahoo:** a SQLite-backed Durable Object (`src/coordinator.js`, class
+`UpstreamCoordinator`, one object addressed as `yahoo-chart`). The Worker's isolates have no
+upstream code at all; they ask the coordinator and normalize what it returns.
+
 | Layer | Rule |
 |---|---|
-| Spacing (1.2.0) | at least **1 s** between the actual starts of two upstream requests in each isolate, first come first served. A request waits at most **15 s**, then is refused and never sent (`throttled`, `Retry-After`). Per isolate only: this is not a worldwide guarantee |
-| Concurrency | at most **2** upstream requests in flight per isolate (others wait in the same queue). A place held by a request whose context ended is reclaimed after its timeout |
-| Cancellation (1.2.0) | a client that disconnects leaves the queue at once; shared work is cancelled only when no client is left. Needs the `enable_request_signal` compatibility flag (in `wrangler.toml`) |
-| Budget | **20** upstream requests started per minute per isolate, and **40** per minute per Cloudflare location through the `UPSTREAM_LIMITER` binding (one shared key) |
-| Coalescing | identical concurrent requests in an isolate share **one** upstream request |
-| Caching | quotes reused **10 min**, history **12 h** (per symbol and range); definitive refusals (unknown symbol, other listing or currency) remembered **30 min** |
-| Circuit breaker | after Yahoo answers **429**, no upstream request for **15 min**; after **401/403**, **30 min**; after **3 consecutive** 5xx/timeouts/network errors, **2 min**. Cached answers are still served. The cooldown is shared with other isolates of the data center through the Cache API (best effort; a corrupted entry is ignored) and reported in `/v1/health` (`upstream.state: "cooling_down"`) |
-| Yahoo's own wait (1.2.0) | a valid `Retry-After` on a refusal (delta seconds or an HTTP date) is honoured when it is longer than the minimum above; it is kept as an absolute deadline, and the `Retry-After` sent to clients is the time really left. Malformed, negative, past or shorter values never shorten the minimum. A **single** 5xx that names a wait is honoured for that wait |
-| Longer than 24 h (1.2.0) | a wait above `MAX_COOLDOWN_SECONDS` (**24 h**) stops Yahoo requests until the owner reactivates them (next section); it is never turned into an early retry. `/v1/health` shows `upstream.state: "halted"`, refusals carry `manualReactivationRequired: true` and `Retry-After: 86400` |
-| Per client | **30** requests per minute and **2** in flight per client (hashed IP) per isolate, plus the `RATE_LIMITER` binding (30/min per location) |
-| No retries | the Worker never retries Yahoo; the pages and desktop apps retry only a network error reaching the gateway, once |
+| Spacing | at least **1 s** between the actual starts of two upstream requests, worldwide, first come first served, as decided at the coordinator. A request waits at most **15 s**; a request whose turn comes later than that, including one whose timer resumed late, is refused and never sent (`throttled`, `Retry-After`) and uses no budget |
+| Concurrency | at most **2** upstream requests in flight, worldwide (others wait in the same queue). A place held by a request that never finishes is reclaimed after its timeout |
+| Budget | at most **20** actual starts in **any** 60 seconds, worldwide. A request counts when it starts: one refused or cancelled while waiting does not count, and one cancelled after it started does |
+| Coalescing | identical concurrent requests, from any isolate, share **one** upstream request and report one retrieval time |
+| Cancellation | a client that disconnects stops waiting at once and the coordinator is told; work nobody is waiting for leaves the queue or is aborted, and is not held against Yahoo. Shared work continues while any client remains. Needs the `enable_request_signal` compatibility flag (in `wrangler.toml`) |
+| Caching | quotes reused **10 min**, history **12 h** (per symbol and range); definitive refusals (unknown symbol, other listing or currency) remembered **30 min**. For speed only: **no safety decision depends on a cache** |
+| Circuit breaker | after Yahoo answers **429**, no upstream request for **15 min**; after **401/403**, **30 min**; after **3** 5xx/timeouts/network errors with no successful answer in between, **2 min**. Cached answers are still served. Reported in `/v1/health` (`upstream.state: "cooling_down"`) |
+| Yahoo's own wait | a valid `Retry-After` (delta seconds or an HTTP date) on **any** answer other than a success is honoured when it is longer than the minimum above, as an absolute deadline; the `Retry-After` sent to clients is the time really left. Malformed, negative, past or shorter values never shorten the minimum. A **single** 5xx, redirect or other refusal that names a wait is honoured for that wait |
+| Other refusals | a redirect, a 400 or a 451 that names **no** wait is reported and starts no cooldown; the next request can go out within the spacing and budget, up to 20 a minute. It does not end a run of failures either |
+| A deadline never gets shorter | whichever refusal is recorded first, the later deadline stands; a success does not end a stop |
+| Longer than 24 h | a wait above `MAX_COOLDOWN_SECONDS` (**24 h**) halts Yahoo requests until the owner reactivates them (next section), however much time passes; it is never turned into an early retry, and an ordinary cooldown cannot overwrite it. `/v1/health` shows `upstream.state: "halted"`, refusals carry `manualReactivationRequired: true` and `Retry-After: 86400` |
+| Fail closed | a coordinator that is missing, failing or silent, state that cannot be read or is not well formed, or a write that fails means **no upstream request**: clients get `busy` (503, `Retry-After: 60`), `/v1/health` shows `status: "degraded"` and `upstream.state: "unverified"` with a `reason`. A failed call is never repeated, because it may already have started the request |
+| Per client | **30** requests per minute and **2** in flight per client (hashed IP) per isolate, plus the `RATE_LIMITER` binding (30/min per location). This protects the Worker from one client; Yahoo's protection does not depend on it |
+| No retries | the gateway never retries Yahoo; the pages and desktop apps retry only a network error reaching the gateway, once |
 
 The clients add their own restraint (`assets/js/market-data/keyless.js`,
 `_tools/shared_py/market_data/gateway.py`): one request at a time, at least 0.35 s apart
@@ -131,26 +140,71 @@ and after any "slow down" answer — or an outage while the breaker is open — 
 more is sent until `Retry-After` has passed**, a pause remembered across page loads and
 program restarts. The next source in the user's list is used meanwhile. Clients keep a
 pause of at most 24 hours; a longer wait is cut to that, never ignored, and the gateway
-stays stopped either way.
+stays halted either way.
 
-**Reactivating after a stop (owner only).** Set the non-sensitive variable
-`UPSTREAM_REACTIVATION_ID` to a new value (for example today's date) in `[env.production]`
-or the dashboard. That ends the stop and leaves the stored one behind. Only a stop is
-cleared: an ordinary cooldown still runs to its deadline.
+**Why this cannot race.** One object handles all of it, one piece of JavaScript at a time.
+State is read, changed and written with no `await` in between, so two refusals cannot lose
+each other's update, and the deadline is the maximum of the two in either order. A request is
+admitted and started in one uninterrupted step: every check, the write of the start, and the
+`fetch()` call happen together, so no stop can be recorded between the decision and the
+start. The coordinator makes the request itself because a permission granted to a Worker could
+be used late. The runtime also holds an outgoing `fetch()` until earlier writes are confirmed,
+and discards it if a write fails (Cloudflare, "Durable Objects: Easy, Fast, Correct").
 
-**What a stop cannot guarantee.** The Workers Free design has no durable storage. A stop
-lives in the isolate's memory and, best effort, in the Cache API, which may not be shared
-on a `workers.dev` address and can be evicted. An isolate that starts without either may
-send one more request; a refusal then stops it again.
+**`UPSTREAM_REACTIVATION_ID` (owner only).** A non-sensitive variable, read by the coordinator
+from its own settings; no request can supply it. Exactly:
+
+- A value this coordinator has **never seen** ends a halt. The value and the ending are recorded
+  in one transaction. Format: 1 to 40 of `A-Z a-z 0-9 . _ -` (for example today's date).
+- A value it **has seen** does nothing, ever. So a value left in place cannot authorize a later
+  halt, a value set before a halt began cannot end it, and a rollback that restores an older
+  value cannot end one.
+- An empty or malformed value does nothing, and removing the value does nothing.
+- It ends **only a halt**. An ordinary cooldown still runs to its deadline, including one
+  recorded while the source was halted.
+
+To reactivate: read `/v1/health`, then set a new value in the dashboard (Settings → Variables
+and Secrets) or with `npx wrangler@4 deploy --env production --var UPSTREAM_REACTIVATION_ID:2026-11-05`,
+and read `/v1/health` again. Do not keep it in `wrangler.toml`. A later deploy that drops the
+value is harmless.
+
+**What this cannot guarantee.**
+
+- A request that has already started cannot be recalled: at most 2 can be in flight when a
+  stop is recorded. Their answers can only lengthen the stop. A request admitted a moment
+  before a stop can also reach the network just after it, while its write is being confirmed
+  (milliseconds).
+- In-flight places are not persisted. A reset ends the object's own connections, but Yahoo may
+  still be working on them, so just after a reset it can briefly be serving up to 2 older requests
+  as well as 2 new ones. The spacing and the budget do carry across a reset.
+- If the object is reset or a write is lost in the instant between Yahoo's refusal and its
+  confirmation, that refusal is lost, and one more request may be sent; its refusal stops the
+  source again. If writes are failing, the stop holds in the running object and everything is
+  refused, but a restart before writes recover loses it. These two can coincide more easily than
+  it sounds: a used-up daily allowance lasts until 00:00 UTC, and an idle object is removed from
+  memory. The row budget below is what keeps the gateway from using up that allowance itself.
+- Spacing is measured at the coordinator's decision; on the wire two starts can be a few
+  milliseconds closer. Deadlines rely on Cloudflare's clock.
+- While a deployment of 1.3.0 replaces 1.1.0, old isolates still contact Yahoo by their own rules
+  until they finish. The guarantees above hold once the old version has gone.
+- The activation settings are checked by the Worker, not the coordinator. For as long as two
+  versions overlap after the source is switched off, an isolate on the old settings can still reach
+  the coordinator, within all its limits.
+- A lost cancellation message costs at most one request for nobody, within all the limits.
+- Identical requests at different times each use budget if the cache misses; on a `workers.dev`
+  address the Cache API may be per isolate.
+- A state row that is not well formed stops the source until it is repaired, by design: there is
+  no automatic repair. The last resort is "Delete the coordinator's state" below.
 
 Expected volume: the Rebalancer's 14-holding sample costs at most 14 requests (about 14 s
 with the 1 s spacing when nothing is cached); a Stock comparison one per ticker. The free
 daily allowance of 100,000 Worker requests is far above that.
 
-Honest identity: the Worker sends `User-Agent: market-data-gateway/1.2.0
+Honest identity: the coordinator sends `User-Agent: market-data-gateway/1.3.0
 (+https://elmatthe.github.io/projects/portfolio-rebalancer/)`. It never imitates a
 browser, obtains cookies or "crumbs", rotates addresses or otherwise works around a
-refusal. If Yahoo refuses, the gateway reports it and stops (circuit breaker).
+refusal. If Yahoo refuses with a 429, 401 or 403, or names a wait, the gateway reports it and stops
+(circuit breaker).
 
 ## Contract
 
@@ -160,7 +214,7 @@ Yahoo's raw value and unit alongside.
 
 | Request | Answer |
 |---|---|
-| `GET /v1/health` | `md-gateway.health.v1`: `status`, `version`, `keyless {enabled, source, reason, activation, provider, attribution, official:false}`, `upstream {state, code, retryAfterSeconds}`, `venues`, `history {ranges, intervals}`, `cacheTtlSeconds`, `limits`. No secrets; the attestation value is never echoed. |
+| `GET /v1/health` | `md-gateway.health.v1`: `status` (`ok`, or `degraded` when the upstream state could not be verified), `version`, `keyless {enabled, source, reason, activation, provider, attribution, official:false}`, `upstream {state, code, retryAfterSeconds, manualReactivationRequired?, reason?}` (`state` is `ok`, `cooling_down`, `halted` or `unverified`), `venues`, `history {ranges, intervals}`, `cacheTtlSeconds`, `limits`. No secrets; the attestation value is never echoed. |
 | `GET /v1/quote?symbol=VEQT.TO` | `md-gateway.quote.v1`: `source`, `listing {symbol, mic, venueName, exchangeCode, exchangeName, instrumentType, name, timeZone}`, `currency`, `rawCurrency`, `quoteUnit`, `unitScale`, `price`, `rawPrice`, `priceBasis: "regular_market_price"`, `adjusted:false`, `tradingDate` (venue time zone), `sourceTime`, `delay {realTime:false, note}`, `dayHigh`, `dayLow`, `volume`, `previousClose` (each `null` when absent, listed in `missing`), `retrievedAt`, `cache {status, ageSeconds, ttlSeconds}` |
 | `GET /v1/history?symbol=SAP.DE&range=1y&interval=1d` | `md-gateway.history.v1`: same identity fields, `range`, `interval`, `frequency:"daily"`, `adjustment {close, adjClose, adjCloseAvailable}`, `observations: [[date, close, adjClose], …]` (ascending, one per trading date, `null` where Yahoo gave none), `count`, `firstDate`, `lastDate`, `lastBarMayBeIncomplete`, `missing {…}`, `retrievedAt`, `cache` |
 | `OPTIONS` on the data paths | 204 for an allowed origin asking for `GET` (exposes `Retry-After`); 403 otherwise |
@@ -169,7 +223,7 @@ Yahoo's raw value and unit alongside.
 Error codes: `invalid_request`, `invalid_symbol`, `unsupported_listing`, `invalid_range`,
 `origin_not_allowed`, `https_required`, `not_found`, `method_not_allowed`,
 `source_disabled`, `rate_limited` (this client), `throttled` (the shared budget or queue),
-`busy`, `symbol_not_found`, `no_price`, `no_history`, `listing_mismatch`,
+`busy` (also: the coordinator could not be used), `symbol_not_found`, `no_price`, `no_history`, `listing_mismatch`,
 `currency_mismatch`, `currency_unknown`, `unsupported_instrument`,
 `upstream_rate_limited`, `upstream_blocked`, `upstream_unavailable`, `upstream_timeout`,
 `upstream_invalid`, `upstream_rejected`.
@@ -213,8 +267,9 @@ causes a refusal (`listing_mismatch`).
 - No credentials, keys or secrets exist in this Worker, its requests or its answers. The
   tools never send a provider key to the gateway (tested in `keyless.test.mjs`,
   `sources.test.js`, `test_desktop_gateway.py`).
-- Fixed upstream origin and path; the only client input copied into the upstream URL is
-  an allowlisted symbol and range; no client header is forwarded; redirects are never
+- Fixed upstream origin and path, built by the coordinator, which takes a symbol and range and
+  never a URL; the only client input copied into the upstream URL is an allowlisted symbol and
+  range; no client header is forwarded; redirects are never
   followed; 8-second upstream timeout.
 - The contract has no field for holdings, quantities, targets or accounts, and the tools
   send none: only a symbol (and a range for history).
@@ -224,6 +279,7 @@ causes a refusal (`listing_mismatch`).
   gets no CORS headers. CORS is not authentication; abuse is bounded by the allowlists,
   the limits above (the per-client limit counts per caller address), the cache and
   Cloudflare's free daily cap.
+- The coordinator cannot be reached from the internet: only this Worker's binding can call it.
 - Logs: event name, code, venue, upstream status, cooldown length. Never an IP address,
   URL or header. Workers Logs are disabled (`[observability] enabled = false`).
 - Headers: `Content-Security-Policy: default-src 'none'`, `X-Content-Type-Options:
@@ -240,17 +296,37 @@ cache operations per request. The Rate Limiting binding
 2026-10-21) needs Wrangler 4.36.0 or later, takes a period of 10 or 60 s, is approximate
 and per location; its page does not state plan availability. Wrangler 4.157.0 (current
 on 2026-11-04) validates this configuration (`deploy --dry-run --env production` lists
-both bindings). Each request makes at most one upstream subrequest plus at most a few
-Cache API operations. No KV, D1, R2, Durable Objects, Queues or paid feature is used.
-**Do not upgrade the account for this.**
+the bindings). Each health or uncached data request makes one coordinator call, one more if the
+client disconnects, plus at most a few Cache API operations. No KV, D1, R2, Queues or paid feature is used. **Do not upgrade the
+account for this.**
 
 The Cache API is functional on a custom domain; on a `workers.dev` address Cloudflare does
-not document it, so the shared cache and shared cooldown may be per isolate only there.
-The in-memory cache, cooldown and limits work either way.
+not document it, so the shared answer cache may be per isolate only there. No safety decision
+depends on it.
+
+**The coordinator on Workers Free** (<https://developers.cloudflare.com/durable-objects/platform/pricing/>,
+updated 2026-10-18; <https://developers.cloudflare.com/durable-objects/platform/limits/>, updated
+2026-10-29; checked 2026-11-04). Workers Free can create and use SQLite-backed Durable Objects
+only; that is the kind used here. **This is from Cloudflare's documentation and
+`wrangler deploy --dry-run`. It has not been accepted by the live account yet.**
+
+| Free daily allowance | The most this gateway can use | Why |
+|---|---|---|
+| 100,000 requests | one for each health request and each uncached data request; two if the client disconnects | None for cached answers or preflights. Health has no per-client limit, so anyone can spend this allowance, as with the Worker's own 100,000; when it is gone the source fails closed until 00:00 UTC and no request reaches Yahoo |
+| 13,000 GB-s of duration | 10,800 GB-s | One object at 128 MB cannot be active more than 86,400 s a day |
+| 100,000 rows written | 57,600 | At most 20 starts a minute × 1,440 minutes, one row each (measured in the real runtime), plus at most one row for each outcome. Refused requests write nothing |
+| 5,000,000 rows read | a few per wake-up | State is read once per instance and then kept in memory |
+| 5 GB stored | under 1 KB, plus one row per reactivation value | |
+
+Above an allowance, "further operations of that type will fail with an error", and nothing is
+billed on Workers Free. Each of those failures fails closed here: a call that fails, or a write
+that fails, means no upstream request, and clients get `busy` until 00:00 UTC. The object itself
+has a soft limit of about 1,000 requests per second and answers "overloaded" above it, also
+failing closed.
 
 ## Deploy (owner, on the owner's own computer)
 
-Needs a free Cloudflare account, Node.js 20 or later and a clone of this repository on
+Needs a free Cloudflare account, Node.js 22 or later (Wrangler 4.157.0 requires it) and a clone of this repository on
 the `claude/loving-brown-48hctl` branch (or `main` after merge). No payment method is
 needed for Workers Free.
 
@@ -265,15 +341,32 @@ npx wrangler@4 login
 `login` opens Cloudflare in your browser; approve it there (no password or token is
 typed into a terminal or chat).
 
+**Before the first deployment of 1.3.0:**
+
+1. Read `/v1/health` on the live Worker. If `upstream.state` is not `ok`, wait until it is: the
+   old version's stops live in its isolates and are not carried over.
+2. Read "Roll back" below. After this deployment `wrangler rollback` cannot return to any version
+   from before it.
+
 ```bash
 npx wrangler@4 deploy --env production
 ```
 
+Wrangler 4.157.0 validated this configuration. The first deployment creates the class from
+`[exports.UpstreamCoordinator]` in `wrangler.toml`: there is no migration tag, no data to move and
+nothing to set up. Use `deploy`, not `versions upload` or a gradual rollout, which Cloudflare does
+not support with `exports`.
+
+If Cloudflare refuses the class on your plan, the deployment fails as a whole and the live Worker
+keeps running unchanged. **Do not upgrade the account**; report it. After deploying, `/v1/health`
+must show `version` 1.3.0, `status: "ok"`, `upstream.state: "ok"`. Anything else, especially
+`unverified`: switch the source off (below) and report it.
+
 Wrangler prints the address, `https://market-data-gateway.<your-subdomain>.workers.dev`.
-If it says the `ratelimits` binding is unavailable on your plan, delete the four
+If it says the `ratelimits` binding is unavailable on your plan, delete the two
 `[[ratelimits]]` / `[[env.production.ratelimits]]` blocks and deploy again (the in-memory
-limits still apply). If namespace ids 21011 or 21012 are already used in your account,
-choose other integers.
+limit still applies). If namespace id 21011 is already used in your account, choose another
+integer.
 
 Then verify (next section), run the capped live smoke test, and only then put the address
 in `_data/market_data.yml` (`gateway: "https://…workers.dev"`, https, no trailing slash)
@@ -338,12 +431,23 @@ broker. A `listing_mismatch` for a correct listing means the exchange code in
   `npx wrangler@4 deploy` (both values empty). Every data request then answers
   `source_disabled`; the tools say Yahoo Finance is switched off and use the user's other
   sources.
-- **Previous version:** dashboard → Deployments → Rollback, or `npx wrangler@4 rollback`.
+- **Previous version, 1.3.0 or later:** dashboard → Deployments → Rollback, or `npx wrangler@4 rollback`.
+  The coordinator's recorded state is not rolled back: a stop stays recorded, and a reactivation
+  value that was used stays used.
+- **Back to a version before 1.3.0: not possible with `wrangler rollback`.** Cloudflare refuses a
+  rollback across a Durable Object lifecycle change, and the older versions have known defects
+  (no durable stop). Switch the source off instead (above), which needs no new code.
 - **Stop the tools from using it:** set `gateway: ""` in `_data/market_data.yml` and
   `DEFAULT_GATEWAY_URL = ""`, sync, rebuild the ZIPs and merge. The tools then contact no
   gateway.
-- **Delete the Worker:** `npx wrangler@4 delete --env production` in this folder.
-- **Usage:** dashboard → Workers & Pages → market-data-gateway → Metrics.
+- **Delete the coordinator's state (last resort):** set `state = "deleted"` under
+  `[exports.UpstreamCoordinator]`, remove the binding and deploy code that does not use it. Cloudflare
+  deletes the class and its data **permanently, including any recorded stop**, so a new class would
+  know nothing of a refusal. First read `/v1/health`; if a stop is recorded, keep the source off until
+  its deadline has passed. This path has not been exercised.
+- **Delete the Worker:** `npx wrangler@4 delete --env production` in this folder. Treat this as also
+  deleting the coordinator and any recorded stop; read `/v1/health` first. Not exercised.
+- **Usage:** dashboard → Workers & Pages → market-data-gateway → Metrics, and Durable Objects for the coordinator.
 
 ## Local development
 
@@ -351,7 +455,8 @@ broker. A `listing_mismatch` for a correct listing means the exchange code in
 npx wrangler@4 dev --port 8788 --var ALLOW_HTTP:true --var "ALLOWED_ORIGINS:https://elmatthe.github.io,http://127.0.0.1:4000"
 ```
 
-This runs the top-level settings (source switched off), so nothing reaches Yahoo. Open
+This runs the top-level settings (source switched off), so nothing reaches Yahoo. Wrangler keeps
+the coordinator's local state in `.wrangler/` (Git-ignored). Open
 `http://127.0.0.1:4000/projects/portfolio-rebalancer/?mdgateway=http://127.0.0.1:8788` on a
 locally served build; the pages honour `mdgateway` (a URL, or `none`) only when they are
 served from `127.0.0.1` or `localhost`. Use `--env production` locally only for requests
@@ -363,21 +468,44 @@ From the repository root (no network; Yahoo replaced by
 `_tools/tests/fixtures/yahoo-chart.mjs`):
 
 ```bash
-node --test _tools/tests/unit/market-gateway.test.mjs _tools/tests/unit/keyless.test.mjs _tools/tests/unit/sources.test.mjs
+node --test _tools/tests/unit/market-gateway.test.mjs _tools/tests/unit/upstream-coordinator.test.mjs _tools/tests/unit/keyless.test.mjs _tools/tests/unit/sources.test.mjs
 ```
 
 ```bash
 cd _tools/tests && python3 -m pytest -q test_desktop_gateway.py
 ```
 
+The real Workers runtime (workerd, real SQLite, real restarts from disk, separate isolates) needs
+the pinned Wrangler, which brings workerd and Miniflare. It is a test tool only, and it needs no
+Cloudflare account:
+
+```bash
+npm install --no-save --no-package-lock --prefix /tmp/wrangler wrangler@4.157.0
+NODE_PATH=/tmp/wrangler/node_modules node --test --test-concurrency=1 _tools/tests/worker-runtime/gateway-runtime.test.cjs
+```
+
+`_tools/tests/r3_reproduction.mjs` runs the review's counterexamples against any checkout: it exits 1
+on `de720dc` and 0 here (usage at the top of the file).
+
+`upstream-coordinator.test.mjs` covers several isolates sharing one coordinator on a clock the test
+controls, with timers that fire late or never: overdue admission, deadlines recorded in either
+order, halts, restart and recovery, the exact reactivation rules, unreadable, unwritable and
+malformed state, a stop while requests are queued, clients leaving, and a missing or failing
+coordinator. At every simulated start it checks that the start is already on disk and no stop is.
+`gateway-runtime.test.cjs` runs the same scenarios in the real runtime, and `wrangler deploy
+--dry-run` for both configurations. Not covered locally: output gates under slow storage (local
+writes finish at once), idle eviction, Cloudflare's edge, including whether a
+real client disconnect reaches `request.signal` (the tests reach it through a service binding; a
+closed TCP connection does not fire it under local workerd), and the live account.
+
 `market-gateway.test.mjs` covers the activation settings (including `wrangler.toml`),
 the fixed upstream URL and headers, the seven smoke listings and DLR-U.TO, history bases,
 refused symbols and parameters, mismatched/malformed answers, HTTP 429/403/503,
 redirects, oversize bodies, timeouts, CORS, per-client and shared limits, actual-start
 spacing, the in-flight limit and the hard 15 s wait on a virtual clock, cancellation, the
-source's `Retry-After` (seconds, HTTP date, invalid values, longest deadline, new
-isolates, the stop above 24 h and its reactivation), coalescing, remembered refusals, the
-circuit breaker (and its Cache API sharing), no-Origin clients, caching and logs. `keyless.test.mjs` runs the browser
+source's `Retry-After` (seconds, HTTP date, invalid values, longest deadline, the stop above
+24 h and its reactivation), coalescing, remembered refusals, the circuit breaker, no-Origin
+clients, caching and logs. `keyless.test.mjs` runs the browser
 adapter against this Worker (pauses, fallback, order). `test_desktop_gateway.py` runs the
 desktop package against this Worker served on 127.0.0.1 by `gateway_server.mjs`.
 `_tools/tests/browser/freesource.test.js` and `sources.test.js` drive both web apps
