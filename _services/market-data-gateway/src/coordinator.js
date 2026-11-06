@@ -101,19 +101,25 @@ async function readCapped(stream, limit) {
 // haltCode       set: no upstream request until a new reactivation id, whatever the clock says
 // failures       consecutive 5xx / timeout / network failures
 // starts         times of the actual starts in the last minute (spacing and budget)
-const EMPTY_STATE = Object.freeze({ cooldownUntil: 0, cooldownCode: null, haltCode: null, failures: 0, starts: Object.freeze([]) });
+const EMPTY_STATE = Object.freeze({ cooldownUntil: 0, cooldownCode: null, haltCode: null, failures: 0, starts: Object.freeze([]), unresolved: Object.freeze([]) });
 
 const isTime = value => Number.isSafeInteger(value) && value >= 0;
 const isStopCode = value => Object.hasOwn(COOLDOWN_SECONDS, value);
 function verifiedState(state) {
   if (state === null || state === undefined) return EMPTY_STATE; // a coordinator that never recorded anything
+  // Non-SQL adapters can still supply the old shape. SQLite migration is conservative below.
+  const unresolved = state.unresolved ?? (Object.hasOwn(state, "unresolved") ? null : []);
   const wellFormed = isTime(state.cooldownUntil)
     && (state.cooldownCode === null ? state.cooldownUntil === 0 : isStopCode(state.cooldownCode))
     && (state.haltCode === null || isStopCode(state.haltCode))
     && isTime(state.failures)
-    && Array.isArray(state.starts) && state.starts.every(isTime);
+    && Array.isArray(state.starts) && state.starts.every(isTime)
+    && Array.isArray(unresolved) && unresolved.length <= UPSTREAM_LIMITS.upstreamInFlight
+    && unresolved.every(marker => marker && typeof marker.id === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(marker.id)
+      && isTime(marker.startedAt) && state.starts.includes(marker.startedAt))
+    && new Set(unresolved.map(marker => marker.id)).size === unresolved.length;
   if (!wellFormed) throw new Error("coordinator state is not well formed");
-  return state;
+  return { ...state, unresolved };
 }
 
 // The Durable Object's SQLite storage (ctx.storage). Every call is synchronous and throws on
@@ -125,24 +131,37 @@ const SCHEMA = [
     cooldown_code TEXT,
     halt_code TEXT,
     failures INTEGER NOT NULL,
-    starts TEXT NOT NULL
+    starts TEXT NOT NULL,
+    unresolved TEXT NOT NULL DEFAULT '[]'
   )`,
   "CREATE TABLE IF NOT EXISTS reactivation_ids (id TEXT PRIMARY KEY, first_seen_at INTEGER NOT NULL)",
 ];
-const UPSERT_STATE = `INSERT INTO coordinator_state (id, cooldown_until, cooldown_code, halt_code, failures, starts)
-  VALUES (1, ?, ?, ?, ?, ?)
+const UPSERT_STATE = `INSERT INTO coordinator_state (id, cooldown_until, cooldown_code, halt_code, failures, starts, unresolved)
+  VALUES (1, ?, ?, ?, ?, ?, ?)
   ON CONFLICT(id) DO UPDATE SET cooldown_until = excluded.cooldown_until, cooldown_code = excluded.cooldown_code,
-    halt_code = excluded.halt_code, failures = excluded.failures, starts = excluded.starts`;
+    halt_code = excluded.halt_code, failures = excluded.failures, starts = excluded.starts, unresolved = excluded.unresolved`;
 export function sqlStorage(storage) {
   const { sql } = storage;
-  const upsert = state => sql.exec(UPSERT_STATE, state.cooldownUntil, state.cooldownCode, state.haltCode, state.failures, JSON.stringify(state.starts));
+  const upsert = state => sql.exec(UPSERT_STATE, state.cooldownUntil, state.cooldownCode, state.haltCode, state.failures, JSON.stringify(state.starts), JSON.stringify(state.unresolved ?? []));
   return {
     read() {
       for (const statement of SCHEMA) sql.exec(statement);
-      const [row] = sql.exec("SELECT cooldown_until, cooldown_code, halt_code, failures, starts FROM coordinator_state WHERE id = 1").toArray();
+      if (!sql.exec("PRAGMA table_info(coordinator_state)").toArray().some(column => column.name === "unresolved")) {
+        storage.transactionSync(() => {
+          sql.exec("ALTER TABLE coordinator_state ADD COLUMN unresolved TEXT NOT NULL DEFAULT '[]'");
+          // R3 cannot establish which recorded starts finished. Do not silently bless them.
+          const [legacy] = sql.exec("SELECT starts FROM coordinator_state WHERE id = 1").toArray();
+          if (legacy) {
+            const starts = JSON.parse(legacy.starts);
+            if (!Array.isArray(starts) || !starts.every(isTime)) throw new Error("invalid legacy starts");
+            if (starts.length) sql.exec("UPDATE coordinator_state SET unresolved = ? WHERE id = 1", JSON.stringify([{ id: "legacy-outcome", startedAt: starts.at(-1) }]));
+          }
+        });
+      }
+      const [row] = sql.exec("SELECT cooldown_until, cooldown_code, halt_code, failures, starts, unresolved FROM coordinator_state WHERE id = 1").toArray();
       const seen = sql.exec("SELECT id FROM reactivation_ids").toArray().map(r => r.id);
       if (!row) return { state: null, seen };
-      return { state: { cooldownUntil: row.cooldown_until, cooldownCode: row.cooldown_code, haltCode: row.halt_code, failures: row.failures, starts: JSON.parse(row.starts) }, seen };
+      return { state: { cooldownUntil: row.cooldown_until, cooldownCode: row.cooldown_code, haltCode: row.halt_code, failures: row.failures, starts: JSON.parse(row.starts), unresolved: JSON.parse(row.unresolved) }, seen };
     },
     write: state => upsert(state).rowsWritten,
     // One transaction: an id is never recorded as used unless its effect is recorded too.
@@ -180,7 +199,8 @@ export class UpstreamCoordinatorCore {
     this.L = { ...UPSTREAM_LIMITS, ...limits };
     this.state = null; // loaded on first use; null means not verified yet
     this.seen = new Set();
-    this.unsaved = false; // a stop is held in memory but its write failed
+    this.unsaved = false; // a known state/outcome is held in memory but its write failed
+    this.quarantine = new Set(); // inherited or locally unknown outcomes; never expires
     this.queue = []; // works waiting for their turn, first come first served
     this.leases = new Set(); // places in flight
     this.works = new Map(); // upstream URL -> the work identical requests share
@@ -192,29 +212,39 @@ export class UpstreamCoordinatorCore {
   ready() {
     if (!this.state) {
       const { state, seen } = this.storage.read();
+      // Reactivation always writes its state and history together. History without the
+      // state row is lost/corrupt storage, not a pristine coordinator.
+      if (state == null && seen.length) throw new Error("coordinator state missing");
       this.state = verifiedState(state);
       this.seen = new Set(seen);
+      this.quarantine = new Set(this.state.unresolved.map(marker => marker.id));
     }
     if (this.unsaved) {
       this.storage.write(this.state);
       this.unsaved = false;
     }
+    this.inFlightAt(this.now());
     this.applyReactivation();
+    if (this.quarantine.size) throw new Error("unresolved upstream outcome");
   }
 
   // UPSTREAM_REACTIVATION_ID is single use. A value this coordinator has never seen ends a
   // halt, and is recorded in the same transaction. A value it has seen does nothing, ever:
   // leaving the value in place cannot authorize a later halt, and a rollback that restores
-  // an older value cannot end one. An empty or malformed value does nothing. Only a halt is
-  // ended: an ordinary cooldown still runs to its deadline.
+  // an older value cannot end one. An empty or malformed value does nothing. Halts and
+  // quarantined uncertainty can be ended; an ordinary cooldown runs to its deadline.
   applyReactivation() {
     const id = String(this.env.UPSTREAM_REACTIVATION_ID ?? "").trim();
     if (!REACTIVATION_ID.test(id) || this.seen.has(id)) return;
-    const next = { ...this.state, haltCode: null };
+    // Never release a still-running local request with an owner identifier. Observe and
+    // consume identifiers during healthy operation so they cannot authorize later loss.
+    if (this.quarantine.size && this.leases.size) throw new Error("upstream work still active");
+    const next = { ...this.state, haltCode: null, unresolved: this.state.unresolved.filter(marker => !this.quarantine.has(marker.id)) };
     this.storage.reactivate(next, id, this.now());
     const ended = this.state.haltCode !== null;
     this.seen.add(id);
     this.state = next;
+    this.quarantine.clear();
     if (ended) this.log({ event: "source_reactivated" });
   }
 
@@ -232,9 +262,11 @@ export class UpstreamCoordinatorCore {
     try {
       this.storage.write(next);
       this.unsaved = false;
+      return true;
     } catch (_) {
       this.unsaved = true;
       this.log({ event: "coordinator_write_failed" });
+      return false;
     }
   }
 
@@ -260,7 +292,7 @@ export class UpstreamCoordinatorCore {
   }
 
   // Updates the circuit breaker after an upstream outcome (a code, or null for a real success).
-  recordOutcome(code, directedUntil = null) {
+  recordOutcome(code, directedUntil = null, admissionId = null, unknown = false) {
     const state = this.state;
     let next;
     if (code === "upstream_rate_limited" || code === "upstream_blocked") {
@@ -272,15 +304,21 @@ export class UpstreamCoordinatorCore {
       else if (directedUntil !== null) next = this.applyStop({ ...state, failures }, "upstream_unavailable", directedUntil, false);
       else next = { ...state, failures };
     } else if (code === null) {
-      if (state.failures === 0) return; // nothing changed, nothing to write
       next = { ...state, failures: 0 };
     } else {
       // Any other refusal (a redirect, a 400, a 404). It does not end a run of failures; only a
       // real success does. A wait the source names is honoured whatever the status.
-      if (directedUntil === null) return;
-      next = this.applyStop(state, "upstream_unavailable", directedUntil, false);
+      next = directedUntil === null ? { ...state } : this.applyStop(state, "upstream_unavailable", directedUntil, false);
     }
-    this.commitOutcome(next);
+    if (admissionId !== null) {
+      if (!state.unresolved.some(marker => marker.id === admissionId)) return false;
+      if (unknown) this.quarantine.add(admissionId);
+      else {
+        next.unresolved = state.unresolved.filter(marker => marker.id !== admissionId);
+        this.quarantine.delete(admissionId);
+      }
+    }
+    return this.commitOutcome(next);
   }
 
   /* ---------------- answers ---------------- */
@@ -335,8 +373,8 @@ export class UpstreamCoordinatorCore {
     }
   }
 
-  // The caller has gone. Work nobody is waiting for leaves the queue, or is aborted if it
-  // has started; either way it is not counted against the data source.
+  // Queued work can be discarded. An admitted abort says nothing about the provider's
+  // outcome: retain its marker and quarantine until the outcome is known or the owner acts.
   cancel(client) {
     const work = this.clients.get(client);
     if (!work) return;
@@ -350,6 +388,7 @@ export class UpstreamCoordinatorCore {
     work.dropped = reason;
     if (this.works.get(work.url) === work) this.works.delete(work.url);
     this.leaveQueue(work);
+    if (work.admissionId && this.state.unresolved.some(marker => marker.id === work.admissionId)) this.quarantine.add(work.admissionId);
     work.controller.abort();
   }
 
@@ -372,7 +411,9 @@ export class UpstreamCoordinatorCore {
     return last === undefined ? -Infinity : last + this.L.upstreamMinSpacingMs - t;
   }
   inFlightAt(t) {
-    for (const lease of this.leases) if (lease.expiresAt <= t) this.leases.delete(lease);
+    for (const lease of this.leases) {
+      if (lease.expiresAt <= t && this.state.unresolved.some(marker => marker.id === lease.id)) this.quarantine.add(lease.id);
+    }
     return this.leases.size;
   }
   leaveQueue(work) {
@@ -405,9 +446,13 @@ export class UpstreamCoordinatorCore {
     for (;;) {
       if (work.dropped) return { code: work.dropped };
       const t = this.now();
+      if (t > work.deadline) {
+        const stop = !this.unsaved && !this.quarantine.size && this.currentStop(t);
+        return stop ? this.stopReply(stop.code, stop) : this.throttled(work);
+      }
+      try { this.ready(); } catch (_) { return { code: COORDINATOR_UNAVAILABLE }; }
       const stop = this.currentStop(t);
       if (stop) return this.stopReply(stop.code, stop);
-      if (t > work.deadline) return this.throttled(work);
       // A waiter whose wake never comes cannot leave by itself; its deadline removes it.
       while (this.queue[0] && this.queue[0] !== work && this.queue[0].deadline < t) this.queue.shift();
       const first = this.queue[0] === work;
@@ -416,7 +461,7 @@ export class UpstreamCoordinatorCore {
       if (first && room && spacingLeft <= 0) {
         // Admission: from here to the fetch() call inside `start` there is no `await`, so
         // nothing else can run between the checks above and the request starting.
-        const refused = this.admit(t);
+        const refused = this.admit(t, work);
         if (refused) return refused === "throttled" ? this.throttled(work) : { code: refused };
         this.leaveQueue(work);
         return this.start(work, t);
@@ -436,10 +481,12 @@ export class UpstreamCoordinatorCore {
 
   // The budget counts requests that really start, and the start is on disk before it can
   // leave this object. Returns a refusal code, or null when admitted.
-  admit(t) {
+  admit(t, work) {
     const starts = this.state.starts.filter(start => t - start < BUDGET_WINDOW_MS);
     if (starts.length >= this.L.upstreamPerMinute) return "throttled";
-    const next = { ...this.state, starts: [...starts, t] };
+    if (this.state.unresolved.length >= this.L.upstreamInFlight) return "throttled";
+    const id = crypto.randomUUID();
+    const next = { ...this.state, starts: [...starts, t], unresolved: [...this.state.unresolved, { id, startedAt: t }] };
     try {
       this.storage.write(next);
     } catch (_) {
@@ -450,6 +497,7 @@ export class UpstreamCoordinatorCore {
       return COORDINATOR_UNAVAILABLE;
     }
     this.state = next;
+    work.admissionId = id;
     this.unsaved = false;
     return null;
   }
@@ -457,49 +505,69 @@ export class UpstreamCoordinatorCore {
   // The fetch() call is in this function's synchronous part, before its first `await`.
   async start(work, t) {
     const L = this.L;
-    // A place in flight is a lease that expires, so a request that can never finish cannot
-    // hold its place for ever.
-    const lease = { expiresAt: t + L.upstreamTimeoutMs + L.upstreamLeaseGraceMs };
+    // An expired lease cannot prove a completed provider outcome. It quarantines instead
+    // of reclaiming authorization; the persisted marker outlives every local timer.
+    const lease = { id: work.admissionId, expiresAt: t + L.upstreamTimeoutMs + L.upstreamLeaseGraceMs };
     this.leases.add(lease);
     work.staleAt = lease.expiresAt;
     let timedOut = false;
-    const timer = setTimeout(() => { timedOut = true; work.controller.abort(); }, L.upstreamTimeoutMs);
+    const timer = setTimeout(() => {
+      timedOut = true;
+      if (this.state.unresolved.some(marker => marker.id === work.admissionId)) this.quarantine.add(work.admissionId);
+      work.controller.abort();
+    }, L.upstreamTimeoutMs);
     try {
-      const response = await this.fetchImpl(work.url, {
-        method: "GET",
-        headers: { Accept: "application/json", "User-Agent": `market-data-gateway/${VERSION} (+https://elmatthe.github.io/projects/portfolio-rebalancer/)` },
-        redirect: "manual",
-        signal: work.controller.signal,
-      });
+      let response, text, networkError, fetchFailed = false;
+      // Only fetch/body failures belong to the provider failure counter. SQL exceptions
+      // are handled by commitOutcome, outside this catch, and never become Yahoo failures.
+      try {
+        response = await this.fetchImpl(work.url, {
+          method: "GET",
+          headers: { Accept: "application/json", "User-Agent": `market-data-gateway/${VERSION} (+https://elmatthe.github.io/projects/portfolio-rebalancer/)` },
+          redirect: "manual",
+          signal: work.controller.signal,
+        });
+        if (response.status === 200) text = await readCapped(response.body, L.maxUpstreamBytes);
+      } catch (error) {
+        fetchFailed = true;
+        networkError = error;
+      }
+      if (fetchFailed || !response) {
+        const unknown = timedOut || Boolean(work.dropped) || work.controller.signal.aborted || networkError?.name === "AbortError";
+        const code = timedOut ? "upstream_timeout" : "upstream_unavailable";
+        const saved = this.recordOutcome(work.dropped ? "cancelled" : code, null, work.admissionId, unknown);
+        if (!saved) return { code: COORDINATOR_UNAVAILABLE };
+        if (work.dropped) return { code: work.dropped };
+        this.log({ event: "upstream_error", code, mic: work.mic });
+        return unknown ? { code: COORDINATOR_UNAVAILABLE } : this.refusalReply(code);
+      }
       if (response.status === 200) {
-        const text = await readCapped(response.body, L.maxUpstreamBytes);
-        this.recordOutcome(null);
+        if (!this.recordOutcome(null, null, work.admissionId)) return { code: COORDINATOR_UNAVAILABLE };
         return { text, retrievedAt: this.now() };
       }
       // The only upstream header ever read, and only on a refusal. A stop is recorded in the
       // same step the refusal arrives, before anything else is awaited.
       const retryAfterAt = parseUpstreamRetryAfter(response.headers?.get?.("Retry-After"), this.now());
       let code = statusCode(response.status);
-      this.recordOutcome(code, retryAfterAt);
+      if (!this.recordOutcome(code, retryAfterAt, work.admissionId)) return { code: COORDINATOR_UNAVAILABLE };
       if (response.status === 404) {
         // Only the reply depends on the body; nothing waits for it to be cancelled otherwise.
-        const text = await readCapped(response.body, 4096);
-        code = /not ?found|no data/i.test(text || "") ? "symbol_not_found" : "upstream_invalid";
+        // The HTTP outcome and its stop are already durable; a body error cannot record
+        // a second outcome or erase a competing admission.
+        let body;
+        try { body = await readCapped(response.body, 4096); } catch (_) { /* invalid body */ }
+        code = /not ?found|no data/i.test(body || "") ? "symbol_not_found" : "upstream_invalid";
       } else {
         Promise.resolve(response.body?.cancel()).catch(() => { /* closed */ });
       }
       this.log({ event: "upstream_status", code, mic: work.mic, status: response.status });
       return this.refusalReply(code);
-    } catch (error) {
-      // A client leaving says nothing about the source.
-      if (work.dropped) return { code: work.dropped };
-      const code = timedOut ? "upstream_timeout" : "upstream_unavailable";
-      this.log({ event: "upstream_error", code, mic: work.mic, error: error?.name || "Error" });
-      this.recordOutcome(code);
-      return this.refusalReply(code);
     } finally {
       clearTimeout(timer);
       this.leases.delete(lease);
+      // No exception path may turn an orphaned admission into apparently healthy local
+      // capacity. Known unsaved outcomes are held separately by commitOutcome.
+      if (this.state.unresolved.some(marker => marker.id === work.admissionId)) this.quarantine.add(work.admissionId);
     }
   }
 }

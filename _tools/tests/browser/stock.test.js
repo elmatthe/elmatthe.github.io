@@ -229,10 +229,21 @@ function sampleCsv() {
   for (let i = 0; i < await rows.count(); i += 1) await rows.nth(i).fill(["SPLITX", "AAPL", "MSFT"][i] || "");
   await page.selectOption("#sddHorizon", "3M");
   check(/This run needs \d/.test(await page.locator("#sddEstimate").innerText()) && /free plan allows 25 per day/.test(await page.locator("#sddEstimate").innerText()), `request estimate shown before a live run (${await page.locator("#sddEstimate").innerText()})`);
+  const splitResponse = page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return url.hostname === "www.alphavantage.co" && url.searchParams.get("function") === "TIME_SERIES_DAILY" && url.searchParams.get("symbol") === "SPLITX";
+  });
   await page.click("#sddRunCompare");
   await waitCompare();
+  // The synthetic market also moves on the split day. Derive the precise warning from
+  // the intercepted prices, rather than assuming a date-dependent move of -33.x%.
+  const daily = (await (await splitResponse).json())["Time Series (Daily)"];
+  const prices = Object.entries(daily).sort(([a], [b]) => a.localeCompare(b));
+  const splitMove = prices.slice(1).map(([day, values], i) => ({ day, percent: (Number(values["4. close"]) / Number(prices[i][1]["4. close"]) - 1) * 100 }))
+    .sort((a, b) => a.percent - b.percent)[0];
+  const expectedSplit = `SPLITX was left out: its unadjusted closes move by a split-like ratio (${splitMove.percent.toFixed(1)}% on ${splitMove.day}, like a 3-for-2 split)`;
   const splitText = await page.locator("#sddCompareWarnings").innerText();
-  check(/SPLITX was left out: its unadjusted closes move by a split-like ratio \(-33\.\d% on \d{4}-\d{2}-\d{2}, like a 3-for-2 split\)/.test(splitText), `a 3-for-2 split on as-traded closes excludes the ticker with the reason (${splitText.slice(0, 200)})`);
+  check(splitText.includes(expectedSplit), `a 3-for-2 split on as-traded closes excludes the ticker with the exact synthetic-data reason (${expectedSplit})`);
   check(!(await page.locator("#sddMetricsTable tbody").innerText()).includes("SPLITX"), "the excluded ticker has no metrics row");
   check(/≈/.test(await page.locator("#sddMetricsTable tbody").innerText()) && /less than six months/.test(splitText), "3M annualized figures are marked ≈ with a caveat");
   await page.selectOption("#sddHorizon", "1D");

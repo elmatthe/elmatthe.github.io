@@ -32,3 +32,32 @@ another's longer stop.
   as the deployment. Its options are the newer `{ config, dev }` shape of a 5.x beta and may change
   when `WRANGLER_VERSION` is raised. Their temporary state is in the system temporary folder because
   workerd cannot open a SQLite path over 260 characters on Windows.
+
+## 2026-11-05: unresolved upstream outcomes remain durable (PR 46 R4)
+
+The R3 independent review reproduced a lost refusal: admission persisted, the SQLite outcome
+write failed, then a restarted coordinator admitted another symbol. Process memory was not
+sufficient, and a successful response or non-stopping refusal sometimes skipped writing.
+
+- Admission now atomically writes its budget start and a unique unresolved marker in the
+  existing state row before fetch, preserving output gates and the synchronous decision.
+- Every known outcome atomically commits protective state and removes only its own marker,
+  including unchanged HTTP 200/404 outcomes. SQL failure returns unverified busy without
+  populating cache or incrementing the provider failure counter.
+- A live instance can retry its actual observed merged outcome. After restart, outcomes
+  are lost: persisted markers quarantine access indefinitely, even after storage recovers.
+- Admitted cancellation, timeout and unknown abort retain uncertainty; queued cancellation
+  still costs no budget. Expired leases cannot prove provider work ended. A late known
+  refusal still records the provider direction. Two healthy active requests remain usable.
+- Only a fresh owner identifier can clear lost-outcome quarantine, transactionally with its
+  consumed history. Existing cooldown deadlines remain. Operators must reconcile and drain
+  possibly running remote work; automatic expiry or state deletion is not recovery.
+- Schema migration retains the same class, namespace, row and ID history. Nonempty R3 starts
+  migrate conservatively to uncertainty. Malformed markers fail closed. R3 serving rollback
+  is unsafe because it ignores markers; retain an R4-compatible source-off fallback instead.
+- At most two markers share the existing row. Normal cost remains two row writes per start,
+  approximately 57,600/day at the admission budget; migration, retries and owner IDs add cost.
+
+Scope is H1 only. M1 source activation inside the coordinator, M2 health protection,
+M3 production source-off/drain and Q1 unexpected-response policy remain separate work.
+Production 1.1.0 and the separate CPI Excel preservation issue are unchanged.

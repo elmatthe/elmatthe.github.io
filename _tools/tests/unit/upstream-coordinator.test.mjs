@@ -118,6 +118,277 @@ const refused = async (r, expected, retryAfter) => {
   if (retryAfter !== undefined) assert.equal(r.headers.get("retry-after"), String(retryAfter));
 };
 
+/* ---------------- R4. unresolved outcomes survive loss of memory ---------------- */
+for (const seconds of [3600, 172800]) {
+  test(`H1: failed ${seconds}s stop persistence stays quarantined after immediate restart and storage recovery`, async () => {
+    const w = world({ limits: { upstreamMinSpacingMs: 0 } });
+    const answer = w.isolate().ask("AAPL");
+    await until(() => w.starts.length === 1, "durably admitted");
+    const admitted = w.storage.peek();
+    w.storage.failWrites = true;
+    w.held.shift().status(429, { "Retry-After": String(seconds) });
+    const first = await answer;
+    w.coordinator.restart();
+    w.storage.failWrites = false;
+    await w.clock.jump(40 * 86400000); // neither budget nor any possible cooldown remains
+    let settled = false;
+    const pending = w.isolate().ask("MSFT").finally(() => { settled = true; });
+    await until(() => settled || w.starts.length === 2, "restart admits or refuses");
+    releaseAll(w); // allow the vulnerable R3 implementation to finish, then assert it was unsafe
+    const next = await pending;
+    assert.equal(next.status, 503);
+    await refused(next, "busy", 60);
+    assert.equal(w.starts.length, 1, "the unsafe second upstream request NEVER occurs");
+    assert.equal(first.status, 503, "an uncommitted stop is not reported as confirmed");
+    assert.equal(admitted.unresolved.length, 1, "the admission had a durable marker before fetch");
+    assert.equal(w.storage.peek().unresolved.length, 1);
+    assert.equal((await w.isolate().health()).upstream.state, "unverified");
+  });
+}
+
+test("H1: live observed refusal can be finalized when storage recovers, without counting SQL failure as a provider failure", async () => {
+  const w = world({ limits: { upstreamMinSpacingMs: 0 } });
+  const first = w.isolate().ask("AAPL");
+  await until(() => w.starts.length === 1, "admission");
+  w.storage.failWrites = true;
+  w.held.shift().status(429, { "Retry-After": "3600" });
+  await refused(await first, "busy", 60);
+  assert.equal(w.storage.peek().unresolved.length, 1);
+  w.storage.failWrites = false;
+  await refused(await w.isolate().ask("MSFT"), "upstream_rate_limited", 3600);
+  assert.equal(w.storage.peek().failures, 0);
+  assert.deepEqual(w.storage.peek().unresolved, []);
+  assert.equal(w.storage.peek().cooldownUntil, NOW + 3600000);
+  assert.equal(w.starts.length, 1);
+  w.coordinator.restart();
+  await refused(await w.isolate().ask("SPY"), "upstream_rate_limited", 3600);
+});
+
+for (const status of [200, 302, 400, 401, 403, 404, 429, 503]) {
+  test(`H1: HTTP ${status} always durably finalizes its marker, including unchanged failure count`, async () => {
+    const w = world({ limits: { upstreamMinSpacingMs: 0 } });
+    const first = w.isolate().ask("AAPL");
+    await until(() => w.starts.length === 1, "admission");
+    assert.equal(w.storage.peek().unresolved.length, 1);
+    const writes = w.storage.writes;
+    if (status === 200) w.held.shift().ok(); else w.held.shift().status(status);
+    await first;
+    assert.equal(w.storage.writes, writes + 1, "finalization is required even without another state change");
+    assert.deepEqual(w.storage.peek().unresolved, []);
+    w.coordinator.restart();
+    assert.notEqual((await w.isolate().health()).upstream.state, "unverified");
+  });
+}
+
+for (const refusalFirst of [false, true]) {
+  test(`H1: two in-flight outcomes preserve one another's markers and stop (refusal first: ${refusalFirst})`, async () => {
+    const w = world({ limits: { upstreamMinSpacingMs: 0 } });
+    const answers = await w.enter(w.isolate(), ["AAPL", "MSFT"]);
+    await until(() => w.starts.length === 2, "two authorized requests");
+    const markers = w.storage.peek().unresolved;
+    assert.equal(markers.length, 2);
+    assert.notEqual(markers[0].id, markers[1].id);
+    const first = refusalFirst ? 1 : 0;
+    if (refusalFirst) w.held[1].status(429, { "Retry-After": "3600" }); else w.held[0].ok();
+    await answers[first];
+    assert.equal(w.storage.peek().unresolved.length, 1);
+    assert.ok(markers.some(m => m.id === w.storage.peek().unresolved[0].id));
+    if (refusalFirst) w.held[0].ok(); else w.held[1].status(429, { "Retry-After": "3600" });
+    await answers[1 - first];
+    assert.deepEqual(w.storage.peek().unresolved, []);
+    assert.equal(w.storage.peek().cooldownUntil, NOW + 3600000);
+    await refused(await w.isolate().ask("SPY"), "upstream_rate_limited", 3600);
+    assert.equal(w.starts.length, 2);
+  });
+}
+
+test("H1: only a fresh owner identifier resolves restart uncertainty; failed transaction and old identifiers do not", async () => {
+  const env = { UPSTREAM_REACTIVATION_ID: "before-uncertainty" };
+  const w = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: env });
+  await w.isolate().health();
+  const answer = w.isolate().ask("AAPL");
+  await until(() => w.starts.length === 1, "admission");
+  w.storage.failWrites = true;
+  w.held.shift().status(429, { "Retry-After": "172800" });
+  await answer;
+  w.coordinator.restart();
+  w.storage.failWrites = false;
+  await refused(await w.isolate().ask("MSFT"), "busy", 60);
+  env.UPSTREAM_REACTIVATION_ID = "owner-after-drain";
+  w.storage.failReactivation = true;
+  await refused(await w.isolate().ask("SPY"), "busy", 60);
+  assert.equal(w.storage.peek().unresolved.length, 1);
+  assert.ok(!w.storage.read().seen.includes("owner-after-drain"), "failed transaction did not consume the identifier");
+  w.storage.failReactivation = false;
+  await reachable(w, "SPY");
+  assert.deepEqual(w.storage.peek().unresolved, []);
+  assert.ok(w.storage.read().seen.includes("owner-after-drain"));
+  const later = w.isolate().ask("VST");
+  await until(() => w.starts.length === 3, "later admission");
+  w.storage.failWrites = true;
+  w.held.shift().status(429, { "Retry-After": "3600" });
+  await later;
+  w.coordinator.restart();
+  w.storage.failWrites = false;
+  for (const id of ["before-uncertainty", "owner-after-drain"]) {
+    env.UPSTREAM_REACTIVATION_ID = id;
+    await refused(await w.isolate().ask("SAP.DE"), "busy", 60);
+  }
+  assert.equal(w.starts.length, 3);
+});
+
+test("H1: reactivation history without its state row is inconsistent, not pristine", async () => {
+  const storage = memoryStorage();
+  storage.reactivate({ cooldownUntil: 0, cooldownCode: null, haltCode: null, failures: 0, starts: [], unresolved: [] }, "previous-owner");
+  storage.corrupt(null);
+  const w = world({ storage, coordinatorEnv: { UPSTREAM_REACTIVATION_ID: "new-owner" } });
+  await refused(await w.isolate().ask("AAPL"), "busy", 60);
+  assert.equal(w.starts.length, 0);
+  assert.equal((await w.isolate().health()).upstream.state, "unverified");
+  assert.deepEqual(storage.read().seen, ["previous-owner"]);
+});
+
+test("H1: malformed and inconsistent unresolved state fails closed without owner-id repair", async () => {
+  const base = { cooldownUntil: 0, cooldownCode: null, haltCode: null, failures: 0, starts: [NOW] };
+  const marker = { id: "first", startedAt: NOW };
+  for (const unresolved of [null, {}, [null], [{ id: "", startedAt: NOW }], [{ id: "bad", startedAt: -1 }], [marker, marker], [marker, { id: "second", startedAt: NOW }, { id: "third", startedAt: NOW }], [{ id: "missing-start", startedAt: NOW + 1 }]]) {
+    const storage = memoryStorage();
+    storage.corrupt({ ...base, unresolved });
+    const w = world({ storage, coordinatorEnv: { UPSTREAM_REACTIVATION_ID: "cannot-repair" } });
+    let settled = false;
+    const answer = w.isolate().ask("AAPL").finally(() => { settled = true; });
+    await until(() => settled || w.starts.length > 0, "malformed storage must be refused");
+    releaseAll(w);
+    const response = await answer;
+    assert.equal(response.status, 503, JSON.stringify(unresolved));
+    await refused(response, "busy", 60);
+    assert.equal(w.starts.length, 0);
+    assert.deepEqual(storage.peek().unresolved, unresolved);
+  }
+});
+
+test("H1: recovered sibling finalization commits the known refusal without losing either request's outcome", async () => {
+  const w = world({ limits: { upstreamMinSpacingMs: 0 } });
+  const answers = await w.enter(w.isolate(), ["AAPL", "MSFT"]);
+  await until(() => w.starts.length === 2, "both admissions");
+  w.storage.failWrites = true;
+  w.held[0].status(429, { "Retry-After": "3600" });
+  await refused(await answers[0], "busy", 60);
+  assert.equal(w.storage.peek().unresolved.length, 2, "the failed transaction erased no marker");
+  w.storage.failWrites = false;
+  w.held[1].ok();
+  assert.equal((await answers[1]).status, 200);
+  assert.deepEqual(w.storage.peek().unresolved, []);
+  assert.equal(w.storage.peek().cooldownUntil, NOW + 3600000);
+  w.coordinator.restart();
+  await refused(await w.isolate().ask("SPY"), "upstream_rate_limited", 3600);
+  assert.equal(w.starts.length, 2);
+});
+
+test("H1: network rejection is finalized as unavailable; SQL rejection stays unverified", async () => {
+  for (const failWrites of [false, true]) {
+    const w = world({ limits: { upstreamMinSpacingMs: 0 } });
+    const first = w.isolate().ask("AAPL");
+    await until(() => w.starts.length === 1, "admission");
+    w.storage.failWrites = failWrites;
+    w.held.shift().reject(new TypeError("synthetic network failure"));
+    await refused(await first, failWrites ? "busy" : "upstream_unavailable");
+    assert.equal(w.storage.peek().unresolved.length, failWrites ? 1 : 0);
+    assert.equal(w.storage.peek().failures, failWrites ? 0 : 1);
+    w.storage.failWrites = false;
+    if (failWrites) {
+      w.coordinator.restart();
+      await refused(await w.isolate().ask("MSFT"), "busy", 60);
+      assert.equal(w.starts.length, 1);
+    }
+  }
+});
+
+test("H1: an identifier observed while a request is active cannot clear its later aborted unknown outcome", async () => {
+  const env = {};
+  const w = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: env });
+  const gone = new AbortController();
+  const first = w.isolate().ask("AAPL", { signal: gone.signal });
+  await until(() => w.starts.length === 1, "admission");
+  env.UPSTREAM_REACTIVATION_ID = "observed-while-active";
+  assert.equal((await w.isolate().health()).upstream.state, "ok", "healthy current-instance concurrency is not uncertainty");
+  assert.equal(w.storage.peek().unresolved.length, 1, "reactivation never erases an active admission");
+  gone.abort();
+  assert.equal((await first).status, 499);
+  await until(() => w.storage.peek().unresolved.length === 1, "unknown marker remains");
+  w.coordinator.restart();
+  await w.clock.jump(40 * 86400000);
+  await refused(await w.isolate().ask("MSFT"), "busy", 60);
+  assert.equal(w.starts.length, 1);
+});
+
+test("H1: an unexpected outcome-processing exception cannot orphan an admission in the live instance", async () => {
+  const storage = memoryStorage();
+  let calls = 0;
+  const core = new UpstreamCoordinatorCore({ storage, log: () => {}, limits: { upstreamMinSpacingMs: 0 }, fetchImpl: async () => {
+    calls += 1;
+    return { status: 429, headers: { get() { throw new Error("synthetic outcome-processing failure"); } } };
+  } });
+  await assert.rejects(core.fetchChart({ kind: "quote", symbol: "AAPL", client: "first" }), /synthetic outcome-processing failure/);
+  assert.equal(core.status().state, "unverified");
+  assert.equal((await core.fetchChart({ kind: "quote", symbol: "MSFT", client: "second" })).code, "coordinator_unavailable");
+  assert.equal(storage.peek().unresolved.length, 1);
+  assert.equal(calls, 1);
+});
+
+test("H1: a timeout quarantines immediately even when transport ignores abort", async () => {
+  const storage = memoryStorage();
+  let finish;
+  let calls = 0;
+  const core = new UpstreamCoordinatorCore({ storage, log: () => {}, limits: { upstreamTimeoutMs: 5, upstreamMinSpacingMs: 0 }, fetchImpl: () => {
+    calls += 1;
+    return new Promise(resolve => { finish = resolve; });
+  } });
+  const pending = core.fetchChart({ kind: "quote", symbol: "AAPL", client: "first" });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(core.status().state, "unverified");
+  assert.equal((await core.fetchChart({ kind: "quote", symbol: "MSFT", client: "second" })).code, "coordinator_unavailable");
+  assert.equal(calls, 1);
+  assert.equal(storage.peek().unresolved.length, 1);
+  finish(new Response("x", { status: 429, headers: { "Retry-After": "3600" } }));
+  assert.equal((await pending).code, "upstream_rate_limited");
+  assert.deepEqual(storage.peek().unresolved, []);
+  assert.equal(core.status().state, "cooling_down");
+});
+
+test("H1: an unexpected AbortError also means unknown outcome without a local cancel", async () => {
+  const storage = memoryStorage();
+  let t = NOW;
+  let calls = 0;
+  const build = () => new UpstreamCoordinatorCore({ storage, now: () => t, log: () => {}, fetchImpl: async () => {
+    calls += 1;
+    throw new DOMException("synthetic transport abort", "AbortError");
+  } });
+  const core = build();
+  assert.equal((await core.fetchChart({ kind: "quote", symbol: "AAPL", client: "first" })).code, "coordinator_unavailable");
+  assert.equal(storage.peek().unresolved.length, 1);
+  assert.equal(core.status().state, "unverified");
+  t += 40 * 86400000;
+  assert.equal((await build().fetchChart({ kind: "quote", symbol: "MSFT", client: "second" })).code, "coordinator_unavailable");
+  assert.equal(calls, 1);
+});
+
+test("H1: a transport ignoring timeout that later returns 429 durably preserves its actual Retry-After", async () => {
+  const storage = memoryStorage();
+  let signal;
+  const core = new UpstreamCoordinatorCore({ storage, now: () => NOW, log: () => {}, limits: { upstreamTimeoutMs: 5 }, fetchImpl: async (_url, init) => {
+    signal = init.signal;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    return new Response("x", { status: 429, headers: { "Retry-After": "3600" } });
+  } });
+  const reply = await core.fetchChart({ kind: "quote", symbol: "AAPL", client: "first" });
+  assert.equal(signal.aborted, true, "the timer did fire while the transport ignored cancellation");
+  assert.equal(reply.code, "upstream_rate_limited");
+  assert.deepEqual(storage.peek().unresolved, []);
+  assert.equal(storage.peek().cooldownUntil, NOW + 3600000);
+  assert.equal(core.status().state, "cooling_down");
+});
+
 /* ---------------- 1. overdue admission ---------------- */
 test("a ticket whose timer resumes at 20 s, after its 15 s deadline, is refused, never sent, and uses no budget (HTTP 200 and a start at 20 s on the original commit)", async () => {
   const w = world();
@@ -227,7 +498,7 @@ test("a client that never left is told the truth when its overdue work is replac
   assert.equal((await fresh).status, 200);
 });
 
-test("nobody joins work past its limits: a lost wake, or a request that never settles, cannot hold a symbol hostage", async () => {
+test("nobody joins expired queued work; an admitted request that never settles quarantines the source", async () => {
   // A reservation whose wake never comes, and whose client's cancellation was lost.
   const queued = world({ limits: { upstreamInFlight: 1 } });
   const a = queued.isolate();
@@ -262,8 +533,10 @@ test("nobody joins work past its limits: a lost wake, or a request that never se
   await until(() => stuckStarts.length === 1, "stuck start");
   await clock.jump(31);
   const reply = await stub.fetchChart({ kind: "quote", symbol: "AAPL", client: "next" });
-  assert.equal(typeof reply.text, "string");
-  assert.equal(stuckStarts.length, 2);
+  assert.equal(reply.code, "coordinator_unavailable");
+  assert.equal(stuckStarts.length, 1, "lease expiry never forgets an unknown provider outcome");
+  assert.equal(coordinator.storage.peek().unresolved.length, 1);
+  assert.equal((await stub.status()).state, "unverified");
   assert.equal((await Promise.race([never, Promise.resolve("still waiting")])), "still waiting");
 });
 
@@ -419,17 +692,17 @@ test("only a real success ends a run of failures; a refusal that names no wait s
   assert.equal(healthy.storage.peek().cooldownUntil, 0, "a success between them ended the run");
 });
 
-test("the third timeout says how long the breaker it opened really lasts", async () => {
+test("an upstream timeout retains an unknown outcome and prevents all further starts", async () => {
   const w = world({ limits: { upstreamMinSpacingMs: 0, upstreamTimeoutMs: 5 } });
   const a = w.isolate();
-  const waits = [];
-  for (const symbol of ["AAPL", "MSFT", "SPY"]) {
-    const answer = await a.ask(symbol);
-    assert.equal(answer.status, 504);
-    await refused(answer, "upstream_timeout");
-    waits.push(answer.headers.get("retry-after"));
-  }
-  assert.deepEqual(waits, ["30", "30", String(COOLDOWN_SECONDS.upstream_unavailable)]);
+  await refused(await a.ask("AAPL"), "busy", 60);
+  assert.equal(w.storage.peek().unresolved.length, 1);
+  await refused(await a.ask("MSFT"), "busy", 60);
+  assert.equal(w.starts.length, 1, "timeout does not establish what the provider actually did");
+  w.coordinator.restart();
+  await w.clock.jump(40 * 86400000);
+  await refused(await w.isolate().ask("SPY"), "busy", 60);
+  assert.equal(w.starts.length, 1);
 });
 
 test("a stop is recorded the moment the refusal arrives, even if the body of the refusal never ends", async () => {
@@ -764,7 +1037,7 @@ test("a stop that cannot be written still holds; everything is refused until it 
   await until(() => w.starts.length === 1, "start");
   w.storage.failWrites = true; // the admission was written; the refusal cannot be
   w.held.shift().status(429, { "Retry-After": "3600" });
-  await refused(await stopped, "upstream_rate_limited", 3600);
+  await refused(await stopped, "busy", 60);
   assert.equal(w.storage.peek().cooldownUntil, 0, "not on disk yet");
   await refused(await a.ask("MSFT"), "busy", 60);
   assert.equal((await a.health()).upstream.state, "unverified");

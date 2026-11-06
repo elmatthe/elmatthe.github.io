@@ -243,11 +243,12 @@ test("mismatched, malformed and invalid upstream answers are refused (fail close
   }
 });
 
-test("upstream timeout: bounded, reported as upstream_timeout", async () => {
+test("upstream timeout: bounded, reported as busy because the provider outcome is unknown", async () => {
   const { get } = setup({ mode: { hang: true }, limits: { upstreamTimeoutMs: 30 } });
   const r = await get(quote("AAPL"));
-  assert.equal(r.status, 504);
-  assert.equal(r.body.error.code, "upstream_timeout");
+  assert.equal(r.status, 503);
+  assert.equal(r.body.error.code, "busy");
+  assert.equal(r.body.error.retryAfterSeconds, 60);
   assert.equal(r.body.error.retryable, true);
   assert.equal(LIMITS.upstreamTimeoutMs, 8000);
 });
@@ -668,20 +669,19 @@ test("B2: failed upstream requests give their place back", async () => {
   assert.equal((await b).status, 200);
 });
 
-test("B2: a place held by a request that can never finish (its context ended) is reclaimed", async () => {
+test("B2/H1: a request that never settles quarantines its expired place", async () => {
   const { clock, starts, ask, held } = heldGateway({ limits: { upstreamInFlight: 1, upstreamMinSpacingMs: 100, upstreamTimeoutMs: 1000 }, ignoreAbort: true });
   const stuck = new AbortController(); // ended below, so its real-time watchdog ends
   const never = ask("AAPL", { signal: stuck.signal }); // never answered
   await until(() => starts.length === 1, "first start");
-  held.shift(); // nothing will ever settle this request, and it ignores its abort
+  const lost = held.shift(); // the request ignores its abort
   assert.equal(clock.pending(), 0);
   await clock.advance(LIMITS.upstreamQueueMaxWaitMs - 1000);
-  const next = ask("MSFT");
-  await until(() => starts.length === 2, "the lost place to be reclaimed");
-  held.shift().ok();
-  assert.equal((await next).status, 200);
+  assert.equal((await ask("MSFT")).status, 503);
+  assert.equal(starts.length, 1, "a deadline cannot prove the provider outcome");
   stuck.abort();
   assert.equal((await never).status, 499);
+  lost.ok(); // settle the test-owned request and its watchdog
 });
 
 test("B2: a client that goes away while queued leaves the queue at once; no upstream request is sent for it", async () => {
@@ -708,7 +708,7 @@ test("B2: a client that goes away while queued leaves the queue at once; no upst
   await Promise.all(first);
 });
 
-test("B2: shared (coalesced) work is cancelled only when every client has gone; an in-flight request is aborted without counting as an outage", async () => {
+test("B2/H1: shared work continues for remaining clients; an admitted abort quarantines", async () => {
   const { clock, held, starts, ask, askAll, gw, bound } = heldGateway();
   const blockers = await askAll(["AAPL", "MSFT"]);
   await until(() => starts.length === 1, "first start");
@@ -729,18 +729,17 @@ test("B2: shared (coalesced) work is cancelled only when every client has gone; 
   assert.equal((await stays).status, 200);
   await Promise.all(blockers);
 
-  // Everyone leaves an in-flight request: it is aborted and the source is not blamed.
+  // Everyone leaves an in-flight request: its unknown outcome cannot reopen access.
   await clock.advance(LIMITS.upstreamMinSpacingMs);
-  for (let i = 0; i < 4; i += 1) {
-    const c = new AbortController();
-    const r = ask(["VST", "SAP.DE", "VOD.L", "7203.T"][i], { signal: c.signal });
-    await clock.advance(LIMITS.upstreamMinSpacingMs + LIMITS.upstreamQueuePollMs);
-    await until(() => starts.length === 4 + i, "in-flight");
-    c.abort();
-    assert.equal((await r).status, 499);
-  }
+  const c = new AbortController();
+  const r = ask("VST", { signal: c.signal });
+  await until(() => starts.length === 4, "in-flight");
+  c.abort();
+  assert.equal((await r).status, 499);
+  assert.equal((await ask("SAP.DE")).status, 503);
+  assert.equal(starts.length, 4);
   const h = await gw.handle(new Request(`${BASE}/v1/health`, { headers: { Origin: ORIGIN } }), bound);
-  assert.equal((await h.json()).upstream.state, "ok", "client cancellations are not upstream failures");
+  assert.equal((await h.json()).upstream.state, "unverified", "client cancellation cannot establish an upstream outcome");
 });
 
 test("B2: a cooldown that starts while requests are queued stops them; none of them is sent", async () => {

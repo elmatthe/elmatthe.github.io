@@ -149,7 +149,39 @@ admitted and started in one uninterrupted step: every check, the write of the st
 `fetch()` call happen together, so no stop can be recorded between the decision and the
 start. The coordinator makes the request itself because a permission granted to a Worker could
 be used late. The runtime also holds an outgoing `fetch()` until earlier writes are confirmed,
-and discards it if a write fails (Cloudflare, "Durable Objects: Easy, Fast, Correct").
+and discards it if a write fails (Cloudflare, [output-gate documentation](https://developers.cloudflare.com/durable-objects/best-practices/rules-of-durable-objects/)).
+
+**Durable outcome lifecycle (R4).** Each admission appends a unique unresolved marker
+(`id`, `startedAt`) to the same SQLite state row as its rolling-budget start. This single
+statement is atomic and precedes `fetch()` without an intervening `await`; output gates
+remain enabled. At most two markers exist. Every observed outcome writes the row again,
+removing only its own marker together with the resulting failure counter, cooldown and halt.
+This includes HTTP 200 when the counter is already zero, 404, redirects and other refusals
+that cause no protective-state change. No response is trusted or cached before finalization.
+
+If finalization throws, the current caller gets HTTP 503 `busy`, `Retry-After: 60`, and health
+is `degraded` / `upstream.state: "unverified"`. Public responses and logs contain no SQL error
+details. The live instance keeps the observed outcome in memory and retries its merged state
+write on subsequent use; only a successful durable write permits further admission. A second
+completion includes the first completion's protective state and preserves every other marker.
+There is no polling or upstream retry for recovery.
+
+On object initialization, every persisted marker represents a lost outcome and quarantines
+upstream access. Successful writes, health checks, elapsed budgets, expired deadlines and
+leases, eviction and full runtime restart cannot remove it. The current instance distinguishes
+its own active markers from inherited ones, so two healthy requests can still run concurrently.
+An admitted cancellation, timeout or unknown abort retains its marker; queued cancellation
+continues to use no budget. Network errors without an abort finalize the ordinary unavailable
+outcome and breaker counter. A subsequently observed complete response may finalize its actual
+outcome, including a late refusal; cancellation cannot recall provider work already sent.
+
+Migration adds `unresolved` to the existing row without renaming the class or namespace or
+changing reactivation history. Existing R3 starts cannot establish completed outcomes: a
+nonempty legacy start list migrates to one conservative unresolved marker and requires owner
+review. Empty/new state migrates cleanly. Malformed JSON, duplicate markers, more than two
+markers or markers inconsistent with recorded starts fail closed; reactivation cannot repair
+malformed state. Owner-ID history without its state row is also rejected as inconsistent.
+Never downgrade to R3 code that ignores unresolved markers.
 
 **`UPSTREAM_REACTIVATION_ID` (owner only).** A non-sensitive variable, read by the coordinator
 from its own settings; no request can supply it. Exactly:
@@ -160,10 +192,21 @@ from its own settings; no request can supply it. Exactly:
   halt, a value set before a halt began cannot end it, and a rollback that restores an older
   value cannot end one.
 - An empty or malformed value does nothing, and removing the value does nothing.
-- It ends **only a halt**. An ordinary cooldown still runs to its deadline, including one
-  recorded while the source was halted.
+- It ends a halt and explicitly resolves inherited/unknown outcomes. An ordinary cooldown
+  still runs to its deadline, including one recorded while halted. Active local work cannot
+  be cleared while a quarantine exists. The consumed identifier and every clearance share
+  one transaction; failure preserves both quarantine and replay protection.
 
-To reactivate: read `/v1/health`, then set a new value in the dashboard (Settings → Variables
+For an unresolved outcome, automatic reconciliation is not proved safe. Keep retrieval off
+and review provider directions and operational evidence first. A provider request may still
+be executing after the coordinator stops; a local deadline or successful health check is no
+proof it ended. The owner must arrange a safe drain/reconciliation and explicitly authorize
+reopening, honoring all known provider waits or permission requirements. If that cannot be
+established, leave the source quarantined. Do not delete state, reset ID history, reuse an old
+identifier, or treat storage recovery as reconciliation. Source-off/drain deployment hardening
+remains a separate production acceptance requirement (M3).
+
+After that owner decision, read `/v1/health`, then set a fresh value in the dashboard (Settings → Variables
 and Secrets) or with `npx wrangler@4 deploy --env production --var UPSTREAM_REACTIVATION_ID:2026-11-05`,
 and read `/v1/health` again. Do not keep it in `wrangler.toml`. A later deploy that drops the
 value is harmless.
@@ -174,15 +217,10 @@ value is harmless.
   stop is recorded. Their answers can only lengthen the stop. A request admitted a moment
   before a stop can also reach the network just after it, while its write is being confirmed
   (milliseconds).
-- In-flight places are not persisted. A reset ends the object's own connections, but Yahoo may
-  still be working on them, so just after a reset it can briefly be serving up to 2 older requests
-  as well as 2 new ones. The spacing and the budget do carry across a reset.
-- If the object is reset or a write is lost in the instant between Yahoo's refusal and its
-  confirmation, that refusal is lost, and one more request may be sent; its refusal stops the
-  source again. If writes are failing, the stop holds in the running object and everything is
-  refused, but a restart before writes recover loses it. These two can coincide more easily than
-  it sounds: a used-up daily allowance lasts until 00:00 UTC, and an idle object is removed from
-  memory. The row budget below is what keeps the gateway from using up that allowance itself.
+- Persisted unresolved markers prevent fresh upstream requests after a reset. They do not
+  prove that older remote work has stopped; explicit owner recovery must account for that.
+  A known outcome held only in the terminated process is lost, so the replacement stays
+  quarantined even after storage writes recover.
 - Spacing is measured at the coordinator's decision; on the wire two starts can be a few
   milliseconds closer. Deadlines rely on Cloudflare's clock.
 - While a deployment of 1.3.0 replaces 1.1.0, old isolates still contact Yahoo by their own rules
@@ -194,7 +232,7 @@ value is harmless.
 - Identical requests at different times each use budget if the cache misses; on a `workers.dev`
   address the Cache API may be per isolate.
 - A state row that is not well formed stops the source until it is repaired, by design: there is
-  no automatic repair. The last resort is "Delete the coordinator's state" below.
+  no automatic repair. Repair requires a separately reviewed owner procedure preserving all stops and consumed IDs; deleting state is not a reactivation mechanism.
 
 Expected volume: the Rebalancer's 14-holding sample costs at most 14 requests (about 14 s
 with the 1 s spacing when nothing is cached); a Stock comparison one per ticker. The free
@@ -314,13 +352,13 @@ only; that is the kind used here. **This is from Cloudflare's documentation and
 |---|---|---|
 | 100,000 requests | one for each health request and each uncached data request; two if the client disconnects | None for cached answers or preflights. Health has no per-client limit, so anyone can spend this allowance, as with the Worker's own 100,000; when it is gone the source fails closed until 00:00 UTC and no request reaches Yahoo |
 | 13,000 GB-s of duration | 10,800 GB-s | One object at 128 MB cannot be active more than 86,400 s a day |
-| 100,000 rows written | 57,600 | At most 20 starts a minute × 1,440 minutes, one row each (measured in the real runtime), plus at most one row for each outcome. Refused requests write nothing |
+| 100,000 rows written | approximately 57,600 nominal/day | 20 starts/minute times 1,440 minutes times two row writes: admission and mandatory outcome finalization. Markers add no rows or normal-path writes. Migration, recovery retries, owner-ID transactions and other account users are additional |
 | 5,000,000 rows read | a few per wake-up | State is read once per instance and then kept in memory |
-| 5 GB stored | under 1 KB, plus one row per reactivation value | |
+| 5 GB stored | one small state payload with at most two unresolved markers, plus one row per reactivation value | Actual SQLite allocation exceeds payload size; consumed owner history is retained |
 
 Above an allowance, "further operations of that type will fail with an error", and nothing is
 billed on Workers Free. Each of those failures fails closed here: a call that fails, or a write
-that fails, means no upstream request, and clients get `busy` until 00:00 UTC. The object itself
+that fails, means no upstream request, and clients get `busy` while state cannot be durably verified. Quarantine after a lost outcome needs explicit owner recovery even after the allowance resets. The object itself
 has a soft limit of about 1,000 requests per second and answers "overloaded" above it, also
 failing closed.
 
@@ -431,22 +469,20 @@ broker. A `listing_mismatch` for a correct listing means the exchange code in
   `npx wrangler@4 deploy` (both values empty). Every data request then answers
   `source_disabled`; the tools say Yahoo Finance is switched off and use the user's other
   sources.
-- **Previous version, 1.3.0 or later:** dashboard → Deployments → Rollback, or `npx wrangler@4 rollback`.
-  The coordinator's recorded state is not rolled back: a stop stays recorded, and a reactivation
-  value that was used stays used.
+- **Previous version:** use only an R4-compatible source-off version that preserves and
+  enforces unresolved markers, stops and consumed identifiers. Code rollback does not roll
+  back SQLite state. R3 ignores the new marker column and is not a safe serving rollback.
 - **Back to a version before 1.3.0: not possible with `wrangler rollback`.** Cloudflare refuses a
   rollback across a Durable Object lifecycle change, and the older versions have known defects
   (no durable stop). Switch the source off instead (above), which needs no new code.
 - **Stop the tools from using it:** set `gateway: ""` in `_data/market_data.yml` and
   `DEFAULT_GATEWAY_URL = ""`, sync, rebuild the ZIPs and merge. The tools then contact no
   gateway.
-- **Delete the coordinator's state (last resort):** set `state = "deleted"` under
-  `[exports.UpstreamCoordinator]`, remove the binding and deploy code that does not use it. Cloudflare
-  deletes the class and its data **permanently, including any recorded stop**, so a new class would
-  know nothing of a refusal. First read `/v1/health`; if a stop is recorded, keep the source off until
-  its deadline has passed. This path has not been exercised.
-- **Delete the Worker:** `npx wrangler@4 delete --env production` in this folder. Treat this as also
-  deleting the coordinator and any recorded stop; read `/v1/health` first. Not exercised.
+- **Destructive cleanup:** deleting a class, namespace or Worker can permanently erase
+  unresolved outcomes, provider stops and consumed identifiers. It is not a recovery or
+  reactivation procedure. Do not recreate state to reopen access. Any separately authorized
+  retirement requires retrieval off and owner reconciliation; a manual halt or lost outcome
+  has no deadline that proves it is safe to resume. This path has not been exercised.
 - **Usage:** dashboard → Workers & Pages → market-data-gateway → Metrics, and Durable Objects for the coordinator.
 
 ## Local development
@@ -492,7 +528,15 @@ controls, with timers that fire late or never: overdue admission, deadlines reco
 order, halts, restart and recovery, the exact reactivation rules, unreadable, unwritable and
 malformed state, a stop while requests are queued, clients leaving, and a missing or failing
 coordinator. At every simulated start it checks that the start is already on disk and no stop is.
-`gateway-runtime.test.cjs` runs the same scenarios in the real runtime, and `wrangler deploy
+The R4 regressions include actual SQLite triggers rejecting outcome updates while allowing
+admission, both 3600-second cooldown and 172800-second halt losses, object resets and full
+persisted-runtime disposal, live recovery versus lost-outcome quarantine, failed admission,
+mandatory finalization with unchanged counters, competing success/refusal completions,
+transactional owner-ID rollback, replay, malformed markers, migration, timeout and abort.
+They assert the unsafe second upstream call never occurs. The unit clock tests retain the
+20-second late wake and exact 15,000/15,001 ms deadline boundaries with eligible capacity.
+
+`gateway-runtime.test.cjs` runs these scenarios in the real runtime, and `wrangler deploy
 --dry-run` for both configurations. Not covered locally: output gates under slow storage (local
 writes finish at once), idle eviction, Cloudflare's edge, including whether a
 real client disconnect reaches `request.signal` (the tests reach it through a service binding; a

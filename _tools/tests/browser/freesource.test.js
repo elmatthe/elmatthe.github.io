@@ -308,9 +308,13 @@ async function noHorizontalScroll(page, widths) {
     const slow = { yahoo: { hang: true }, gatewayLimits: { upstreamTimeoutMs: 200 } };
     const b = await open(browser, RB + WITH_GATEWAY, slow);
     await importHoldings(b.page, "one.csv", ["AAPL,1,100,"]);
+    const timeoutResponse = b.page.waitForResponse(r => /\/v1\/quote\?/.test(r.url()));
     await b.page.click("#rbPriceAll");
     await rbIdle(b.page);
-    check(/Yahoo Finance: did not answer in time/.test(await lineOf(b.page, 0)) && quoteCalls(b.calls).length === 1, "R7 timeout reported by the gateway: reported, not retried");
+    const timeoutBody = await (await timeoutResponse).json();
+    const timeoutLine = await lineOf(b.page, 0);
+    const timeoutState = slow.gatewayInstance.coordinator.storage.peek();
+    check(timeoutBody.error?.code === "busy" && /Yahoo Finance: unavailable/.test(timeoutLine) && quoteCalls(b.calls).length === 1 && timeoutState.starts.length === 1 && timeoutState.unresolved.length === 1, `R7 unknown timeout reported as busy: one call and one unresolved admission, no retry (${timeoutBody.error?.code}; ${quoteCalls(b.calls).length} calls; ${timeoutLine})`);
     await b.context.close();
 
     const down = { yahoo: { down: true } };

@@ -1,3 +1,46 @@
+# Handoff - PR 46 R4 durable fail-closed persistence (2026-11-05)
+
+Snapshot: Codex on HOME-PC, branch `claude/loving-brown-48hctl`, starting checkpoint
+`2ccb62bf37f60cd8b5aa9e19debb352e24b86b8b`. **R4 READY FOR INDEPENDENT RE-REVIEW.**
+This handoff accompanies the focused R4 implementation commit; resolve its SHA with Git.
+Implementation-team verification is complete; independent acceptance is still required.
+
+- Durable admission markers share the budget row before fetch. Every known outcome finalizes
+  atomically; failed writes return unverified busy and cannot populate cache. Restarted/lost
+  outcomes quarantine access until a fresh owner identifier explicitly resolves uncertainty.
+  Live known outcomes may recover durably. Timeout, abort, expiry and unexpected processing
+  exits cannot silently reclaim authorization. Existing stops and consumed IDs are preserved.
+- Final verification: **312 unit tests** (coordinator 63, including 23 H1 cases), **37 real
+  workerd/SQLite tests** including both dry-runs, and independent H1 before/after evidence.
+  Original R3 admits unsafe HTTP200 after restart; R4 returns503 with no new upstream call.
+  Python reference/parity: **134 pass, 6 deselected**, loopback-only guard proven.
+- Private **Full / All PASS**, including final TMP/TEMP redirection into the repository:
+  tracked browser 744, private browser flows, widgets 180 PASS + 1 existing Monte Carlo XFAIL,
+  real input 10 PASS + 2 Excel cases deselected. Packaging, synchronization, workbook and strict
+  site build checks pass; network ledger has no problems. Workerd was run separately.
+- First Full FAIL retained under `files/r4/full-gate-first/`: mobile timing and date-sensitive
+  stock assertion, obsolete timeout expectation, two widget ledger JSON-read errors. Mobile
+  and widget cases passed unchanged on recheck. Owner authorized the precise stock assertion
+  derived from intercepted synthetic prices; ticker exclusion is retained. Subsequent Full
+  runs pass; private gate source and expected artifacts were not changed.
+- Private report: `files/dev-work/pr46-verification-gate/reports/R4-IMPLEMENTATION-<SHA>.md`;
+  evidence `files/r4/`. The report records publication and exact-SHA GitHub CI status.
+  User-owned `.gitignore` remains byte-for-byte unchanged and must never be staged.
+- M1 coordinator activation, M2 health protection, M3 production drain and Q1 response policy
+  remain open. Separate CPI Excel preservation remains FAIL (canonical workbook unchanged).
+  Existing Monte Carlo UX, accessibility, macOS/scaling and launcher gaps remain separate.
+  Production 1.1.0 is untouched. No deployment, merge, activation, release or tag occurred.
+
+Next action: fresh independent Codex review of the pushed R4 SHA, repeating the synthetic
+SQLite stop-write failure, immediate object reset and persisted-runtime restart scenarios,
+owner-ID rollback/replay and original B2/B3 tests. Check exact-SHA CI before acceptance.
+Do not merge, mark the draft ready, deploy or activate retrieval under this checkpoint.
+
+---
+
+Historical R3 handoff follows; its readiness claims are superseded by the R3 H1 FAIL and R4
+checkpoint above.
+
 # Handoff — Yahoo Finance gateway activation and ordered source list (2026-11-04)
 
 ## Current state: B2 and B3 redone with one coordinator (R3); ready for independent re-review
