@@ -4,11 +4,12 @@ project: stock
 kind: tool
 title: Stock Comparison & Analytics Tool
 permalink: /projects/stock-data-dashboard-tool/
-summary: Compare 2–10 stocks, ETFs, or funds in your browser using your own CSV price files or live prices from your free Alpha Vantage key, with returns, risk, correlation, regression, official-rate currency normalization, and XLSX/CSV export; plus a downloadable desktop app.
+summary: Compare 2–10 stocks, ETFs, or funds in your browser with prices from Yahoo Finance (no key needed), your own Alpha Vantage key, or your own CSV files, with returns, risk, correlation, regression, official-rate currency normalization, and XLSX/CSV/JSON export; plus a downloadable desktop app.
 lede: Compare stocks, ETFs, and indexes on return, risk, correlation, and regression. Use the web app below instead of installing anything, or download the desktop program for Excel/CSV/JPG exports and rolling-window charts.
-last_updated: 2026-11-02
+last_updated: 2026-11-04
 page_css:
   - /assets/css/stock-dashboard.css
+  - /assets/css/market-sources.css
 vendor_js:
   # Chart.js 4.4.2 (MIT), self-hosted: dist/chart.umd.js copied unmodified from the npm
   # tarball (tarball sha512 matched the registry). Update the file and hash together.
@@ -41,19 +42,19 @@ sections:
 
 <section class="pj-section" id="web-app" aria-labelledby="web-app-h">
   <h2 id="web-app-h">Web app</h2>
-  <p>Everything runs in this page and nothing is uploaded. Choose where prices come from: <strong>your CSV files</strong> (no account needed), <strong>live prices with your own free Alpha Vantage key</strong>, or the <strong>offline demo</strong> with synthetic prices.</p>
-<div id="sdd-app" class="sdd-app" data-theme="dark">
+  <p>Everything runs in this page and nothing is uploaded. Choose where prices come from: <strong>market data</strong> from your list of sources (Yahoo Finance with no key, and Alpha Vantage if you add your own key, tried in the order you choose in Settings), <strong>your CSV files</strong> (no account needed), or the <strong>offline demo</strong> with synthetic prices.</p>
+<div id="sdd-app" class="sdd-app" data-theme="dark" data-market-gateway="{{ site.data.market_data.gateway }}">
   <div class="sdd-shell">
     <header class="sdd-masthead">
       <div class="sdd-brand">
         <h2>Stock Comparison &amp; Analytics</h2>
-        <p>Runs in your browser · your CSV files, your Alpha Vantage key, or a demo · official exchange rates</p>
+        <p>Runs in your browser · Yahoo Finance with no key, your own Alpha Vantage key, your CSV files, or a demo · official exchange rates</p>
       </div>
-      <aside class="sdd-status-widget" aria-label="Live data status">
-        <strong>Live prices <span id="sddPipelineState" class="sdd-pill idle">Off</span></strong>
-        <span id="sddPipelineDetail">Add your free Alpha Vantage key in Settings.</span>
+      <aside class="sdd-status-widget" aria-label="Market data status">
+        <strong>Market data <span id="sddPipelineState" class="sdd-pill idle">Checking</span></strong>
+        <span id="sddPipelineDetail">Checking your sources…</span>
         <small id="sddCacheState">Cache: 0 saved responses</small>
-        <button id="sddOpenSettings" type="button" class="secondary">Live data settings</button>
+        <button id="sddOpenSettings" type="button" class="secondary">Market data sources</button>
       </aside>
     </header>
   </div>
@@ -71,7 +72,8 @@ sections:
         <form id="sddCompareForm" class="sdd-form" novalidate>
           <fieldset class="sdd-fieldset">
             <legend>Data source</legend>
-            <label class="sdd-choice"><input type="radio" name="source" value="live" checked> Live · your Alpha Vantage key</label>
+            <label class="sdd-choice"><input type="radio" name="source" value="market" checked> Market data · your sources in order <span id="sddFreeState" class="muted">(checking…)</span></label>
+            <p id="sddSourceOrder" class="muted sdd-source-order"></p>
             <label class="sdd-choice"><input type="radio" name="source" value="csv"> Your CSV files</label>
             <label class="sdd-choice"><input type="radio" name="source" value="demo"> Offline demo · synthetic prices</label>
             <div id="sddCsvField" class="sdd-field" hidden>
@@ -85,7 +87,7 @@ sections:
             <div id="sddTickerList" class="sdd-ticker-list"></div>
             <div class="sdd-actions">
               <button id="sddAddTicker" type="button" class="secondary">Add ticker</button>
-              <small class="muted">Stocks, ETFs, or funds. TSX listings use .TO (XIU.TO), TSX-V .V. Live data has no market indexes (^GSPC); use an index ETF such as SPY or XIU.TO, or import index prices from a CSV file.</small>
+              <small class="muted">Stocks, ETFs, or funds. TSX listings use .TO (XIU.TO), TSX-V .V. Market data has no market indexes (^GSPC); use an index ETF such as SPY or XIU.TO, or import index prices from a CSV file.</small>
             </div>
           </fieldset>
           <div class="sdd-field">
@@ -133,7 +135,7 @@ sections:
               <tbody></tbody>
             </table>
           </div>
-          <p class="muted">Annualized figures extrapolate the average log return to a year (252 periods for daily prices, 52 for weekly, 12 for monthly), so they overstate what short horizons can tell you. Live data uses daily closes (as traded, not adjusted) for windows up to about four months and weekly adjusted closes for longer ones.</p>
+          <p class="muted">Annualized figures extrapolate the average log return to a year (252 periods for daily prices, 52 for weekly, 12 for monthly), so they overstate what short horizons can tell you. Yahoo Finance gives daily prices for every horizon. Alpha Vantage gives daily closes (as traded, not adjusted) for windows up to about four months and weekly adjusted closes for longer ones; one comparison never mixes daily and weekly prices, so a source that would is skipped for that run, with the reason shown.</p>
           <div id="sddCompareWarnings"></div>
         </div>
         <div class="sdd-grid">
@@ -170,7 +172,7 @@ sections:
           </div>
           <div class="sdd-actions"><button id="sddSnapshotRun" type="submit">Load snapshot</button></div>
         </form>
-        <p id="sddSnapshotStatus" class="sdd-status" role="status" aria-live="polite">Shows the latest price and one year of history for a ticker (live with your key, from your imported CSV files, or a demo ticker such as DEMO-GROWTH).</p>
+        <p id="sddSnapshotStatus" class="sdd-status" role="status" aria-live="polite">Shows the latest price and one year of history for a ticker, both from the first source in your list that has them (Yahoo Finance by default), from your imported CSV files, or for a demo ticker such as DEMO-GROWTH.</p>
         <div id="sddSnapshotNotice" class="sdd-notice" role="alert" hidden></div>
         <div id="sddSnapshotResult" class="sdd-grid" hidden>
           <div class="sdd-card"><h4 id="sddSnapshotTitle">Snapshot</h4><dl id="sddSnapshotIdentity"></dl></div>
@@ -203,9 +205,19 @@ sections:
           <div class="sdd-field"><label for="sddTheme">Theme</label><select id="sddTheme"><option value="dark">Dark (site default)</option><option value="light">Light</option><option value="system">Match system</option></select></div>
         </div>
       </div>
+      <div class="sdd-panel" id="sddSourcesPanel">
+        <h3 id="sddYahooH">Yahoo Finance — Free Market Data</h3>
+        <p>Prices are retrieved automatically from Yahoo Finance through this site's data gateway and briefly cached for faster access. No account or key is needed. Quotes may be delayed, incomplete, or differ from official exchange data. This information is for research and planning, not financial advice.</p>
+        <p>For more sources, add your own provider API key and choose the order in which sources are tried.</p>
+        <p id="sddFreeSourceState" class="muted" role="status" aria-live="polite">Yahoo Finance: checking…</p>
+        <div class="sdd-actions"><button id="sddFreeRecheck" type="button" class="secondary" hidden>Check again</button></div>
+        <h4 id="sddSourcesH">Your sources, in the order they are tried</h4>
+        <p class="muted">For each ticker, the first source that can give its price history is used; the next is tried only if it cannot (it does not cover the exchange, has no data, cannot confirm the listing or currency, or is limited). This list is shared with the Portfolio Rebalancer on this site.</p>
+        <div id="sddSources" aria-labelledby="sddSourcesH"></div>
+      </div>
       <div class="sdd-panel">
-        <h3>Live prices with your own key (optional)</h3>
-        <p class="muted">Live prices use <strong>your own</strong> free <a href="https://www.alphavantage.co/support/#api-key">Alpha Vantage API key</a>. It covers US and TSX/TSX-V stocks and ETFs and some US mutual funds, but not market indexes; the free plan allows 25 requests per day, and its terms allow personal, non-commercial use. Fetched prices stay in this browser, and this page never sends your key or data anywhere except Alpha Vantage.</p>
+        <h3>Alpha Vantage with your own key (optional)</h3>
+        <p class="muted">An optional extra source: <strong>your own</strong> free <a href="https://www.alphavantage.co/support/#api-key">Alpha Vantage API key</a>. Saving it switches Alpha Vantage on below Yahoo Finance in your list; move it up to try it first. It covers US and TSX/TSX-V stocks and ETFs and some US mutual funds, but not market indexes; the free plan allows 25 requests per day, and its terms allow personal, non-commercial use. Fetched prices stay in this browser, and this page never sends your key or data anywhere except Alpha Vantage.</p>
         <ul class="sdd-list">
           <li><strong>Where the key is kept:</strong> by default for this tab only (session storage; the browser forgets it when the tab closes). Tick <em>Remember on this device</em> to keep it in local storage until you press <em>Remove key</em>.</li>
           <li><strong>Where it is sent:</strong> only to <code>www.alphavantage.co</code>, inside each request's address, which is how Alpha Vantage accepts keys.</li>
@@ -229,7 +241,9 @@ sections:
       <div class="sdd-panel">
         <h3>Where the data comes from</h3>
         <ul class="sdd-list">
-          <li><strong>Live:</strong> Alpha Vantage with your key. Requests run one at a time, at least 1.2 seconds apart, across every open tab of this site. A new ticker costs two or three requests (a listing search to confirm its currency, occasionally a second search, then its prices); data saved in this browser costs none. Alpha Vantage's free plan allows 25 requests per day.</li>
+          <li><strong>Yahoo Finance:</strong> through this site's data gateway, no key (see above). One request per ticker, sent one at a time; copies saved in this browser (12 hours for history) or by the gateway are reused and labelled with their age. If Yahoo Finance asks for fewer requests, nothing more is sent to it for a while and the next source in your list is used.</li>
+          <li><strong>Alpha Vantage:</strong> with your key. Requests run one at a time, at least 1.2 seconds apart, across every open tab of this site. A new ticker costs two or three requests (a listing search to confirm its currency, occasionally a second search, then its prices); data saved in this browser costs none. Alpha Vantage's free plan allows 25 requests per day.</li>
+          <li><strong>Marketstack and Finnhub</strong> keys (added in the Portfolio Rebalancer) give latest prices only on this website, so they are never used for comparisons or snapshots here.</li>
           <li><strong>CSV:</strong> files you open are read in this browser and never uploaded.</li>
           <li><strong>Exchange rates</strong> for normalization: Bank of Canada daily averages; if those cannot be reached, the European Central Bank's reference rates. Both are official and need no key.</li>
           <li><strong>Demo:</strong> synthetic prices generated from a fixed seed; not market data.</li>
@@ -242,7 +256,7 @@ sections:
       </div>
     </section>
   </div>
-  <p class="sdd-footer-note"><strong>Disclaimer:</strong> for education and analysis only; not investment, financial, legal, or tax advice. Prices come from your own files or your own Alpha Vantage key and may be delayed, adjusted, incomplete or unavailable; check a primary source before acting.</p>
+  <p class="sdd-footer-note"><strong>Disclaimer:</strong> for education and analysis only; not investment, financial, legal, or tax advice. Prices come from Yahoo Finance, your own Alpha Vantage key or your own files and may be delayed, adjusted, incomplete or unavailable; check a primary source before acting.</p>
 </div>
 </section>
 
@@ -268,11 +282,11 @@ sections:
   <p>The two versions share a purpose, not code. Their numbers can differ slightly because they use different return conventions.</p>
   <div class="pj-table-wrap">
     <table class="pj-table">
-      <caption class="muted" style="caption-side:bottom;text-align:left;padding:.5rem .75rem;">Both use only sources you choose with your own key, or your own files. The desktop app no longer uses Yahoo Finance (<code>yfinance</code>): Yahoo's terms do not permit automated collection.</caption>
+      <caption class="muted" style="caption-side:bottom;text-align:left;padding:.5rem .75rem;">Both use one ordered list of sources you can reorder: Yahoo Finance (no key, through this site's data gateway) and providers you add with your own key; or your own files. The desktop app reaches Yahoo Finance through the same gateway (it does not use <code>yfinance</code>) and needs no browser.</caption>
       <thead><tr><th scope="col">Capability</th><th scope="col">Web app</th><th scope="col">Desktop app</th></tr></thead>
       <tbody>
         <tr><th scope="row">Install needed</th><td>None</td><td>ZIP + one launcher (sets itself up)</td></tr>
-        <tr><th scope="row">Price data</th><td>Your CSV files, or Alpha Vantage with your own key (daily or weekly adjusted)</td><td>Alpha Vantage, Marketstack or Alpaca with your own key (daily, close and adjusted close where the provider has it), or your own CSV files offline</td></tr>
+        <tr><th scope="row">Price data</th><td>Your source list: Yahoo Finance (no key; daily close and adjusted close) and Alpha Vantage with your own key (daily or weekly adjusted); or your CSV files</td><td>Your source list: Yahoo Finance (no key), and Alpha Vantage, Marketstack or Alpaca with your own key (daily, close and adjusted close where the source has it); or your own CSV files offline</td></tr>
         <tr><th scope="row">Returns</th><td>Log returns on exact shared intervals; daily, weekly or monthly</td><td>Simple or log returns; daily, weekly or monthly frequency</td></tr>
         <tr><th scope="row">Annualization</th><td>exp(mean × P) − 1; stdev × √P (P = 252, 52 or 12)</td><td>Geometric compounding of total return; stdev × √periods</td></tr>
         <tr><th scope="row">Currency normalization</th><td>Bank of Canada daily rates (ECB fallback)</td><td>Bank of Canada daily rates (latest fixing on or before each date, at most 7 days old), or <code>fx_rates.csv</code> offline</td></tr>
@@ -288,10 +302,11 @@ sections:
   <h2 id="data-h">Data sources &amp; privacy</h2>
   <ul>
     <li><strong>Your CSV files</strong> are read in your browser and never uploaded. They work with no account and no network.</li>
-    <li><strong>Live prices use your own free Alpha Vantage key.</strong> No free market-data service allows a public website to show its prices to anonymous visitors. With your own key, the data is licensed to you for personal use and stays in your browser. Coverage: US and TSX/TSX-V stocks and ETFs and some US mutual funds. Not covered: market indexes such as <code>^GSPC</code> or <code>^GSPTSE</code> (a premium feature), Canadian mutual-fund codes such as <code>TDB902</code>, and most other exchanges. Windows up to about four months use daily closes as traded (not adjusted for splits or dividends; unusually large moves are flagged); longer windows use weekly closes adjusted for splits and dividends.</li>
+    <li><strong>Yahoo Finance (no key):</strong> retrieved by this site's own data gateway, which has a fixed list of exchanges, checks every answer and caches briefly (history up to 12 hours, labelled with its age). Only ticker symbols and a period are sent, and every series shows where it came from and when. Prices may be delayed and are not official exchange data. Requests are sent one at a time; after any request to slow down, nothing more is sent to Yahoo Finance for a while.</li>
+    <li><strong>Alpha Vantage with your own key (optional).</strong> With your own key, the data is licensed to you for personal use and stays in your browser. Coverage: US and TSX/TSX-V stocks and ETFs and some US mutual funds. Not covered: market indexes such as <code>^GSPC</code> or <code>^GSPTSE</code> (a premium feature), Canadian mutual-fund codes such as <code>TDB902</code>, and most other exchanges. Windows up to about four months use daily closes as traded (not adjusted for splits or dividends; unusually large moves are flagged); longer windows use weekly closes adjusted for splits and dividends.</li>
     <li><strong>Exchange rates</strong> come from the Bank of Canada's daily averages (<a href="https://www.bankofcanada.ca/terms/">terms</a>), with the European Central Bank's reference rates as a fallback. Pairs not involving CAD are derived through CAD. Prices are converted on each date with the latest rate published on or before that date.</li>
-    <li><strong>No public relays.</strong> Earlier versions fetched Yahoo Finance through free public CORS relays. They proved unreliable, could not be verified, and Yahoo's terms do not allow that use, so they have been removed.</li>
-    <li><strong>Saved in your browser:</strong> your key (for the current tab, or until you remove it if you choose <em>Remember on this device</em>), responses fetched with it (kept under that key only and deleted when the key changes or is removed; see Settings for how long), a count of today's requests per key, and the theme. Nothing is stored on a server.</li>
+    <li><strong>No public relays.</strong> Earlier versions fetched Yahoo Finance through free public CORS relays, which proved unreliable and have been removed. The only server between this page and a price source is this site's own data gateway, which never receives your keys.</li>
+    <li><strong>Saved in your browser:</strong> your source order, your key (for the current tab, or until you remove it if you choose <em>Remember on this device</em>), responses fetched with it (kept under that key only and deleted when the key changes or is removed; see Settings for how long), a count of today's requests per key, and the theme. Nothing is stored on a server.</li>
     <li><strong>The offline demo makes no requests.</strong> Its prices are generated from a fixed seed and are clearly labelled synthetic.</li>
   </ul>
   <p class="pj-disclaimer">Informational and educational analysis only; not investment, financial, legal, or tax advice. Data may be delayed, adjusted, incomplete, or unavailable. Check a primary source before acting.</p>
@@ -300,14 +315,18 @@ sections:
 <section class="pj-section" id="help" aria-labelledby="help-h">
   <h2 id="help-h">Troubleshooting</h2>
   <details class="pj-details">
-    <summary>Live data is off or has reached its limit</summary>
+    <summary>Alpha Vantage has reached its limit</summary>
     <div class="pj-details-body">
-      <p>Live prices need your own free Alpha Vantage key (Settings tab). The free plan allows 25 requests per day: each new ticker costs about two, and results are saved in this browser for reuse. When the limit is reached, saved copies are still used and labelled, and you can switch to <strong>Your CSV files</strong> or the <strong>Offline demo</strong> at any time.</p>
+      <p>The free Alpha Vantage plan allows 25 requests per day: each new ticker costs about two, and results are saved in this browser for reuse. When the limit is reached, Alpha Vantage is skipped until 00:00 UTC and the next source in your list is used; you can also switch to <strong>Your CSV files</strong> or the <strong>Offline demo</strong> at any time.</p>
     </div>
   </details>
   <details class="pj-details">
+    <summary>Yahoo Finance is unavailable or paused</summary>
+    <div class="pj-details-body"><p>Its entry in Settings → <em>Your sources</em> says why. <em>Paused</em> means Yahoo Finance or this site's gateway asked for fewer requests: nothing more is sent to it until the pause ends, and the next source in your list is used. <em>Unavailable</em> means the gateway could not be reached; <strong>Check again</strong> asks once more. Your Alpha Vantage key, your CSV files and the offline demo keep working.</p></div>
+  </details>
+  <details class="pj-details">
     <summary>A ticker says “no data”</summary>
-    <div class="pj-details-body"><p>Use exchange suffixes for Canadian listings (<code>XIU.TO</code>, <code>.V</code> for TSX-V). Market indexes are not available with a free key; use an index ETF or import index prices from a CSV file. The rest of the comparison continues without the failed ticker.</p></div>
+    <div class="pj-details-body"><p>Use exchange suffixes for Canadian listings (<code>XIU.TO</code>, <code>.V</code> for TSX-V). Market indexes are not available from these sources; use an index ETF or import index prices from a CSV file. Each failed ticker lists every source that was tried or skipped, and why. The rest of the comparison continues without the failed ticker.</p></div>
   </details>
   <details class="pj-details">
     <summary>Charts are missing</summary>

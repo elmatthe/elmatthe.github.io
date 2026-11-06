@@ -1,6 +1,7 @@
 // Provider catalog: the five market-data providers evaluated for this site, where
 // each may be used, its plans (entitlement profiles), which exchanges it covers and
-// how a resolved instrument's symbol is written for it.
+// how a resolved instrument's symbol is written for it. The order in which sources are
+// tried is the visitor's own list (./sources.js), not a table here.
 //
 // Source of every fact: _tools/PROVIDER_MATRIX.md (checked 2026-11-03). The desktop
 // apps carry the same table in market_data/catalog.py; _tools/tests/test_market_data_parity.py
@@ -11,7 +12,7 @@
 //   unsupported not offered on this platform (reason shown in documentation)
 //   deferred    implemented and tested, not offered until a licensing question is settled
 
-export const CATALOG_VERSION = "2026-11-03.1";
+export const CATALOG_VERSION = "2026-11-04.1";
 
 const US_FAMILY = ["US", "XNYS", "XNAS", "ARCX", "BATS", "XASE"];
 export const isUsVenue = mic => US_FAMILY.includes(mic);
@@ -158,22 +159,6 @@ export const PROVIDERS = Object.freeze({
 
 export const PROVIDER_IDS = Object.keys(PROVIDERS);
 
-// Automatic routing order by market (most generous quota first among providers that
-// serve that market). Only providers the user configured, that are enabled on this
-// platform and that cover the venue are used.
-export const ROUTES = {
-  US: ["finnhub", "alpaca", "alphavantage", "marketstack", "massive"],
-  XTSE: ["alphavantage", "marketstack", "finnhub"],
-  XTSX: ["alphavantage", "marketstack", "finnhub"],
-  NEOE: ["marketstack", "finnhub"],
-  XLON: ["alphavantage", "marketstack", "finnhub"],
-  XETR: ["alphavantage", "marketstack", "finnhub"],
-  XSHG: ["alphavantage", "marketstack", "finnhub"],
-  XSHE: ["alphavantage", "marketstack", "finnhub"],
-  XBOM: ["alphavantage", "marketstack"],
-  default: ["marketstack", "finnhub"],
-};
-
 export const providerAvailable = (id, platform = "browser") => PROVIDERS[id]?.status[platform] === "enabled";
 export const providersFor = (platform = "browser") => PROVIDER_IDS.filter(id => providerAvailable(id, platform));
 
@@ -195,22 +180,4 @@ export function coverageGap(id, identity, plan) {
   if (!provider.coverage(plan).includes(identity.mic)) return `${provider.name} does not cover ${identity.venueName || identity.mic}${plan?.id === "free" || !plan ? " on the free plan" : ""}`;
   if (!provider.symbolFor(identity, plan)) return `${provider.name} has no documented symbol for this listing`;
   return null;
-}
-
-// Ordered providers to try for an instrument. `mode` is "auto" or a provider id.
-// Returns { candidates: [{ id, symbol }], skipped: [{ id, reason }] }.
-export function routeInstrument(identity, { mode = "auto", configured = [], plans = {}, platform = "browser" } = {}) {
-  const order = mode === "auto" ? (isUsVenue(identity?.mic) ? ROUTES.US : ROUTES[identity?.mic] || ROUTES.default) : [mode];
-  const candidates = [];
-  const skipped = [];
-  for (const id of order) {
-    if (!PROVIDERS[id]) continue;
-    if (!providerAvailable(id, platform)) { if (mode !== "auto") skipped.push({ id, reason: PROVIDERS[id].unsupportedReason || "not available here" }); continue; }
-    if (!configured.includes(id)) { skipped.push({ id, reason: `no ${PROVIDERS[id].name} key saved` }); continue; }
-    const plan = plans[id] || planOf(id);
-    const gap = coverageGap(id, identity, plan);
-    if (gap) { skipped.push({ id, reason: gap }); continue; }
-    candidates.push({ id, symbol: PROVIDERS[id].symbolFor(identity, plan) });
-  }
-  return { candidates, skipped };
 }

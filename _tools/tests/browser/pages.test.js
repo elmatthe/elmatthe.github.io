@@ -2,7 +2,7 @@
 // Checks rendering at desktop and phone widths, JavaScript errors, local-nav anchors, ZIP
 // links, and that the guides and non-app pages make no data requests on load.
 "use strict";
-const { SITE_URL, launch, watchNetwork, checker } = require("./harness");
+const { SITE_URL, SITE_GATEWAY, GATEWAY_ROUTE, launch, mockMarketData, watchNetwork, checker } = require("./harness");
 
 const TOOLS = [
   { page: "/projects/monte-carlo-simulator/", guide: "/projects/monte-carlo-guide/", zip: "/projects/monte-carlo-retirement-simulator.zip" },
@@ -19,8 +19,14 @@ const REDIRECTS = {
 };
 // Every script, style and chart library is served by this site: no third-party host on load.
 const ALLOWED_ON_LOAD = /^$/;
-// The Rebalancer loads official exchange rates once on load (one keyless request).
+// The Rebalancer loads official exchange rates once on load (one keyless request, answered
+// here with synthetic rates: harness.js mocks the Bank of Canada and every other host).
 const BOC_FX = /^https:\/\/www\.bankofcanada\.ca\/valet\/observations\/[A-Z,]+\/json\?recent=5$/;
+// The two market-data pages ask the site's data gateway once whether Yahoo Finance is
+// available (GET /v1/health: no price request, nothing sent to Yahoo). The harness answers
+// it with the gateway's own code, so this suite never contacts the deployed gateway.
+const GATEWAY_PAGES = ["/projects/portfolio-rebalancer/", "/projects/stock-data-dashboard-tool/"];
+const isGatewayHealth = u => GATEWAY_ROUTE.test(u) && new URL(u).pathname === "/v1/health" && !new URL(u).search;
 
 (async () => {
   const { check, done } = checker();
@@ -28,7 +34,7 @@ const BOC_FX = /^https:\/\/www\.bankofcanada\.ca\/valet\/observations\/[A-Z,]+\/
 
   for (const width of [1280, 390]) {
     const context = await browser.newContext({ viewport: { width, height: 900 } });
-    await context.route(/favicon\.ico/, r => r.fulfill({ status: 204 }));
+    const mocked = await mockMarketData(context);
     for (const tool of TOOLS) {
       for (const url of [tool.page, tool.guide]) {
         const page = await context.newPage();
@@ -67,15 +73,19 @@ const BOC_FX = /^https:\/\/www\.bankofcanada\.ca\/valet\/observations\/[A-Z,]+\/
         check(!info.stale, `${tag} has no stale names`);
         check(net.errors.length === 0, `${tag} no JavaScript errors${net.errors.length ? ": " + net.errors.join(" | ") : ""}`);
         const fxOnLoad = url === "/projects/portfolio-rebalancer/" ? net.external.filter(u => BOC_FX.test(u)) : [];
-        const unexpected = net.external.filter(u => !ALLOWED_ON_LOAD.test(u) && !fxOnLoad.includes(u));
-        check(unexpected.length === 0 && fxOnLoad.length <= 1, `${tag} no data requests on load${fxOnLoad.length ? " (one official FX request)" : ""}${unexpected.length ? ": " + unexpected.join(", ") : ""}`);
+        const healthOnLoad = GATEWAY_PAGES.includes(url) ? net.external.filter(isGatewayHealth) : [];
+        const unexpected = net.external.filter(u => !ALLOWED_ON_LOAD.test(u) && !fxOnLoad.includes(u) && !healthOnLoad.includes(u));
+        check(unexpected.length === 0 && fxOnLoad.length <= 1 && healthOnLoad.length <= 1, `${tag} no data requests on load${fxOnLoad.length ? " (one official FX request)" : ""}${healthOnLoad.length ? " (one gateway status check)" : ""}${unexpected.length ? ": " + unexpected.join(", ") : ""}`);
+        if (GATEWAY_PAGES.includes(url) && SITE_GATEWAY) check(healthOnLoad.length === 1 && healthOnLoad[0] === `${SITE_GATEWAY}/v1/health`, `${tag} asks only the site's gateway, once, whether Yahoo Finance is available (no price request on load)`);
         await page.close();
       }
     }
+    check(mocked.blocked.length === 0 && mocked.yahoo.length === 0 && mocked.ecb === 0 && !mocked.av.length && !mocked.ms.length && !mocked.fh.length, `@${width}px no other host, no price request and no fallback provider was asked${mocked.blocked.length ? ": " + mocked.blocked.join(", ") : ""}`);
     await context.close();
   }
 
   const context = await browser.newContext();
+  const redirectsAndList = await mockMarketData(context);
   const page = await context.newPage();
   for (const tool of TOOLS) {
     const response = await page.request.get(SITE_URL + tool.zip);
@@ -91,6 +101,7 @@ const BOC_FX = /^https:\/\/www\.bankofcanada\.ca\/valet\/observations\/[A-Z,]+\/
   const entries = await page.locator(".project-list > li > a").allInnerTexts();
   check(["Monte Carlo Retirement Simulator", "CPI Web Scraper", "Portfolio Rebalancer", "Stock Comparison & Analytics Tool"].every(n => entries.includes(n)), `/projects/ lists the four tools (${entries.join(", ")})`);
   check(!/TipRanks|CPI Webscraper/.test(await page.locator(".project-list").innerText()), "/projects/ entries have no stale names");
+  check(redirectsAndList.blocked.length === 0, "redirects and the project list reach no other host");
 
   await browser.close();
   process.exit(done() ? 1 : 0);

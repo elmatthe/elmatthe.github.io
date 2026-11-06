@@ -1,5 +1,23 @@
 # Stock Comparison & Analytics Tool - Changelog
 
+## v0.6.0 — 2026-11-04 (candidate; not released)
+- After independent review: Windows now gets a time-zone database (`tzdata`), without which
+  every exchange's date silently fell back to UTC there. Prices from before a listing date are
+  removed where every history source is read, before resampling. The source order in the
+  export is the one at the start of the run. A pause Yahoo Finance asks for longer than two
+  hours is honoured (up to 24 hours at a time), not cut short.
+- Data source "Market data (your source list)" replaces the single provider choice: Yahoo
+  Finance through the site's data gateway (no key; first by default), then Alpha Vantage,
+  Marketstack and Alpaca with your own keys, in the order you set under "Sources…" (Move
+  up / Move down, Alt+Up / Alt+Down, drag; on/off). Finnhub gives latest prices only and is
+  shown but never asked for history.
+- Each ticker uses the first source that can give its history; a source whose series would
+  be coarser than the analysis frequency (Alpha Vantage's weekly closes for a Daily
+  analysis) is skipped with the reason. Logs and the Settings sheet of the Excel export
+  record the source order and each series' source, with the sources tried or skipped.
+- Yahoo Finance requests go one at a time, are reused for 12 hours (history), and pause
+  after any "slow down" answer. Offline CSV mode is unchanged.
+
 ## v0.4.1 - 2026-11-02
 - Fixed London (pence) listings: yfinance reports them as `GBp`, which was upper-cased to `GBP`
   without dividing by 100, so price levels, charts, exports and FX-normalized levels were 100x

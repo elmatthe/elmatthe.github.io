@@ -24,12 +24,19 @@ def test_offline_csv_analysis_and_export(tmp_path, monkeypatch):
         monkeypatch.setattr(messagebox, name, lambda *a, **k: None)
     monkeypatch.setattr(messagebox, "askyesno", lambda *a, **k: True)
     monkeypatch.setattr(main, "RUNTIME_DIR", tmp_path / "runtime")
+    # The window checks the gateway at start-up; a unit test never reaches the live one.
+    monkeypatch.setenv("MD_GATEWAY_URL", "")
     try:
         app = main.StockAnalyticsApp()
     except tk.TclError as error:
         pytest.skip(f"no display: {error}")
-    assert app.source_var.get() == "Alpha Vantage (your key)"
-    assert "Yahoo Finance" not in main.SOURCES
+    assert app.source_var.get() == "Market data (your source list)" and main.SOURCES == ["Market data (your source list)", "Offline CSV"]
+    assert "Sources, in the order tried: 1. Yahoo Finance" in app.sources_line.cget("text")
+    app._sources_dialog()
+    dialog = app.sources_window
+    assert [dialog.tree.item(i)["values"][1] for i in dialog.tree.get_children()][0] == "Yahoo Finance"
+    assert "not used here (price history not available)" in dialog.tree.item("finnhub")["values"][3], "a quote-only source is shown as such"
+    dialog.top.destroy()
     app.source_var.set("Offline CSV")
     app.start_var.set("2024-01-01")
     app.end_var.set("2024-01-05")

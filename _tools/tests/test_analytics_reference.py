@@ -30,7 +30,7 @@ RUNNER = Path(__file__).with_name("js_engines.mjs")
 
 def run_js(cases: list) -> list:
     result = subprocess.run(["node", str(RUNNER)], input=json.dumps({"tool": "stock-analytics", "cases": cases}),
-                            capture_output=True, text=True, timeout=120, check=False)
+                            capture_output=True, text=True, encoding="utf-8", timeout=120, check=False)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 

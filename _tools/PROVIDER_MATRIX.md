@@ -2,7 +2,7 @@
 
 **Checked:** 2026-11-03, from official documentation, pricing pages, OpenAPI specifications and terms. Each fact was quoted from its source on that date.
 **Scope:** price providers for the Portfolio Rebalancer and the Stock Comparison tool, in the browser (GitHub Pages, static, the visitor's own key) and in the desktop apps (the user's own key, on their own computer).
-**Rule:** at most five provider choices; a provider is offered only where its coverage, terms and browser compatibility have been checked. "Automatic (route by market)" is a routing mode, not a sixth provider.
+**Rule:** at most five personal-key provider choices; a provider is offered only where its coverage, terms and browser compatibility have been checked. Yahoo Finance through the site's own data gateway (§10) needs no key and is an ordinary entry in the user's ordered source list (`MARKET_DATA.md` §0), position 1 by default; it is not one of the five personal-key providers. (Until 2026-11-03 the tools had an *Automatic (route by market)* mode; the user's list replaced it.)
 
 No API key was used to prepare this record. CORS was probed keyless (HTTP 401 responses still carry CORS headers). Free-plan coverage of individual non-US symbols on Marketstack and Finnhub still needs the owner's bounded live smoke test (see "Open verification" below).
 
@@ -80,7 +80,7 @@ Fixtures: `_tools/tests/fixtures/providers/alphavantage-notices.json` (verbatim 
 | Alpaca | `APCA-API-KEY-ID` and `APCA-API-SECRET-KEY` headers | **not offered in the browser** | Desktop only: stored in the tool's local `files/runtime/keys.json`, never in the ZIP. |
 | Massive | `Authorization: Bearer` header | not offered (deferred) | — |
 
-No shared or owner key exists anywhere in the site or the ZIPs. There is no proxy or relay. Keys never appear in exports, messages or logs (provider notices that echo a key are redacted).
+No shared or owner key exists anywhere in the site or the ZIPs. There is no public proxy or relay; the only server in a price path is the site's own market-data gateway for Yahoo Finance (§10), which holds no key and never receives one. Keys never appear in exports, messages or logs (provider notices that echo a key are redacted).
 
 ## 7. Licensing summary (quoted)
 
@@ -94,7 +94,7 @@ Interpretation (owner to confirm): every enabled integration fetches with the vi
 
 ## 8. Not offered (beyond the five)
 
-EODHD and Tiingo send no CORS headers and restrict display; Twelve Data's free plan is "internal non-display"; FMP needs a display agreement for Canada; yfinance/Yahoo forbids automated collection. These are not provider choices. The desktop apps no longer use yfinance by default (see `RELEASE_NOTES.md`).
+EODHD and Tiingo send no CORS headers and restrict display; Twelve Data's free plan is "internal non-display"; FMP needs a display agreement for Canada. These are not provider choices. The `yfinance` library is not used anywhere: Yahoo Finance is reached only through the site's gateway (§10), on the web and on the desktop.
 
 ## 9. Open verification (owner, with real keys)
 
@@ -106,8 +106,70 @@ Use the redacted procedure in `MARKET_DATA.md` §"Live smoke test". At most one 
 4. Alpaca (desktop): latest trade for `AAPL` on Basic shows feed IEX.
 5. The exact wording of the Alpha Vantage notice the owner saw on 2026-11-03 (never captured).
 
+## 10. Yahoo Finance through the site's data gateway (updated 2026-11-04)
+
+**Authorization (owner's statement, 2026-11-04).** The site owner confirms that their
+existing private written permission from Yahoo covers: displaying Yahoo Finance prices to
+website visitors; automated retrieval from Yahoo's chart endpoint; retrieval through a
+Cloudflare Worker; temporary caching and delivery to multiple visitors; and display of
+exchange-supplied data distributed by Yahoo. The permission itself is private: it is not
+reproduced, referenced or stored in this repository, the Worker or any answer, and no
+grant number or document is recorded here. The 2026-11-03 version of this section
+assessed Yahoo's general Terms of Service only, without that permission; it is
+superseded by the owner's statement above and is not repeated.
+
+**Activation remains explicit and fail-closed.** The Worker serves data only when its
+operator sets `KEYLESS_SOURCE = "yahoo-chart"` and the non-sensitive owner-attestation
+flag `OWNER_ATTESTATION = "owner-confirms-yahoo-permission"`. Fresh or forked deployments
+(the top-level `wrangler.toml` settings) are switched off; only the owner's
+`[env.production]` deployment carries the flag (`_services/market-data-gateway/README.md`,
+"Activation"). Switching it off takes one variable change. That deployment is live since
+2026-11-04 at `https://market-data-gateway.elmatthe.workers.dev` (verified the same day:
+README, "Deployment status").
+
+**Technical and operational safeguards** (README, "Protecting the data source"): fixed
+upstream URL and allowlisted listings; every answer checked for symbol, exchange,
+currency, unit and values, refused rather than repaired; honest User-Agent, no cookie,
+crumb or address tricks; one coordinator worldwide (a SQLite-backed Durable Object), the only
+code that contacts Yahoo, which spaces actual starts 1 s apart with a hard 15 s wait, allows
+2 in flight and 20 starts in any 60 s, and coalesces identical requests; caches (10 min
+quotes, 12 h history, 30 min refusals); a circuit breaker that stops all upstream requests
+for 15 minutes after HTTP 429 and 30 minutes after 401/403, or for Yahoo's own `Retry-After`
+when longer, never shortened, with a halt until the owner reactivates when that exceeds
+24 hours; no upstream request if the coordinator's state cannot be verified (code 1.3.0,
+effective when deployed); clients that send one request at a time and pause after any
+slow-down answer. Requests carry only a symbol and a range —
+never keys, holdings or account data.
+
+**Display.** Quotes are labelled "latest regular-session price (may be delayed)", with
+trading date, retrieval time and cache age, and the plain-language notice *"Quotes may
+be delayed, incomplete, or differ from official exchange data. This information is for
+research and planning, not financial advice."* Yahoo Finance is not presented as better
+or worse than the personal-key providers; the tools emphasise source choice, coverage,
+freshness and provenance.
+
+**Cloudflare Workers Free limits** (developers.cloudflare.com, checked 2026-11-04; pages
+dated 2026-10-29 and 2026-10-21): 100,000 requests/day (error 1027 above it, no billing),
+10 ms CPU per request, 128 MB, 50 subrequests and 6 concurrent outgoing connections per
+request; Cache API functional on custom domains; Rate Limiting binding approximate, per
+location, period 10 or 60 s, Wrangler ≥ 4.36, plan availability not stated on its page.
+Durable Objects (pages dated 2026-10-18 and 2026-10-29): SQLite-backed only on Workers Free;
+100,000 requests, 13,000 GB-s, 5 million rows read and 100,000 written per day, 5 GB stored;
+above an allowance operations fail with an error and nothing is billed. The coordinator stays
+within these by construction (gateway README, "Workers Free plan").
+
+**Coverage** (the gateway's fixed list; exchange codes confirmed by the live smoke test,
+results in `md-instructions/Handoff.md`): US, Toronto (.TO incl. -U units), TSX Venture,
+Cboe Canada (.NE, so YNVD.NE), London (GBp → GBP), Xetra, Euronext Paris and Amsterdam,
+SIX, Tokyo, Shanghai, Shenzhen, Hong Kong, ASX. Not served: indexes, FX pairs, futures,
+crypto, OTC lines, Bombay/NSE, CSE (.CN), Frankfurt floor (.F), Milan and other exchanges;
+Canadian fund codes.
+
+**Deferred providers stay deferred.** Massive's adapter exists but is not offered (§1).
+
 ## Sources
 
+Yahoo Finance gateway (§10): https://help.yahoo.com/kb/SLN28256.html (adjusted close) · https://developers.cloudflare.com/workers/platform/limits/ · https://developers.cloudflare.com/workers/runtime-apis/cache/ · https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/
 Alpha Vantage: https://www.alphavantage.co/documentation/ · https://www.alphavantage.co/support/ · https://www.alphavantage.co/premium/ · https://www.alphavantage.co/terms_of_service/
 Marketstack: https://marketstack.com/pricing · https://marketstack.com/faq · https://docs.apilayer.com/marketstack/docs/getting-started · https://api.swaggerhub.com/apis/apilayer-863/MarketstackAPIv2/2.0.0/swagger.json · https://marketstack.com/download/v2_eod_tickers_finnworlds_tiingo.xlsx
 Finnhub: https://finnhub.io/docs/api/quote · https://finnhub.io/pricing · https://finnhub.io/terms-of-service

@@ -1,9 +1,10 @@
 # Stock Comparison & Analytics Tool
 
 ## What It Does
-Stock Comparison & Analytics Tool v0.5.0 is a Python desktop app for comparing stocks,
-ETFs and funds. It downloads historical prices from the provider you choose with **your own
-key** (Alpha Vantage, Marketstack or Alpaca), or loads them from your CSV files, can convert
+Stock Comparison & Analytics Tool v0.6.0 is a Python desktop app for comparing stocks,
+ETFs and funds. It downloads historical prices from **your source list** — Yahoo Finance
+with no key (first by default), then Alpha Vantage, Marketstack or Alpaca with **your own
+key**, in the order you choose under **Sources…** — or loads them from your CSV files, can convert
 every security into one common currency with official Bank of Canada rates, computes
 performance and risk metrics, builds a correlation matrix, runs regression analytics,
 shows charts in the window, and exports data plus visuals.
@@ -13,7 +14,7 @@ A separate browser version runs on the project page with nothing to install:
 
 ## Features
 - Multi-ticker comparison (stocks, ETFs, indexes, funds)
-- Price history from Alpha Vantage, Marketstack or Alpaca with your own key, or Offline CSV
+- Price history from your ordered source list (Yahoo Finance with no key; Alpha Vantage, Marketstack or Alpaca with your own key), or Offline CSV
 - Currency normalization to USD/CAD/EUR/GBP with official Bank of Canada daily rates
 - Dashboard metrics, correlation matrix and diversification summary
 - Regression analytics (each vs benchmark, or pairwise)
@@ -72,18 +73,30 @@ Healthy later launches skip straight to opening the program; no downloads happen
 The full guide, including troubleshooting, is at <https://elmatthe.github.io/projects/stock-data-dashboard-guide/>.
 
 ## Data Sources
-**Online data needs your own key** (use **API keys…** in the window; keys are kept until
-you close the program unless you tick *Remember*, which saves them in `files/runtime/keys.json`):
+Choose **Market data (your source list)** as the data source. **Sources…** lists the
+sources in the order they are tried (Move up / Move down, Alt+Up / Alt+Down, drag;
+switch on or off); the order is saved in `files/runtime/market-data-settings.json`.
+**Yahoo Finance** needs no key: prices come through the site's data gateway, are briefly
+cached and may be delayed. Keys for the other sources go under **API keys…** (kept until
+you close the program unless you tick *Remember*, which saves them in
+`files/runtime/keys.json`); a new key joins the list below Yahoo Finance.
+
+For each ticker the first source that can give its history is used; a source whose
+series would be coarser than your chosen frequency (Alpha Vantage's weekly closes for a
+Daily analysis) is skipped with the reason. The log and the Settings sheet of the Excel
+export record the source order and each series' source, with the sources tried or
+skipped before it.
 
 | Source | Coverage | Daily history | Free plan |
 |---|---|---|---|
+| Yahoo Finance (no key) | US, Toronto, TSX Venture, Cboe Canada, London, Xetra, Paris, Amsterdam, SIX, Tokyo, Shanghai, Shenzhen, Hong Kong, ASX | close (split-adjusted) and adjusted close, up to 5 years | no key; requests one at a time and paused after any "slow down" answer |
 | Alpha Vantage | US, Toronto, TSX Venture, London, Xetra, Shanghai/Shenzhen | ~100 sessions as traded; longer windows use weekly adjusted closes | 25 requests per day |
 | Marketstack | many exchanges (free-plan coverage outside the US is not stated by Marketstack) | close and adjusted close | 100 requests per month |
 | Alpaca | US listings | raw and adjusted daily bars (IEX exchange on the free plan) | 200 calls per minute |
 
 Every series is checked for its symbol, exchange and currency; the price basis actually
-used is reported. Earlier versions used Yahoo Finance through `yfinance`; it is no longer
-used because Yahoo's terms do not permit automated collection. Offline CSV mode reads files
+used is reported. The `yfinance` library is not used; no browser or local web server is
+needed. Offline CSV mode reads files
 from a folder you choose and works without internet access.
 
 Expected combined CSV format:
@@ -98,7 +111,7 @@ One-file-per-ticker CSVs are also supported when the filename is the ticker.
 The included Offline CSV sample is `test-files/sample_prices.csv`. In the window, choose
 the `test-files/` folder and use `2024-01-02` through `2024-01-04`. If the dates are set to
 a range the sample doesn't cover, Offline CSV mode explains that the data does not overlap
-the selected range; switch **Data source** to a provider with your own key for recent data.
+the selected range; switch **Data source** to Market data (your source list) for recent data.
 CSV files must have one row per ticker and date and prices greater than 0.
 
 ## Visual Outputs

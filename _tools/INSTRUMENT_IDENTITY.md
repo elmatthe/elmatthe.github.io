@@ -65,7 +65,13 @@ venue.
   returns no symbol and is `not_covered` for it (for example every provider for TSX `-U`
   units on the free plans).
 - A response whose symbol, exchange or currency differs from the request is not used.
-- Recent listings carry `listedFrom`; history before it is discarded.
+- Recent listings carry `listedFrom`; history before it belongs to a different security
+  and is discarded at one shared boundary each time a series is read, on the website
+  (`cutToListing` in `assets/js/market-data/instruments.js`) and on the desktop
+  (`cut_to_listing` in `_tools/shared_py/market_data/history.py`): so it cannot reach a
+  calculation, a chart, a saved copy's use or an export. A source with only earlier prices
+  is reported as failed and the next source is asked. Prices the user imports from their
+  own CSV file are their own data and are not cut, in either version.
 
 ## 4. `YNVD.NE` and `YNVD.TO` (one Cboe Canada ETF, two spellings)
 
@@ -89,7 +95,7 @@ venue.
 
 `assets/js/portfolio-rebalancer/sample.js` and `portfolio_rebalancer/sample.py` (checked
 identical by `test_market_data_parity.py::test_sample_portfolio_identical`; schema
-`rb.sample-portfolio.v2`): reporting currency CAD, New Money mode, budget 3,000, account
+`rb.sample-portfolio.v3`): reporting currency CAD, New Money mode, budget 3,000, account
 type blank. The ten Questrade targets of v1 (70/10/7/5/2/1/1/1/2/1) are scaled to 90%;
 the four international holdings have one share and 2.5% each. Targets total exactly
 10,000 basis points (100.0%).
@@ -114,13 +120,17 @@ the four international holdings have one share and 2.5% each. Targets total exac
 All fourteen are ordinary holdings: the same row, the same **Get prices** action (one
 estimate and one batch for all, largest targets first, each provider's remaining quota
 checked before a request), the same valuation gate and the same plan. There is no
-separate group, button or rule for the international rows. Rows 11–14 carry a
-`sampleTag` (provenance only) so the optional *Remove international examples* control
-can remove them while they are exactly as loaded (same ticker, shares, target and
-account, no user price); an edited row, or the same security added by the user, is
-never removed. No example market price is embedded anywhere in the sample.
+separate group, button, tag or rule for the international rows (the earlier *Remove
+international examples* control and its `sampleTag` were removed on 2026-11-04; the
+securities stay). No example market price is embedded anywhere in the sample.
 
-With Alpha Vantage and Finnhub keys (automatic routing): 8 Alpha Vantage quotes (five
+With no key, every one of the fourteen is asked of Yahoo Finance through the site's
+gateway (first in the default source list), which covers all fourteen exchanges, YNVD.NE
+included (asked as `YNVD.NE` on Cboe Canada in CAD; Questrade's `YNVD.TO` resolves to the
+same listing).
+
+With only Alpha Vantage and Finnhub keys switched on, Finnhub placed above Alpha Vantage
+(Yahoo Finance unavailable or off): 8 Alpha Vantage quotes (five
 TSX, Xetra, London, Shanghai; all curated, so no symbol search) and 4 Finnhub quotes;
 YNVD.NE and 7203.T are named as not covered before any request (Tokyo needs
 Marketstack). With Marketstack only: 13 requests of the free 100 per month.

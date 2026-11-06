@@ -20,6 +20,7 @@ env:
   NODE_VERSION: "22"
   PYTHON_VERSION: "3.13"
   PLAYWRIGHT_VERSION: "1.63.0"
+  WRANGLER_VERSION: "4.157.0"
 
 jobs:
   unit:
@@ -41,7 +42,7 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
           cache-dependency-path: _tools/tests/requirements.txt
-      - name: JavaScript unit tests (market data, providers, integrity, analytics, Monte Carlo, CPI engine, data gateway security; mocked network)
+      - name: JavaScript unit tests (market data, source list, providers, integrity, analytics, Monte Carlo, CPI engine, both gateways, Yahoo Finance adapter; mocked network)
         run: node --test _tools/tests/unit/*.test.mjs
       - name: Desktop copies of the shared market_data package match _tools/shared_py
         run: python _tools/sync_shared_py.py --check
@@ -49,13 +50,33 @@ jobs:
         run: python _tools/cpi_public_workbook.py --check
       - name: Install Python test dependencies
         run: python -m pip install -r _tools/tests/requirements.txt
-      - name: Python reference and parity tests (browser engines vs desktop engines incl. CPI CSV byte parity, numpy/scipy, hand-calculated cases)
+      - name: Python reference and parity tests (browser engines vs desktop engines incl. CPI CSV byte parity and the source list, numpy/scipy, hand-calculated cases; the desktop market-data layer against the real gateway Worker code on 127.0.0.1)
         working-directory: _tools/tests
         run: python -m pytest -q -rfs -m "not e2e"
       - name: Downloadable ZIPs match a fresh deterministic build
         run: python _tools/build_project_zips.py --check
       - name: Rendered launchers match their templates
         run: python _tools/bootstrap/render.py --check
+
+  gateway-runtime:
+    name: Market-data gateway in the real Workers runtime (synthetic Yahoo)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      # Wrangler brings workerd and Miniflare: the runtime and bundler the deployment uses.
+      # A test tool only. No Cloudflare account or token is used, and nothing is deployed.
+      - name: Install the pinned Wrangler
+        run: |
+          npm install --no-save --no-package-lock --prefix "$RUNNER_TEMP/wrangler" "wrangler@$WRANGLER_VERSION"
+          echo "NODE_PATH=$RUNNER_TEMP/wrangler/node_modules" >> "$GITHUB_ENV"
+      - name: Coordinator, isolates, SQLite and restarts in workerd; wrangler deploy --dry-run for both configurations
+        run: node --expose-gc _tools/tests/worker-runtime/gateway-runtime.test.cjs
 
   browser:
     name: Site build and browser tests (mocked providers)
@@ -96,8 +117,9 @@ jobs:
           echo "::error::local server did not start"; cat "$RUNNER_TEMP/http.log"; exit 1
       # Each suite prints PASS/FAIL per check and exits non-zero on any failure.
       # harness.js answers the Bank of Canada, ECB, Alpha Vantage, Marketstack,
-      # Finnhub, Statistics Canada and a stand-in data gateway with synthetic data and
-      # aborts (and fails on) every other host;
+      # Finnhub, Statistics Canada and a stand-in data gateway with synthetic data, runs
+      # the real market-data gateway code with synthetic Yahoo answers (Yahoo is never
+      # contacted), and aborts (and fails on) every other host;
       # Chart.js is self-hosted, so no CDN is contacted.
       - name: Pages (all project pages, guides, redirects, ZIP links, phone width)
         working-directory: _tools/tests/browser
@@ -115,6 +137,14 @@ jobs:
       - name: CPI Web Scraper web app
         working-directory: _tools/tests/browser
         run: node cpi.test.js
+      # The market-data gateway's Worker code runs in this job with synthetic Yahoo
+      # answers; the deployed gateway and Yahoo Finance are never contacted.
+      - name: Yahoo Finance through the data gateway in the Rebalancer and Stock web apps
+        working-directory: _tools/tests/browser
+        run: node freesource.test.js
+      - name: Ordered source list (reordering, persistence, keys, fallback chain, mobile) in both web apps
+        working-directory: _tools/tests/browser
+        run: node sources.test.js
 
   desktop:
     name: Desktop tests on Linux (${{ matrix.tool }})

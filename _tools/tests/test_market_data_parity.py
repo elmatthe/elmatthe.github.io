@@ -26,6 +26,8 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is
 
 from market_data import alphavantage as av  # noqa: E402
 from market_data import catalog as cat  # noqa: E402
+from market_data import gateway as gw  # noqa: E402
+from market_data import sources as src  # noqa: E402
 from market_data.errors import DataError  # noqa: E402
 from market_data.freshness import freshness_of  # noqa: E402
 from market_data.instruments import InstrumentResolver, load_reference  # noqa: E402
@@ -43,7 +45,7 @@ TICKERS = [r["ticker"] for r in SAMPLE_PORTFOLIO["rows"]] + [
 
 
 def run_js(tool: str, cases: list) -> list:
-    result = subprocess.run(["node", str(RUNNER)], input=json.dumps({"tool": tool, "cases": cases}), capture_output=True, text=True, timeout=120, check=False)
+    result = subprocess.run(["node", str(RUNNER)], input=json.dumps({"tool": tool, "cases": cases}), capture_output=True, text=True, encoding="utf-8", timeout=120, check=False)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 
@@ -82,23 +84,108 @@ def test_identity_resolution_identical():
         assert desktop == browser, (ticker, desktop, browser)
 
 
-def test_catalog_plans_and_routing_identical():
+def test_catalog_plans_identical():
     (js,) = run_js("market-data", [{"op": "catalog"}])
     assert js["version"] == cat.CATALOG_VERSION
-    assert js["routes"] == cat.ROUTES
     for pid, p in cat.PROVIDERS.items():
         mine = {"name": p["name"], "status": p["status"], "plans": [{"id": pl["id"], "label": pl["label"], "limits": pl["limits"], "editable": pl.get("editable")} for pl in p["plans"]], "gaps": p["gaps"]}
         assert mine == js["catalog"][pid], pid
     assert len(cat.PROVIDERS) == 5
-    key_sets = [["alphavantage"], ["finnhub"], ["marketstack"], ["alpaca"], ["alphavantage", "finnhub"], ["alphavantage", "marketstack", "finnhub", "alpaca"], []]
-    cases = [{"op": "route", "ticker": t, "configured": ks, "platform": platform, "mode": mode}
-             for t in TICKERS for ks in key_sets for platform in ("browser", "desktop") for mode in ("auto", "marketstack", "alpaca")]
-    js_routes = run_js("market-data", cases)
+    assert not hasattr(cat, "ROUTES") and not hasattr(cat, "route_instrument"), "no per-market table: the user's list decides"
+
+
+def test_source_list_tables_gateway_symbols_and_errors_identical():
+    (js,) = run_js("market-data", [{"op": "sources", "fn": "info", "args": {"tickers": TICKERS}}])
+    assert js["info"] == src.SOURCE_INFO
+    assert js["defaultOrder"] == src.DEFAULT_ORDER
+    assert js["offered"] == {"browser": src.offered_sources("browser"), "desktop": src.offered_sources("desktop")}
+    assert js["version"] == src.SOURCES_VERSION
+    assert js["venues"] == gw.VENUES
+    assert js["errors"] == gw.ERRORS, "gateway error codes mean the same on the web and the desktop"
+    resolver = InstrumentResolver(REFERENCE)
+    assert js["symbols"] == [gw.gateway_symbol(resolver.resolve(t)) for t in TICKERS]
+    assert gw.gateway_symbol(resolver.resolve("YNVD.TO")) == "YNVD.NE"
+
+
+def _priorities():
+    base = src.normalize_priority(None, "desktop")
+    yield {"order": base["order"], "enabled": base["enabled"]}
+    yield {"order": ["finnhub", "alphavantage", "yahoo", "marketstack", "alpaca"], "enabled": {"finnhub": True, "alphavantage": True, "yahoo": True, "marketstack": False, "alpaca": True}}
+    yield {"order": ["alphavantage", "marketstack", "finnhub", "alpaca", "yahoo"], "enabled": {p: True for p in src.DEFAULT_ORDER}}
+    yield {"order": ["marketstack", "yahoo", "alpaca", "finnhub", "alphavantage"], "enabled": {"marketstack": True, "yahoo": False, "alpaca": False, "finnhub": True, "alphavantage": True}}
+
+
+STATES = [
+    {},
+    {"yahoo": {"available": False, "code": "paused", "reason": "paused for about 12 more minutes after it asked this site to slow down", "short": "paused after a rate limit"}},
+    {"alphavantage": {"available": False, "code": "rate_limited", "reason": "reported its daily limit at 14:02 UTC", "short": "daily limit reached"},
+     "finnhub": {"available": False, "code": "auth", "reason": "rejected your key earlier (check the key)", "short": "rejected the key"}},
+    {"yahoo": {"available": False, "code": "not_configured", "reason": "not available on this site yet"}, "marketstack": {"available": False, "code": "no_key", "reason": "no API key saved", "short": "no key"}},
+]
+
+
+def test_source_plans_identical_for_every_ticker_order_state_operation_and_platform():
     resolver = InstrumentResolver(REFERENCE)
     plans = {pid: cat.plan_of(pid) for pid in cat.PROVIDER_IDS}
-    for c, browser in zip(cases, js_routes):
-        desktop = cat.route_instrument(resolver.resolve(c["ticker"]), c["mode"], c["configured"], plans, c["platform"])
+    cases = [{"op": "sources", "fn": "plan", "args": {"ticker": t, "op": op, "priority": pr, "platform": platform, "state": st}}
+             for t in TICKERS for pr in _priorities() for st in STATES for op in ("quote", "history") for platform in ("browser", "desktop")]
+    for c, browser in zip(cases, run_js("market-data", cases)):
+        a = c["args"]
+        desktop = src.plan_sources(resolver.resolve(a["ticker"]), a["op"], a["priority"], a["platform"], a["state"], plans)
         assert desktop == browser, c
+    # The behaviour the requirements name, checked on the shared result.
+    aapl = src.plan_sources(resolver.resolve("AAPL"), "history", {"order": ["finnhub", "yahoo"], "enabled": {"finnhub": True, "yahoo": True}}, "desktop")
+    assert [c["id"] for c in aapl["candidates"]] == ["yahoo"] and aapl["skipped"][0]["code"] == "no_capability", "a quote-only source is never asked for history"
+
+
+def test_source_list_changes_identical():
+    configured_sets = [[], ["alphavantage"], ["finnhub", "marketstack"], ["alpaca", "alphavantage", "finnhub", "marketstack"]]
+    saved = [None, {"order": ["finnhub", "massive", "finnhub", "nope", "yahoo"], "enabled": {"finnhub": True, "yahoo": False}},
+             {"order": ["alpaca", "yahoo"], "enabled": {"yahoo": False, "alpaca": True}}, {"order": "bad", "enabled": []}, {"order": [], "enabled": {"yahoo": False}}]
+    legacy = [None, {"routing": "auto"}, {"routing": "auto", "fallback": True}, {"routing": "alphavantage", "fallback": False}, {"routing": "alphavantage", "fallback": True},
+              {"routing": "keyless", "fallback": True}, {"routing": "massive"}, {"routing": "finnhub"}]
+    cases, expected = [], []
+    for platform in ("browser", "desktop"):
+        for conf in configured_sets:
+            for sv in saved:
+                cases.append({"op": "sources", "fn": "normalize", "args": {"saved": sv, "platform": platform, "configured": conf}})
+                expected.append(src.normalize_priority(sv, platform, conf))
+            for lg in legacy:
+                cases.append({"op": "sources", "fn": "migrate", "args": {"prefs": lg, "platform": platform, "configured": conf}})
+                expected.append(src.migrate_legacy(lg, platform, conf))
+            for pr in _priorities():
+                for pid in src.DEFAULT_ORDER + ["massive"]:
+                    for to in (-3, 0, 2, 99):
+                        cases.append({"op": "sources", "fn": "move", "args": {"priority": pr, "id": pid, "to": to}})
+                        expected.append(src.move_source(pr, pid, to))
+                    for on in (True, False):
+                        cases.append({"op": "sources", "fn": "enable", "args": {"priority": pr, "id": pid, "on": on, "configured": conf}})
+                        expected.append(src.set_source_enabled(pr, pid, on, conf))
+                    for has_key, is_new in ((True, True), (True, False), (False, False)):
+                        cases.append({"op": "sources", "fn": "key", "args": {"priority": pr, "id": pid, "hasKey": has_key, "isNew": is_new, "configured": conf}})
+                        expected.append(src.key_changed(pr, pid, has_key, is_new, conf))
+    attempts = [{"kind": k, "quotaScope": q, "paused": pz} for k in ("auth", "rate_limited", "not_found", "not_covered", "ambiguous", "currency_mismatch", "invalid", "timeout", "network", "unavailable", "entitlement", "not_configured", "weird")
+                for q in (None, "daily", "monthly", "minute") for pz in (False, True)]
+    for a in attempts:
+        cases.append({"op": "sources", "fn": "short", "args": a})
+        expected.append(src.short_failure(a))
+    skipped = [{"id": "yahoo", "code": "paused", "reason": "paused for about 3 more minutes", "short": "paused after a rate limit"}, {"id": "finnhub", "code": "off", "reason": "switched off in your source list"},
+               {"id": "alphavantage", "code": "not_covered", "reason": "does not cover Cboe Canada on the free plan"}]
+    for include_off in (False, True):
+        for short in (False, True):
+            cases.append({"op": "sources", "fn": "describe", "args": {"skipped": skipped, "includeOff": include_off, "short": short}})
+            expected.append(src.describe_skipped(skipped, include_off, short))
+    for c, mine, browser in zip(cases, expected, run_js("market-data", cases)):
+        assert mine == browser, c
+
+
+def test_desktop_gateway_address_is_the_site_setting():
+    text = (ROOT / "_data" / "market_data.yml").read_text(encoding="utf-8")
+    import re
+    m = re.search(r'^gateway:\s*"([^"]*)"', text, re.M)
+    assert m is not None
+    assert gw.DEFAULT_GATEWAY_URL == m.group(1), "the desktop apps use the same gateway as the website"
+    assert gw.validate_base_url(gw.DEFAULT_GATEWAY_URL) == gw.DEFAULT_GATEWAY_URL
 
 
 def test_paid_plan_profiles_identical():
@@ -227,7 +314,8 @@ def test_sample_portfolio_identical():
     assert target_total_basis_points(rows[:10]) == 9000, "the ten Questrade targets scaled to 90%"
     assert all(r["accountType"] == "" for r in rows)
     assert not any("price" in r or "group" in r for r in rows), "no prices and no separate group"
-    assert [r.get("sampleTag") for r in rows].count("international-example") == 4
+    assert all(set(r) == {"ticker", "shares", "targetWeight", "accountType"} for r in rows), "ordinary rows: no tag or marker"
+    assert SAMPLE_PORTFOLIO["schema"] == "rb.sample-portfolio.v3"
     assert SAMPLE_PORTFOLIO["reportingCurrency"] == "CAD" and SAMPLE_PORTFOLIO["mode"] == "new_money" and SAMPLE_PORTFOLIO["budget"] == 3000
 
 
@@ -348,3 +436,52 @@ def test_valuation_gate_identical():
     cases = [{"op": "valuation", "rows": rows, "acceptStale": accept} for rows in sets for accept in (False, True)]
     for c, browser in zip(cases, run_js("rebalancer-extras", cases)):
         assert core.assess_valuation(c["rows"], c["acceptStale"]) == browser, c
+
+
+LISTING_CASES = [
+    # [listedFrom, requested start, dates offered]
+    ["2026-06-12", "2025-11-01", ["2026-06-10", "2026-06-11", "2026-06-12", "2026-06-15"]],
+    ["2026-06-12", "2026-07-01", ["2026-07-01", "2026-07-02"]],
+    ["2026-06-12", "2025-11-01", ["2026-06-10", "2026-06-11"]],
+    ["2026-06-12", "2025-11-01", []],
+    [None, "2025-11-01", ["2026-06-10", "2026-06-12"]],
+    ["soon", "2025-11-01", ["2026-06-12"]],
+]
+
+
+def test_listing_cutoff_identical():
+    """The same rule, the same rows and the same words in the browser and on the desktop."""
+    from market_data.history import cut_to_listing
+
+    expected = run_js("listing-cutoff", LISTING_CASES)
+    for case, js in zip(LISTING_CASES, expected):
+        listed, start, days = case
+        identity = {"displayTicker": "SPCX", "listedFrom": listed}
+        h = {"observations": [(d, 10.0, 9.0) for d in days], "provider": "Test source"}
+        try:
+            out = cut_to_listing(h, identity, start)
+            py = {"days": [r[0] for r in out["observations"]], "removed": (out.get("listing") or {}).get("removed"), "note": (out.get("listing") or {}).get("note")}
+        except DataError as error:
+            py = {"error": error.message, "kind": error.kind}
+        assert py == js, case
+
+
+def test_time_zones_are_available_to_the_desktop_apps():
+    """Windows has no time-zone database. Without tzdata, zoneinfo fails there and every
+    exchange date silently falls back to UTC, so both tools that use market_data pin it."""
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+
+    from market_data.adapters import date_in
+    from market_data.freshness import missed_sessions
+
+    for tool in ("portfolio-rebalancer-tool", "Stock-Data-Dashboard-Tool"):
+        text = (ROOT / "projects" / tool / "scripts" / "requirements.txt").read_text(encoding="utf-8")
+        assert any(line.startswith("tzdata==") for line in text.splitlines()), tool
+    assert str(ZoneInfo("Asia/Tokyo")) == "Asia/Tokyo"
+    # 2026-11-03 15:00 UTC is already 2026-11-04 in Tokyo, and still 2026-11-03 in New York.
+    at = dt.datetime(2026, 11, 3, 15, 0, tzinfo=dt.timezone.utc).timestamp()
+    assert date_in(at * 1000, "Asia/Tokyo") == "2026-11-04"
+    assert date_in(at * 1000, "America/New_York") == "2026-11-03"
+    assert missed_sessions("2026-11-02", at, "Asia/Tokyo") == 1
+    assert missed_sessions("2026-11-02", at, "America/New_York") == 0

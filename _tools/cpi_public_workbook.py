@@ -163,6 +163,7 @@ def scrub(data: bytes) -> bytes:
                 continue
             info = zipfile.ZipInfo(name, FIXED_TIME)
             info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3  # the default depends on the platform; the bytes must not
             info.external_attr = 0o644 << 16
             target.writestr(info, files[name])
     return out.getvalue()

@@ -40,9 +40,10 @@ def test_window_workflow():
     except tk.TclError as error:
         pytest.skip(f"no display: {error}")
     root.geometry("1366x768")
-    md = MarketData(None, http=FakeProviders(), sleep=lambda s: None, pacing_override_ms=0, now=lambda: 1793718000.0)
+    md = MarketData(None, http=FakeProviders(), sleep=lambda s: None, pacing_override_ms=0, now=lambda: 1793718000.0, gateway_url="")
     md.set_key("alphavantage", AV_KEY)
     md.set_key("finnhub", FH_KEY)
+    md.move_source("finnhub", 1)
     app = RebalancerApp(root, market=md)
     pump(root, 0.5)
     app._load_sample()
@@ -62,10 +63,24 @@ def test_window_workflow():
     app._calculate()
     assert app.headline.cget("text").startswith("Plan includes 2 user-supplied price")
     assert len(app.tree.get_children()) == 14
-    app._remove_international()
+    labels = [w.cget("text") for w in app.root.winfo_children()[0].winfo_children() if isinstance(w, tk.ttk.Button)]
+    assert not hasattr(app, "_remove_international") and not any("international" in str(t).lower() for t in labels)
+    assert "Sources, in the order tried: 1. Yahoo Finance (unavailable) · 2. Finnhub · 3. Alpha Vantage · 4. Marketstack (off) · 5. Alpaca (off)" in app.sources_line.cget("text")
+    # The source editor: keyboard move, switch on/off, persisted through MarketData.
+    app._sources_dialog()
     pump(root, 0.3)
-    # 7203.T has a price the user supplied, so it is a user holding now and stays.
-    assert [r.ticker for r in app.rows][-2:] == ["VST", "7203.T"] and len(app.rows) == 11, [r.ticker for r in app.rows]
+    dialog = app.sources_window
+    assert [dialog.tree.item(i)["values"][1] for i in dialog.tree.get_children()] == ["Yahoo Finance", "Finnhub", "Alpha Vantage", "Marketstack", "Alpaca"]
+    dialog.tree.selection_set("alphavantage")
+    dialog.tree.focus("alphavantage")
+    dialog.tree.event_generate("<Alt-Up>")
+    pump(root, 0.2)
+    assert md.priority["order"][:3] == ["yahoo", "alphavantage", "finnhub"] and "Alpha Vantage moved to position 2 of 5." in dialog.live.cget("text")
+    assert "Needs your API key" in dialog.tree.item("marketstack")["values"][2] and str(dialog.toggle.cget("state")) == "normal"
+    dialog.tree.selection_set("marketstack")
+    pump(root, 0.1)
+    assert str(dialog.toggle.cget("state")) == "disabled", "a provider without a key cannot be switched on"
+    dialog.top.destroy()
     app._calculate()
     first = app.tree.item(app.tree.get_children()[0])["values"]
     assert first[0] in ("BUY", "HOLD")

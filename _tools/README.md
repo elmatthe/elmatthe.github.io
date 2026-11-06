@@ -17,11 +17,16 @@ Portfolio Rebalancer, and Stock Comparison & Analytics Tool.
 | `tests/test_financial_reference.py` | Hand-calculated rebalancer cases and closed-form Monte Carlo paths, checked in both browser and desktop engines. |
 | `tests/test_analytics_reference.py` | Browser Stock analytics vs an independent numpy/scipy reference (returns, annualization, Sharpe, drawdown, correlation, OLS). |
 | `tests/test_bootstrap.py` | Bootstrap contract tests (mocked) and opt-in end-to-end runs (`-m e2e`). |
-| `tests/test_market_data_parity.py` | JS vs Python market-data layer: identity, routing, catalog, notice classification, quote adapters, freshness, valuation, whole shares, sample portfolio. Fixtures in `tests/fixtures/providers/`. |
+| `tests/test_market_data_parity.py` | JS vs Python market-data layer: identity, the ordered source list (every function, including message text), gateway symbol/venue/error tables, catalog, notice classification, quote adapters, freshness, valuation, whole shares, sample portfolio, gateway address. Fixtures in `tests/fixtures/providers/`. |
+| `tests/test_desktop_gateway.py`, `tests/gateway_server.mjs` | The desktop market-data package against the REAL gateway Worker code served on 127.0.0.1 (synthetic Yahoo upstream): zero keys, the 14-holding sample, history, order and fallback, exhausted and rejected keys, pauses across restarts, the circuit breaker, a switched-off source, persistence. |
 | `tests/test_cpi_public_workbook.py` | The shipped CPI workbook stays clean and structurally intact. |
 | `tests/test_cpi_parity.py` | CPI web app vs the desktop downloader: 19-column schema, gateway allowlist, month rules, daily end-of-month reduction, and byte-identical CSVs from `tests/fixtures/cpi/sources.json` (regenerate with `generate.py`). Uses Node through `tests/cpi_engines.mjs`. |
-| `tests/unit/*.test.mjs` | Node unit tests for `assets/js/market-data/` (including per-key isolation and key storage, CSV calendar dates), the Rebalancer sample, Stock analytics consistency and currency safeguards, the Monte Carlo engine, the CPI engine and clients, and the CPI data gateway's security rules (no network). |
-| `tests/browser/*.test.js` | Playwright tests against a locally served build, with every market-data host, Statistics Canada and the CPI data gateway mocked. |
+| `tests/unit/*.test.mjs` | Node unit tests for `assets/js/market-data/` (including per-key isolation and key storage, CSV calendar dates, the Yahoo Finance adapter, pauses and fallback in `keyless.test.mjs`, the ordered source list in `sources.test.mjs`), the Rebalancer sample, Stock analytics consistency and currency safeguards, the Monte Carlo engine, the CPI engine and clients, the CPI data gateway's security rules, and the market-data gateway Worker (`market-gateway.test.mjs`) (no network). |
+| `tests/worker-runtime/` | The market-data gateway in the real Workers runtime (workerd, real SQLite, restarts from disk, separate isolates, synthetic Yahoo) and `wrangler deploy --dry-run` for both configurations. Needs the pinned Wrangler; no Cloudflare account. |
+| `tests/fixtures/local-coordinator.mjs` | The real upstream coordinator logic in this process, behind the same calls as its Durable Object binding, for tests on a controlled clock. |
+| `tests/r3_reproduction.mjs` | The independent review's B2 and B3 counterexamples, runnable against any checkout: exits 1 on `de720dc`, 0 on the corrected code. Not part of CI. |
+| `tests/fixtures/yahoo-chart.mjs` | Synthetic Yahoo-shaped chart answers (invented values) used as the market-data gateway's upstream in every test; nothing contacts Yahoo. |
+| `tests/browser/*.test.js` | Playwright tests against a locally served build, with every market-data host, Statistics Canada and the CPI data gateway mocked; `freesource.test.js` drives both market-data pages against the real market-data gateway code. |
 | `tests/live_fx_matrix.mjs` | Optional live check of the official FX sources (two requests). |
 | `MARKET_DATA.md` | Where prices and exchange rates come from, why, licensing, caching, testing and troubleshooting (section 0 = current design). |
 | `PROVIDER_MATRIX.md` | Dated eligibility, plans, request accounting and licensing for the five provider candidates. |
@@ -33,6 +38,11 @@ Portfolio Rebalancer, and Stock Comparison & Analytics Tool.
 
 `../_services/cpi-data-gateway/` (also unpublished) is the Cloudflare Worker that lets the
 CPI web app reach FRED with each visitor's own key; deployment steps are in its README.
+`../_services/market-data-gateway/` is the separate Worker that gives the Rebalancer and
+the Stock tool (web and desktop) Yahoo Finance prices with no key; its README covers
+activation (owner attestation), rate limiting, deployment, verification, the capped live
+smoke test and rollback. The site setting that points at it is `_data/market_data.yml`
+(the desktop apps: `DEFAULT_GATEWAY_URL` in `shared_py/market_data/gateway.py`).
 
 CPI Web Scraper is not rendered from these templates. Its folder
 `projects/CPI-Webscraper/` is a copy of `elmatthe/CPI-Webscraper` `main` without the
@@ -66,10 +76,18 @@ Python tests need `pytest`, `numpy`, `scipy` and `openpyxl`, pinned in
 `tests/requirements.txt` (`python3 -m pip install -r _tools/tests/requirements.txt`):
 
 ```bash
-node --test _tools/tests/unit/*.test.mjs   # market data, key isolation, CSV dates, Rebalancer sample, analytics, Monte Carlo, CPI engine, data gateway (seconds, no network)
+node --test _tools/tests/unit/*.test.mjs   # market data, key isolation, CSV dates, Rebalancer sample, analytics, Monte Carlo, CPI engine, both gateways, free source (seconds, no network)
 cd _tools/tests
 python3 -m pytest -q -m "not e2e"   # parity, financial/analytics references, mocked bootstrap (seconds)
 python3 -m pytest -q -m e2e         # real venv builds and pip installs for each tool (minutes, needs network)
+```
+
+The market-data gateway in the real Workers runtime (no Cloudflare account; no provider or live
+gateway is contacted; the version is `WRANGLER_VERSION` in `.github/workflows/ci.yml`):
+
+```bash
+npm install --no-save --no-package-lock --prefix /tmp/wrangler wrangler@4.157.0
+NODE_PATH=/tmp/wrangler/node_modules node --expose-gc _tools/tests/worker-runtime/gateway-runtime.test.cjs
 ```
 
 Browser tests need Node, Playwright with Chromium, and a local build:
@@ -83,6 +101,8 @@ node stock.test.js        # Stock web app: visitor key, CSV import, demo, FX nor
 node rebalancer.test.js   # Rebalancer web app: official FX, provenance, visitor key, failures, exports
 node montecarlo.test.js   # Monte Carlo web app, seeded runs, no network, exports
 node cpi.test.js          # CPI web app: Canadian-only, mocked gateway, failures, 12-month pages, CSV, layout
+node freesource.test.js   # Yahoo Finance in the Rebalancer and Stock apps against the real gateway code (Yahoo mocked)
+node sources.test.js      # the ordered source list: drag/keyboard reordering, persistence, keys, fallback chain, stale data, phone width
 node live.test.js         # OPTIONAL: real Bank of Canada / ECB; Alpha Vantage only with ALPHAVANTAGE_KEY
 ```
 
@@ -97,7 +117,9 @@ server. `CHROMIUM_ARGS` passes extra Chromium flags, split on whitespace.
 
 The deterministic suites never contact a market-data provider. `harness.js` answers the
 Bank of Canada, ECB, Alpha Vantage, Marketstack, Finnhub, Statistics Canada and a stand-in
-CPI data gateway (`*.gateway.test`) with synthetic data in their exact response shapes, and blocks (and the suites fail on) any other host, including CDNs
+CPI data gateway (`*.gateway.test`) with synthetic data in their exact response shapes,
+runs the real market-data gateway Worker code for `md.gateway.test` (its upstream replaced
+by `fixtures/yahoo-chart.mjs`), and blocks (and the suites fail on) any other host, including CDNs
 (Chart.js is self-hosted). Desktop Tk smoke tests need a display: on Linux run them with
 `xvfb-run -a -s "-screen 0 1366x768x24" python -m pytest files/tests`. `live.test.js` and
 `live_fx_matrix.mjs` make a handful of real requests and are informational. Never

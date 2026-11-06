@@ -88,8 +88,24 @@ if (request.tool === "monte-carlo") {
   for (const c of request.cases) {
     try {
       if (c.op === "resolve") out.push(resolver.resolve(c.ticker));
-      else if (c.op === "route") out.push(C.routeInstrument(resolver.resolve(c.ticker), { mode: c.mode || "auto", configured: c.configured, plans: Object.fromEntries(Object.keys(C.PROVIDERS).map(id => [id, C.planOf(id, c.plans?.[id]?.id, c.plans?.[id] || {})])), platform: c.platform || "desktop" }));
-      else if (c.op === "catalog") out.push({ catalog, routes: C.ROUTES, version: C.CATALOG_VERSION });
+      else if (c.op === "sources") {
+        // The ordered source list: one pure function per case, same arguments as the Python mirror.
+        const SRC = await import(pathToFileURL(path.join(site, "assets/js/market-data/sources.js")));
+        const a = c.args || {};
+        if (c.fn === "plan") out.push(SRC.planSources(a.ticker === null ? null : resolver.resolve(a.ticker), a.op, { priority: a.priority, platform: a.platform, state: a.state || {}, plans: Object.fromEntries(Object.keys(C.PROVIDERS).map(id => [id, C.planOf(id)])) }));
+        else if (c.fn === "normalize") out.push(SRC.normalizePriority(a.saved, { platform: a.platform, configured: a.configured }));
+        else if (c.fn === "migrate") out.push(SRC.migrateLegacy(a.prefs, { platform: a.platform, configured: a.configured }));
+        else if (c.fn === "move") out.push(SRC.moveSource(a.priority, a.id, a.to));
+        else if (c.fn === "enable") out.push(SRC.setSourceEnabled(a.priority, a.id, a.on, { configured: a.configured }));
+        else if (c.fn === "key") out.push(SRC.keyChanged(a.priority, a.id, { hasKey: a.hasKey, isNew: a.isNew, configured: a.configured }));
+        else if (c.fn === "short") out.push(SRC.shortFailure(a));
+        else if (c.fn === "describe") out.push(SRC.describeSkipped(a.skipped, { includeOff: a.includeOff, short: a.short }));
+        else if (c.fn === "info") {
+          const K = await import(pathToFileURL(path.join(site, "assets/js/market-data/keyless.js")));
+          out.push({ info: SRC.SOURCE_INFO, defaultOrder: SRC.DEFAULT_ORDER, offered: { browser: SRC.offeredSources("browser"), desktop: SRC.offeredSources("desktop") }, version: SRC.SOURCES_VERSION, venues: K.KEYLESS_VENUES, errors: K.GATEWAY_ERRORS, symbols: (a.tickers || []).map(t => K.keylessSymbol(resolver.resolve(t))) });
+        } else throw new Error(`unknown sources fn ${c.fn}`);
+      }
+      else if (c.op === "catalog") out.push({ catalog, version: C.CATALOG_VERSION });
       else if (c.op === "plan") out.push(C.planOf(c.id, c.planId, c.overrides || {}));
       else if (c.op === "notice") out.push(AV.classifyAvNotice(c.text));
       else if (c.op === "compare") out.push(MD.compareQuotes(c.a, c.b));
@@ -113,6 +129,17 @@ if (request.tool === "monte-carlo") {
       else throw new Error(`unknown op ${c.op}`);
     } catch (error) {
       out.push({ error: error.message });
+    }
+  }
+} else if (request.tool === "listing-cutoff") {
+  // cases: [listedFrom, requested start, [dates offered]]
+  const { cutToListing } = await import(pathToFileURL(path.join(site, "assets/js/market-data/instruments.js")));
+  for (const [listedFrom, start, days] of request.cases) {
+    try {
+      const h = cutToListing({ observations: days.map(d => ({ date: new Date(`${d}T00:00:00Z`), close: 10, adjClose: 9 })) }, { displayTicker: "SPCX", listedFrom }, { provider: "Test source", rangeStart: new Date(`${start}T00:00:00Z`) });
+      out.push({ days: h.observations.map(o => o.date.toISOString().slice(0, 10)), removed: h.listing?.removed ?? null, note: h.listing?.note ?? null });
+    } catch (error) {
+      out.push({ error: error.message, kind: error.kind });
     }
   }
 } else {

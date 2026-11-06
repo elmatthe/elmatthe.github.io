@@ -9,6 +9,14 @@
 //                          (daily limit, and the 2026 per-second burst wording)
 //   api.marketstack.com    /v2/eod/latest (exchange MIC and price_currency per row)
 //   finnhub.io             /api/v1/quote (US listings only, as on the free plan)
+//   md.gateway.test        the REAL market-data gateway code (_services/market-data-gateway)
+//                          running in this process, whose upstream is the synthetic Yahoo
+//                          fixtures (../fixtures/yahoo-chart.mjs): Yahoo is never contacted.
+//                          Pages use it when opened with ?mdgateway=https://md.gateway.test.
+//                          The site's configured gateway (_data/market_data.yml), once set,
+//                          is answered by the same mocked Worker, so a page opened without
+//                          ?mdgateway behaves as in production without any live request;
+//                          ?mdgateway=none opens a page as if no gateway were configured.
 // Any other external request except the Chart.js CDN is aborted and recorded, so a
 // test can prove which hosts a page contacted. No real market data is stored here.
 //
@@ -17,6 +25,8 @@
 //   HTTPS_PROXY    optional upstream proxy for real CDN requests (Chart.js)
 //   CHROMIUM_ARGS  optional extra Chromium flags (whitespace separated)
 "use strict";
+const path = require("path");
+const { pathToFileURL } = require("url");
 const { chromium } = require("playwright");
 
 const SITE_URL = (process.env.SITE_URL || "http://127.0.0.1:4000").replace(/\/$/, "");
@@ -27,6 +37,24 @@ const AV_BURST = "Thank you for using Alpha Vantage! Please consider spreading o
 const DAY = 86400000;
 const CORS = { "access-control-allow-origin": "*" };
 const JSON_HEADERS = { ...CORS, "content-type": "application/json" };
+const MD_GATEWAY = "https://md.gateway.test";
+const ROOT = path.resolve(__dirname, "../../..");
+// The deployed gateway the site points at (empty until it is set): never contacted by a test.
+const SITE_GATEWAY = (() => {
+  try {
+    const m = require("fs").readFileSync(path.join(ROOT, "_data/market_data.yml"), "utf8").match(/^gateway:\s*"([^"]*)"/m);
+    return m && m[1] ? new URL(m[1]).origin : "";
+  } catch (_) { return ""; }
+})();
+const escapeRe = text => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const GATEWAY_ROUTE = SITE_GATEWAY ? new RegExp(`^(https://md\\.gateway\\.test|${escapeRe(SITE_GATEWAY)})/`) : /^https:\/\/md\.gateway\.test\//;
+// The gateway's activation values, as the owner's production deployment sets them.
+const GATEWAY_ON = { KEYLESS_SOURCE: "yahoo-chart", OWNER_ATTESTATION: "owner-confirms-yahoo-permission" };
+let gatewayModules = null;
+const loadGateway = () => (gatewayModules ||= Promise.all([
+  import(pathToFileURL(path.join(ROOT, "_tools/tests/fixtures/local-coordinator.mjs")).href),
+  import(pathToFileURL(path.join(ROOT, "_tools/tests/fixtures/yahoo-chart.mjs")).href),
+]));
 
 function hash(text) {
   let h = 2166136261;
@@ -36,7 +64,7 @@ function hash(text) {
 const iso = ms => new Date(ms).toISOString().slice(0, 10);
 
 // CAD per unit, gently varying by day.
-const CAD_PER = { USD: 1.39, EUR: 1.56, JPY: 0.0089, GBP: 1.87, CNY: 0.21, CHF: 1.6, AUD: 0.98 };
+const CAD_PER = { USD: 1.39, EUR: 1.56, JPY: 0.0089, GBP: 1.87, CNY: 0.21, CHF: 1.6, AUD: 0.98, HKD: 0.18 };
 function cadPer(code, ms) {
   const base = CAD_PER[code];
   if (!base) return null;
@@ -122,7 +150,8 @@ function avBody(url, mode) {
   if (unknown) return fn === "GLOBAL_QUOTE" ? JSON.stringify({ "Global Quote": {} }) : JSON.stringify({ "Error Message": `Invalid API call. Please retry or visit the documentation (https://www.alphavantage.co/documentation/) for ${fn}.` });
   const days = businessDays(Date.now() - 6 * 365 * DAY, Date.now() - DAY);
   if (fn === "GLOBAL_QUOTE") {
-    const t = /\.(SHH|SHZ)$/.test(symbol) ? sessionFor(symbol) : days[days.length - 1];
+    // The latest session in the listing's own time zone (Europe and Asia can already be on the next calendar day).
+    const t = VENUE_TZ.some(([re]) => re.test(symbol)) ? sessionFor(symbol) : days[days.length - 1];
     const p = avPrice(symbol, t);
     return JSON.stringify({ "Global Quote": { "01. symbol": symbol, "02. open": String(p), "03. high": String(p * 1.01), "04. low": String(p * 0.99), "05. price": String(p), "06. volume": "1234567", "07. latest trading day": iso(t), "08. previous close": String(avPrice(symbol, t - DAY)), "09. change": "0.1", "10. change percent": "0.1000%" } });
   }
@@ -161,7 +190,7 @@ function msBody(url, mode) {
   if (mode.msLimit !== undefined && mode.msCalls > mode.msLimit) return { status: 429, body: JSON.stringify({ error: { code: "usage_limit_reached", message: "Your monthly usage limit has been reached. Please upgrade your Subscription Plan." } }) };
   const symbols = String(url.searchParams.get("symbols") || "").split(",").filter(Boolean);
   const data = symbols.filter(sym => !/^(YNVD|ZZZ)/.test(sym)).map(sym => {
-    const t = /\.(SS|SZ|T)$/.test(sym) ? sessionFor(sym) : lastSession();
+    const t = VENUE_TZ.some(([re]) => re.test(sym)) ? sessionFor(sym) : lastSession();
     const venue = MS_VENUE.find(([re]) => re.test(sym)) || [null, "XNAS", "USD"];
     const p = avPrice(venue[1] === "XLON" ? `${sym}LON` : sym, t);
     return { open: p, high: p, low: p, close: venue[1] === "XLON" ? Number((p * 1).toFixed(2)) : p, volume: 1000, adj_close: p, name: `Mock ${sym}`, exchange_code: venue[1], asset_type: "Stock", price_currency: venue[2], symbol: sym, exchange: venue[1], date: `${iso(t)}T00:00:00+0000` };
@@ -183,8 +212,32 @@ function fhBody(url) {
 // avLimit (requests before the daily limit), avBurstOn (request numbers answered with
 // the burst notice), searchMissesSuffix, msLimit, fhDown, hold ({ SYMBOL: Promise }
 // delays the answer for that symbol until the promise resolves).
+// Market-data gateway: gatewayOff (deployed, keyless source switched off), gatewayDown
+// (connection refused), gatewayHold (Promise delaying every answer), gatewayLimits
+// (overrides of its limits), yahoo ({ down, limited, blocked, hang, ... } for the
+// Yahoo fixtures). Reusing one `mode` object in two contexts shares one gateway (and
+// its cache), as two visitors would.
 async function mockMarketData(context, mode = {}) {
-  const calls = { boc: 0, ecb: 0, av: [], ms: [], fh: [], blocked: [] };
+  const calls = { boc: 0, ecb: 0, av: [], ms: [], fh: [], gateway: [], yahoo: [], blocked: [] };
+  mode.yahoo ||= {};
+  mode.yahoo.calls = calls.yahoo;
+  await context.route(GATEWAY_ROUTE, async route => {
+    const req = route.request();
+    const [{ testGateway }, { yahooFetch }] = await loadGateway();
+    // Upstream spacing (1 s per request) is tested in unit tests; here it is shortened
+    // so a 14-holding run does not take 14 s, unless a test sets its own limits.
+    mode.gatewayInstance ||= testGateway({ fetchImpl: yahooFetch({ mode: mode.yahoo }), limits: { upstreamMinSpacingMs: 50, ...(mode.gatewayLimits || {}) } });
+    const sent = req.headers();
+    calls.gateway.push({ url: req.url(), method: req.method(), headers: sent, body: req.postData() });
+    if (mode.gatewayHold) await mode.gatewayHold;
+    if (mode.gatewayDown) return route.abort("connectionrefused");
+    const env = { ALLOWED_ORIGINS: SITE_URL, ...(mode.gatewayOff ? {} : GATEWAY_ON) };
+    const headers = { "CF-Connecting-IP": "198.51.100.20" };
+    if (sent.origin) headers.Origin = sent.origin;
+    if (sent["access-control-request-method"]) headers["Access-Control-Request-Method"] = sent["access-control-request-method"];
+    const res = await mode.gatewayInstance.handle(new Request(req.url(), { method: req.method(), headers }), env);
+    return route.fulfill({ status: res.status, headers: Object.fromEntries(res.headers), body: res.status === 204 ? "" : await res.text() });
+  });
   await context.route(/^https:\/\/www\.bankofcanada\.ca\/valet\//, route => {
     calls.boc += 1;
     if (mode.bocDown) return route.fulfill({ status: 503, headers: { "content-type": "text/html" }, body: "<html>Service unavailable</html>" });
@@ -221,8 +274,8 @@ async function mockMarketData(context, mode = {}) {
   });
   await context.route(url => {
     const u = new URL(url);
-    return u.protocol.startsWith("http") && !/^(127\.0\.0\.1|localhost)$/.test(u.hostname)
-      && !/^(www\.bankofcanada\.ca|data-api\.ecb\.europa\.eu|www\.alphavantage\.co|api\.marketstack\.com|finnhub\.io)$/.test(u.hostname);
+    return u.protocol.startsWith("http") && !/^(127\.0\.0\.1|localhost)$/.test(u.hostname) && u.origin !== SITE_GATEWAY
+      && !/^(www\.bankofcanada\.ca|data-api\.ecb\.europa\.eu|www\.alphavantage\.co|api\.marketstack\.com|finnhub\.io|md\.gateway\.test)$/.test(u.hostname);
   }, route => { calls.blocked.push(route.request().url()); return route.abort("blockedbyclient"); });
   await context.route(/favicon\.ico/, r => r.fulfill({ status: 204 }));
   return calls;
@@ -312,6 +365,17 @@ async function mockCpiSources(context, mode = {}) {
   return calls;
 }
 
+// For suites that need no market data at all: every request that leaves this computer is
+// aborted and recorded, so a page can never reach a real host while a test only counts.
+async function blockExternal(context) {
+  const blocked = [];
+  await context.route(url => {
+    const u = new URL(url);
+    return u.protocol.startsWith("http") && !/^(127\.0\.0\.1|localhost)$/.test(u.hostname);
+  }, route => { blocked.push(route.request().url()); return route.abort("blockedbyclient"); });
+  return blocked;
+}
+
 async function launch() {
   const args = (process.env.CHROMIUM_ARGS || "").split(/\s+/).filter(Boolean);
   const options = { args };
@@ -331,7 +395,7 @@ function watchNetwork(page) {
   return { external, errors };
 }
 
-const ALLOWED_HOSTS = /^(www\.bankofcanada\.ca|data-api\.ecb\.europa\.eu|www\.alphavantage\.co|api\.marketstack\.com|finnhub\.io)$/;
+const ALLOWED_HOSTS = /^(www\.bankofcanada\.ca|data-api\.ecb\.europa\.eu|www\.alphavantage\.co|api\.marketstack\.com|finnhub\.io|md\.gateway\.test)$/;
 const disallowedRequests = urls => urls.filter(u => !ALLOWED_HOSTS.test(new URL(u).hostname));
 
 function checker() {
@@ -341,4 +405,4 @@ function checker() {
   return { check, done };
 }
 
-module.exports = { SITE_URL, TEST_KEY, MS_KEY, FH_KEY, CPI_KEY, CPI_GATEWAY, launch, mockMarketData, mockCpiSources, watchNetwork, checker, disallowedRequests };
+module.exports = { SITE_URL, TEST_KEY, MS_KEY, FH_KEY, CPI_KEY, CPI_GATEWAY, MD_GATEWAY, SITE_GATEWAY, GATEWAY_ROUTE, launch, mockMarketData, mockCpiSources, blockExternal, watchNetwork, checker, disallowedRequests };

@@ -1,0 +1,19 @@
+# Shared market-data gateway for the Portfolio Rebalancer and Stock Comparison tools
+# (_services/market-data-gateway, a Cloudflare Worker). It provides Yahoo Finance prices
+# with no API key; in both tools Yahoo Finance is one source in the visitor's ordered
+# source list (position 1 by default).
+#
+# Set only to the address of a deployed Worker whose /v1/health was checked and whose
+# capped live smoke test passed (README.md in that folder, "Deploy" and "Verify").
+# Current value: the owner's production Worker, deployed 2026-11-04 (version
+# 76998e2b-205d-4645-8f85-7a6fdf0dbad7) and verified the same day (Handoff.md).
+# Set it to "" to switch Yahoo Finance off on both pages: they then say it is not
+# available and send it nothing; the visitor's own-key providers keep working.
+#
+# The desktop apps use the same address (DEFAULT_GATEWAY_URL in
+# _tools/shared_py/market_data/gateway.py); _tools/tests/test_market_data_parity.py
+# keeps the two equal.
+#
+# Value: the Worker's https URL with no trailing slash, for example
+#   gateway: "https://market-data-gateway.<your-subdomain>.workers.dev"
+gateway: "https://market-data-gateway.elmatthe.workers.dev"

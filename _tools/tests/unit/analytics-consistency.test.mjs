@@ -225,7 +225,7 @@ test("exports state the currency and price basis actually used for every ticker"
   assert.match(readMe, /Sampling frequency\|weekly \(52 periods per year\)/);
   assert.match(readMe, /Currency\|normalized to USD \(left out, not convertible: DDD\.BA\)/);
   assert.match(readMe, /XIU\.TO\|CAD\|USD\|Converted from CAD/);
-  assert.match(readMe, /Live data note\|LIVE NOTE/);
+  assert.match(readMe, /Data note\|LIVE NOTE/);
   assert.match(text(sheets["Executive Summary"]), /XIU\.TO\|USD\|CAD\|close/);
   assert.match(text(sheets["Model & Calculations"]), /Alpha \(per week\)/);
   assert.match(text(sheets["Raw Data Ingestion"]), /Native currency/);
