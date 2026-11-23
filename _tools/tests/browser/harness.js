@@ -226,7 +226,9 @@ async function mockMarketData(context, mode = {}) {
     const [{ testGateway }, { yahooFetch }] = await loadGateway();
     // Upstream spacing (1 s per request) is tested in unit tests; here it is shortened
     // so a 14-holding run does not take 14 s, unless a test sets its own limits.
-    mode.gatewayInstance ||= testGateway({ fetchImpl: yahooFetch({ mode: mode.yahoo }), limits: { upstreamMinSpacingMs: 50, ...(mode.gatewayLimits || {}) } });
+    // `mode.now` (a clock function) is the time the synthetic source and the gateway use, for a
+    // test that also sets the browser's clock (context.clock); otherwise the real time.
+    mode.gatewayInstance ||= testGateway({ fetchImpl: yahooFetch({ mode: mode.yahoo, now: mode.now }), now: mode.now, limits: { upstreamMinSpacingMs: 50, ...(mode.gatewayLimits || {}) } });
     const sent = req.headers();
     calls.gateway.push({ url: req.url(), method: req.method(), headers: sent, body: req.postData() });
     if (mode.gatewayHold) await mode.gatewayHold;

@@ -19,7 +19,8 @@
 //   NOADJ       history without adjusted closes
 // `mode` (mutable): down (HTTP 503), downFor (array of symbols answered with HTTP 503),
 // limited (HTTP 429), blocked (HTTP 403), redirect (HTTP 302), huge (a body over the
-// gateway's size cap), staleDays (answers dated that many days in the past), retryAfter
+// gateway's size cap), staleDays (answers dated that many days in the past), staleSessions
+// (the latest session reported is that many weekday sessions older than it should be), retryAfter
 // (a Retry-After header on the 429, 403 and 503 answers), alwaysRetryAfter (the same on
 // every answer, even a successful one), calls (array: every URL).
 
@@ -129,7 +130,16 @@ export function yahooChartResponse(url, { now = Date.now(), mode = {} } = {}) {
   if (mode.downFor?.includes(symbol)) return { status: 503, body: "<html>Service unavailable</html>" };
   const range = u.searchParams.get("range");
   // staleDays: the source answers as of that many days ago (an old price, never relabelled).
-  const asOf = mode.staleDays ? now - mode.staleDays * DAY : now;
+  let asOf = mode.staleDays ? now - mode.staleDays * DAY : now;
+  // staleSessions: the source answers as of that many weekday sessions before the latest one
+  // it would report today. Unlike a number of calendar days, this is stale on every day of the
+  // week: two calendar days before a Monday is still Friday's close, which is current.
+  if (mode.staleSessions) {
+    const sessions = fixtureSessions(listing.tz, now, 14 + 2 * mode.staleSessions);
+    // Midday UTC of the next day is still that next local day in every fixture time zone,
+    // so the reported latest session is exactly `sessions[...]`.
+    asOf = sessions[sessions.length - 1 - mode.staleSessions] + DAY + 12 * 3600000;
+  }
   return { status: 200, body: chartBody(symbol, listing, { range, now: asOf, quote: range === "5d" }) };
 }
 

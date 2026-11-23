@@ -42,7 +42,7 @@ export const UPSTREAM_LIMITS = Object.freeze({
   upstreamMinSpacingMs: 1000, // between two actual starts, worldwide
   upstreamQueueMaxWaitMs: 15000, // a request waits at most this long for its turn
   upstreamQueuePollMs: 200, // how often a waiting request looks again
-  upstreamLeaseGraceMs: 2000, // an in-flight place is reclaimed this long after its timeout
+  upstreamLeaseGraceMs: 2000, // a lease expires this long after its timeout; expiry quarantines its marker and never frees its place
 });
 const BUDGET_WINDOW_MS = 60000;
 
@@ -198,6 +198,7 @@ export class UpstreamCoordinatorCore {
     this.log = log;
     this.L = { ...UPSTREAM_LIMITS, ...limits };
     this.state = null; // loaded on first use; null means not verified yet
+    this.durable = null; // the state last read from or confirmed on disk
     this.seen = new Set();
     this.unsaved = false; // a known state/outcome is held in memory but its write failed
     this.quarantine = new Set(); // inherited or locally unknown outcomes; never expires
@@ -216,12 +217,14 @@ export class UpstreamCoordinatorCore {
       // state row is lost/corrupt storage, not a pristine coordinator.
       if (state == null && seen.length) throw new Error("coordinator state missing");
       this.state = verifiedState(state);
+      this.durable = this.state;
       this.seen = new Set(seen);
       this.quarantine = new Set(this.state.unresolved.map(marker => marker.id));
     }
     if (this.unsaved) {
       this.storage.write(this.state);
       this.unsaved = false;
+      this.persisted(this.state);
     }
     this.inFlightAt(this.now());
     this.applyReactivation();
@@ -244,6 +247,7 @@ export class UpstreamCoordinatorCore {
     const ended = this.state.haltCode !== null;
     this.seen.add(id);
     this.state = next;
+    this.durable = next;
     this.quarantine.clear();
     if (ended) this.log({ event: "source_reactivated" });
   }
@@ -261,13 +265,28 @@ export class UpstreamCoordinatorCore {
     this.state = next;
     try {
       this.storage.write(next);
-      this.unsaved = false;
-      return true;
     } catch (_) {
       this.unsaved = true;
       this.log({ event: "coordinator_write_failed" });
+      this.logStops(this.durable, next, "cooldown_not_persisted");
       return false;
     }
+    this.unsaved = false;
+    this.persisted(next);
+    return true;
+  }
+
+  // `durable` is the state last confirmed on disk. `cooldown_started` reports a stop only
+  // once it is there (R6/L3); a stop held in memory after a failed write is reported as
+  // `cooldown_not_persisted`, and as `cooldown_started` when a later write confirms it.
+  persisted(state) {
+    this.logStops(this.durable, state, "cooldown_started");
+    this.durable = state;
+  }
+  logStops(before, after, event) {
+    const was = before ?? EMPTY_STATE;
+    if (after.cooldownUntil > was.cooldownUntil) this.log({ event, code: after.cooldownCode, seconds: Math.max(0, Math.ceil((after.cooldownUntil - this.now()) / 1000)) });
+    if (after.haltCode && !was.haltCode) this.log({ event, code: after.haltCode, seconds: null, halted: true });
   }
 
   // A deadline only ever moves later, whichever refusal is recorded first; a halt stays
@@ -282,13 +301,9 @@ export class UpstreamCoordinatorCore {
     if (until > next.cooldownUntil) {
       next.cooldownUntil = until;
       next.cooldownCode = code;
-      this.log({ event: "cooldown_started", code, seconds: Math.ceil((until - t) / 1000) });
     }
-    if (halts && !next.haltCode) {
-      next.haltCode = code;
-      this.log({ event: "cooldown_started", code, seconds: null, halted: true });
-    }
-    return next;
+    if (halts && !next.haltCode) next.haltCode = code;
+    return next; // logged by commitOutcome, once the write has succeeded or failed
   }
 
   // Updates the circuit breaker after an upstream outcome (a code, or null for a real success).
@@ -497,6 +512,7 @@ export class UpstreamCoordinatorCore {
       return COORDINATOR_UNAVAILABLE;
     }
     this.state = next;
+    this.durable = next; // admission changes no stop, so there is nothing to log
     work.admissionId = id;
     this.unsaved = false;
     return null;
@@ -517,7 +533,7 @@ export class UpstreamCoordinatorCore {
       work.controller.abort();
     }, L.upstreamTimeoutMs);
     try {
-      let response, text, networkError, fetchFailed = false;
+      let response, text, fetchFailed = false;
       // Only fetch/body failures belong to the provider failure counter. SQL exceptions
       // are handled by commitOutcome, outside this catch, and never become Yahoo failures.
       try {
@@ -528,21 +544,22 @@ export class UpstreamCoordinatorCore {
           signal: work.controller.signal,
         });
         if (response.status === 200) text = await readCapped(response.body, L.maxUpstreamBytes);
-      } catch (error) {
+      } catch (_) {
         fetchFailed = true;
-        networkError = error;
       }
       if (fetchFailed || !response) {
-        // Only an observed HTTP status is a known outcome. Without one the request may have
-        // reached the source and been refused (a 429 whose headers were lost with the
-        // connection), so its marker stays. A body lost after a status was observed is known.
-        const unknown = !response || timedOut || Boolean(work.dropped) || work.controller.signal.aborted || networkError?.name === "AbortError";
+        // Only a complete answer is a known outcome, so every path here is unknown and keeps
+        // its marker. With no HTTP status, the request may have reached the source and been
+        // refused (a 429 whose headers were lost with the connection). An HTTP 200 whose body
+        // did not finish (interrupted, timed out or cancelled) did not complete either: its
+        // status alone is not proof that the upstream work ended (owner decision, R6/M5).
+        // A refusal status never gets here: it is recorded before its body is touched.
         const code = timedOut ? "upstream_timeout" : "upstream_unavailable";
-        const saved = this.recordOutcome(work.dropped ? "cancelled" : code, null, work.admissionId, unknown);
+        const saved = this.recordOutcome(work.dropped ? "cancelled" : code, null, work.admissionId, true);
         if (!saved) return { code: COORDINATOR_UNAVAILABLE };
         if (work.dropped) return { code: work.dropped };
         this.log({ event: "upstream_error", code, mic: work.mic });
-        return unknown ? { code: COORDINATOR_UNAVAILABLE } : this.refusalReply(code);
+        return { code: COORDINATOR_UNAVAILABLE };
       }
       if (response.status === 200) {
         if (!this.recordOutcome(null, null, work.admissionId)) return { code: COORDINATOR_UNAVAILABLE };

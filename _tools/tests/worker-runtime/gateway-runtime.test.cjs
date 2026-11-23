@@ -123,8 +123,11 @@ async function startWorld({ real = false, env = {}, coordinatorEnv = {}, persist
       env: Object.fromEntries(isolateNames.map(name => [bindingName(name), { type: "worker", worker: name }])),
     },
   };
+  // What the Workers log (console.log), in order: the gateway's JSON events, parsed.
+  const logs = [];
   const options = {
     log: new Log(LogLevel.NONE),
+    handleStructuredLogs: ({ message }) => { try { logs.push(JSON.parse(message)); } catch (_) { /* not an event */ } },
     cf: false, // otherwise Miniflare downloads Cloudflare's request metadata and caches it here
     ...(persist ? { resourcePersistencePath: persist } : {}),
     workers: [hostWorker, isolate("isolate-b"), isolate("isolate-c"), client, ...extra],
@@ -143,6 +146,7 @@ async function startWorld({ real = false, env = {}, coordinatorEnv = {}, persist
   const world = {
     mf,
     yahoo,
+    logs,
     ask: (name, symbol) => callers.fetch(callerUrl("ask", name, `/v1/quote?symbol=${encodeURIComponent(symbol)}`)).then(readNow),
     askPath: (name, target) => callers.fetch(callerUrl("ask", name, target)).then(readNow),
     async health(name = "isolate-b") {
@@ -420,6 +424,150 @@ test("H2: a connection closed before HTTP headers stays unresolved across a full
     assert.deepEqual(yahoo.strays, []);
   } finally { await world.stop(); }
 });
+
+/* ---------------- R6/M5. an HTTP 200 whose body does not finish ---------------- */
+// Owner decision: an HTTP 200 status is not proof that the upstream work completed. The
+// synthetic source answers over a real socket. `mode`: "complete" (the whole body, in two
+// parts), "interrupt" (HTTP 200 headers and half the body, then the connection is closed) or
+// "hang" (HTTP 200 headers and half the body, then nothing).
+const eventually = async (condition, label, ms = 8000) => {
+  const giveUp = Date.now() + ms;
+  while (Date.now() < giveUp) {
+    if (await condition()) return;
+    await sleep(20);
+  }
+  assert.ok(await condition(), `timed out waiting for: ${label}`);
+};
+function bodyFaultYahoo(mode) {
+  const yahoo = syntheticYahoo();
+  const open = new Set();
+  yahoo.mode = mode;
+  yahoo.headersSent = 0;
+  yahoo.raw = async (req, res) => {
+    const target = new URL(req.url, "https://query1.finance.yahoo.com");
+    yahoo.calls.push({ symbol: decodeURIComponent(target.pathname.split("/").pop()), at: Date.now(), url: req.url });
+    const { yahooFetch } = await loadYahoo();
+    const body = Buffer.from(await (await yahooFetch({})(`https://query1.finance.yahoo.com${target.pathname}${target.search}`)).arrayBuffer());
+    const half = Math.floor(body.length / 2);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (yahoo.mode === "complete") {
+      res.write(body.subarray(0, half));
+      res.end(body.subarray(half));
+      return;
+    }
+    open.add(res);
+    res.write(body.subarray(0, half));
+    yahoo.headersSent += 1;
+    if (yahoo.mode === "interrupt") setTimeout(() => req.socket.destroy(), 100);
+  };
+  yahoo.closeAll = () => { for (const res of open) res.destroy(); open.clear(); };
+  return yahoo;
+}
+
+test("M5: an HTTP 200 whose body is interrupted stays unresolved across a full persisted restart", { timeout: 120000 }, async () => {
+  const persist = persistDir("interrupted-200-body");
+  const yahoo = bodyFaultYahoo("interrupt");
+  let world = await startWorld({ persist, yahoo });
+  try {
+    const first = await world.ask("isolate-b", "AAPL");
+    assert.equal(yahoo.headersSent, 1, "HTTP 200 headers and part of the body were sent");
+    await expectError(first, "busy", 503);
+    assert.equal(first.headers.get("retry-after"), "60");
+    const row = await world.row();
+    assert.equal(row.unresolved.length, 1, "HTTP 200 without its whole body is not a known outcome");
+    assert.equal(row.failures, 1, "the breaker still counts the failure");
+    yahoo.mode = "complete";
+    await world.advance(1500);
+    await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
+  } finally { yahoo.closeAll(); await world.stop(); }
+  world = await startWorld({ persist, yahoo });
+  try {
+    await world.advance(40 * DAY_MS);
+    assert.equal((await world.health()).upstream.state, "unverified");
+    await expectError(await world.ask("isolate-c", "SPY"), "busy", 503);
+    await expectError(await world.ask("isolate-a", "NVDA"), "busy", 503);
+    assert.deepEqual(yahoo.calls.map(c => c.symbol), ["AAPL"], "restart, clock and health cannot authorize a second request");
+    assert.equal((await world.row()).unresolved.length, 1);
+    assert.deepEqual(yahoo.strays, []);
+  } finally { await world.stop(); }
+});
+
+test("M5: an HTTP 200 whose body never finishes times out and stays unresolved after a reset", { timeout: 60000 }, async () => {
+  const yahoo = bodyFaultYahoo("hang");
+  await withWorld({ yahoo }, async world => {
+    try {
+      await expectError(await world.ask("isolate-b", "AAPL"), "busy", 503);
+      assert.equal(yahoo.headersSent, 1, "HTTP 200 headers and part of the body were sent");
+      await eventually(() => world.logs.some(l => l.event === "upstream_error" && l.code === "upstream_timeout"), "the coordinator's upstream timeout");
+      const row = await world.row();
+      assert.equal(row.unresolved.length, 1);
+      assert.equal(row.failures, 1, "a timeout counts toward the breaker");
+      assert.equal((await world.health()).upstream.state, "unverified");
+      yahoo.mode = "complete";
+      await world.test("reset");
+      await world.advance(40 * DAY_MS);
+      await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
+      assert.equal(yahoo.calls.length, 1, "no further upstream request while the outcome is unknown");
+    } finally { yahoo.closeAll(); }
+  });
+});
+
+test("M5: a caller that leaves after HTTP 200 headers, before the body ends, leaves its outcome unresolved", { timeout: 60000 }, async () => {
+  const yahoo = bodyFaultYahoo("hang");
+  await withWorld({ yahoo }, async world => {
+    try {
+      assert.match(await Promise.race([world.leave("MSFT", 400), sleep(5000).then(() => "the caller was never released")]), /rejected AbortError|status 499/);
+      assert.equal(yahoo.headersSent, 1, "the caller left after HTTP 200 headers were sent");
+      await eventually(async () => (await world.row()).unresolved.length === 1, "the marker stays");
+      const row = await world.row();
+      assert.equal(row.failures, 0, "a cancellation is not a provider failure");
+      assert.equal(row.cooldown_until, 0);
+      assert.equal((await world.health()).upstream.state, "unverified");
+      yahoo.mode = "complete";
+      await world.test("reset");
+      await world.advance(40 * DAY_MS);
+      await expectError(await world.ask("isolate-c", "SPY"), "busy", 503);
+      assert.equal(yahoo.calls.length, 1);
+    } finally { yahoo.closeAll(); }
+  });
+});
+
+test("M5 control: a complete HTTP 200 over the same socket path finalizes, and the next request goes out", { timeout: 60000 }, async () => {
+  const yahoo = bodyFaultYahoo("complete");
+  await withWorld({ yahoo }, async world => {
+    assert.equal((await world.ask("isolate-b", "AAPL")).status, 200);
+    const row = await world.row();
+    assert.deepEqual(row.unresolved, []);
+    assert.equal(row.failures, 0);
+    await world.advance(1100);
+    assert.equal((await world.ask("isolate-c", "MSFT")).status, 200);
+    assert.equal((await world.health()).upstream.state, "ok");
+    assert.deepEqual(yahoo.calls.map(c => c.symbol), ["AAPL", "MSFT"]);
+  });
+});
+
+/* ---------------- R6/L3. a stop is logged as started only once SQLite has it ---------------- */
+test("L3: a stop whose SQLite write fails is logged as not persisted, and as started only once a later write succeeds", { timeout: 60000 }, () => withWorld({}, async world => {
+  const events = () => world.logs.map(l => l.event);
+  await world.health();
+  await rejectStopWrites(world);
+  world.yahoo.answer = () => refusal(3600);
+  await expectError(await world.ask("isolate-b", "AAPL"), "busy", 503);
+  await eventually(() => events().includes("cooldown_not_persisted"), "the failed stop write is reported");
+  assert.ok(events().indexOf("coordinator_write_failed") < events().indexOf("cooldown_not_persisted"));
+  assert.ok(!events().includes("cooldown_started"), `no durable stop is claimed: ${JSON.stringify(world.logs)}`);
+  assert.equal((await world.row()).cooldown_until, 0, "and indeed SQLite does not have it");
+  await sql(world, "DROP TRIGGER fail_outcome");
+  world.yahoo.answer = null;
+  await expectError(await world.ask("isolate-c", "MSFT"), "upstream_rate_limited", 429);
+  await eventually(() => events().includes("cooldown_started"), "the confirmed stop is reported");
+  const started = world.logs.filter(l => l.event === "cooldown_started");
+  assert.equal(started.length, 1);
+  assert.equal(started[0].code, "upstream_rate_limited");
+  assert.ok(started[0].seconds > 3500 && started[0].seconds <= 3600, JSON.stringify(started[0]));
+  assert.ok((await world.row()).cooldown_until > 0);
+  assert.equal(world.yahoo.calls.length, 1);
+}));
 
 /* ---------------- the unmodified entry point ---------------- */
 test("the unmodified Worker: answers come from synthetic Yahoo through the coordinator, in real SQLite", { timeout: 60000 }, () => withWorld({ real: true }, async world => {

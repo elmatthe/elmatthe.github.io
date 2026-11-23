@@ -76,7 +76,7 @@ function world({ limits = {}, coordinatorEnv = {}, storage = memoryStorage(), ca
     if (!disk?.starts.includes(clock.now())) violations.push(`${symbol}: started before its start was on disk`);
     if (disk?.haltCode || disk?.cooldownUntil > clock.now()) violations.push(`${symbol}: started after a stop was recorded`);
     return new Promise((resolve, reject) => {
-      held.push({ symbol, ok: () => resolve(answer(url, init)), status: (status, headers = {}) => resolve(new Response("x", { status, headers })), raw: resolve, reject });
+      held.push({ symbol, ok: () => resolve(answer(url, init)), status: (status, headers = {}) => resolve(new Response("x", { status, headers })), raw: resolve, reject, signal: init.signal, url: String(url) });
       init.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true });
     });
   };
@@ -308,19 +308,180 @@ test("H2: network rejection before any HTTP status keeps its marker, with or wit
   }
 });
 
-test("H2: a body lost after HTTP 200 was observed is a known outcome and finalizes", async () => {
+// R6 (independent R5 review M5, owner decision): an HTTP 200 status is not proof that the
+// upstream work completed. A 200 whose body does not finish is an unknown outcome, whether it
+// is interrupted, times out or is cancelled. (R5 finalized the interrupted case; this test
+// replaces the R5 test that asserted that.)
+const firstHalf = new TextEncoder().encode('{"chart":{"result":[{"meta":');
+// A 200 body that sends its first half and then waits. `signal` errors it, as a real fetch
+// body is errored by its request's abort; `honoursAbort: false` is a transport that ignores it.
+function unfinishedBody(signal, { honoursAbort = true } = {}) {
+  let control;
+  const stream = new ReadableStream({
+    start(controller) {
+      control = controller;
+      controller.enqueue(firstHalf);
+      if (honoursAbort) signal.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")), { once: true });
+    },
+  });
+  return { response: new Response(stream, { status: 200 }), interrupt: () => control.error(new TypeError("synthetic connection lost mid-body")) };
+}
+// After an unknown outcome: restart, 40 days, health unverified and no second upstream request.
+async function staysQuarantined(w, label) {
+  await refused(await w.isolate().ask("MSFT"), "busy", 60);
+  w.coordinator.restart();
+  await w.clock.jump(40 * 86400000);
+  await refused(await w.isolate().ask("SPY"), "busy", 60);
+  assert.equal((await w.isolate().health()).upstream.state, "unverified", label);
+  assert.equal(w.starts.length, 1, `${label}: no further upstream request while the outcome is unknown`);
+  assert.equal(w.storage.peek().unresolved.length, 1, label);
+}
+
+test("M5: an HTTP 200 whose body is interrupted keeps its marker, with or without a working write", async () => {
+  for (const failWrites of [false, true]) {
+    const w = world({ limits: { upstreamMinSpacingMs: 0 } });
+    const first = w.isolate().ask("AAPL");
+    await until(() => w.starts.length === 1, "admission");
+    const h = w.held.shift();
+    const body = unfinishedBody(h.signal);
+    h.raw(body.response);
+    await new Promise(resolve => setTimeout(resolve, 5)); // the status and first half are read
+    w.storage.failWrites = failWrites;
+    body.interrupt();
+    await refused(await first, "busy", 60);
+    assert.equal(w.storage.peek().unresolved.length, 1, "a status without its body is not a known outcome");
+    assert.equal(w.storage.peek().failures, failWrites ? 0 : 1, "the breaker counts it when it can be written");
+    w.storage.failWrites = false;
+    await staysQuarantined(w, `interrupted (failWrites ${failWrites})`);
+  }
+});
+
+test("M5: an HTTP 200 whose body times out keeps its marker, even when the transport ignores the abort", async () => {
+  for (const honoursAbort of [true, false]) {
+    const w = world({ limits: { upstreamMinSpacingMs: 0, upstreamTimeoutMs: 30 } });
+    const first = w.isolate().ask("AAPL");
+    await until(() => w.starts.length === 1, "admission");
+    const h = w.held.shift();
+    const body = unfinishedBody(h.signal, { honoursAbort });
+    h.raw(body.response);
+    await until(() => h.signal.aborted, "the upstream timeout fires");
+    if (honoursAbort) {
+      await refused(await first, "busy", 60);
+      assert.equal(w.storage.peek().failures, 1, "a timeout counts toward the breaker");
+    } else {
+      // The body never ends, so the request never settles; the timer alone quarantines.
+      assert.equal((await w.isolate().health()).upstream.state, "unverified");
+      await refused(await w.isolate().ask("MSFT"), "busy", 60);
+      body.interrupt(); // let it finish late: still unknown
+      await refused(await first, "busy", 60);
+    }
+    assert.equal(w.storage.peek().unresolved.length, 1);
+    await staysQuarantined(w, `timed out (honoursAbort ${honoursAbort})`);
+  }
+});
+
+test("M5: a client that leaves after HTTP 200 headers, before the body ends, leaves its marker", async () => {
+  const w = world({ limits: { upstreamMinSpacingMs: 0 } });
+  const gone = new AbortController();
+  const first = w.isolate().ask("AAPL", { signal: gone.signal });
+  await until(() => w.starts.length === 1, "admission");
+  const h = w.held.shift();
+  h.raw(unfinishedBody(h.signal).response);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  gone.abort();
+  assert.equal((await first).status, 499);
+  await until(() => h.signal.aborted, "the upstream request is aborted");
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(w.storage.peek().unresolved.length, 1, "a client abort cannot complete the provider's answer");
+  assert.equal(w.storage.peek().failures, 0, "a cancellation is not a provider failure");
+  await staysQuarantined(w, "cancelled after headers");
+});
+
+test("M5 control: a complete HTTP 200 streamed in parts still finalizes, and the next request goes out", async () => {
   const w = world({ limits: { upstreamMinSpacingMs: 0 } });
   const first = w.isolate().ask("AAPL");
   await until(() => w.starts.length === 1, "admission");
-  const body = new ReadableStream({ start(controller) { controller.error(new TypeError("synthetic connection lost mid-body")); } });
-  w.held.shift().raw(new Response(body, { status: 200 }));
-  await refused(await first, "upstream_unavailable");
+  const h = w.held.shift();
+  const bytes = new Uint8Array(await (await yahooFetch({ now: w.clock.now })(h.url)).arrayBuffer());
+  const half = Math.floor(bytes.length / 2);
+  const stream = new ReadableStream({ start(c) { c.enqueue(bytes.slice(0, half)); c.enqueue(bytes.slice(half)); c.close(); } });
+  h.raw(new Response(stream, { status: 200 }));
+  assert.equal((await first).status, 200);
   assert.deepEqual(w.storage.peek().unresolved, []);
-  assert.equal(w.storage.peek().failures, 1);
+  assert.equal(w.storage.peek().failures, 0);
+  w.coordinator.restart();
+  assert.equal((await w.isolate().health()).upstream.state, "ok");
   const next = w.isolate().ask("MSFT");
   await until(() => w.starts.length === 2, "capacity returns");
   releaseAll(w);
   assert.equal((await next).status, 200);
+});
+
+/* ---------------- R6/L3. a stop is logged as started only once it is on disk ---------------- */
+// Each log entry is recorded with what storage held at that moment.
+function loggedCore({ status = 429, retryAfter = "3600", failAfterAdmission = false } = {}) {
+  const storage = memoryStorage();
+  const logs = [];
+  const core = new UpstreamCoordinatorCore({
+    storage, now: () => NOW, log: entry => logs.push({ ...entry, disk: storage.peek() }), limits: { upstreamMinSpacingMs: 0 },
+    fetchImpl: async () => {
+      if (failAfterAdmission) storage.failWrites = true; // the admission is on disk; the outcome write fails
+      return new Response("x", { status, headers: { "Retry-After": retryAfter } });
+    },
+  });
+  return { storage, logs, core, events: name => logs.filter(l => l.event === name) };
+}
+
+test("L3: cooldown_started is logged only once the stop is on disk", async () => {
+  for (const [retryAfter, halted] of [["3600", false], ["172800", true]]) {
+    const { core, logs, events } = loggedCore({ retryAfter });
+    assert.equal((await core.fetchChart({ kind: "quote", symbol: "AAPL", client: "a" })).code, "upstream_rate_limited");
+    const started = events("cooldown_started");
+    assert.equal(started.length, halted ? 2 : 1, JSON.stringify(logs));
+    for (const entry of started) {
+      assert.ok(entry.disk.cooldownUntil >= NOW + 900000, "the deadline was on disk when it was logged");
+      if (entry.halted) assert.equal(entry.disk.haltCode, "upstream_rate_limited", "the halt was on disk when it was logged");
+    }
+    assert.equal(started[0].seconds, halted ? COOLDOWN_SECONDS.upstream_rate_limited : 3600);
+    assert.equal(events("cooldown_not_persisted").length, 0);
+  }
+});
+
+test("L3: a stop whose write fails is logged as not persisted, never as started, until a later write confirms it", async () => {
+  for (const [retryAfter, halted] of [["3600", false], ["172800", true]]) {
+    const { core, storage, logs, events } = loggedCore({ retryAfter, failAfterAdmission: true });
+    assert.equal((await core.fetchChart({ kind: "quote", symbol: "AAPL", client: "a" })).code, "coordinator_unavailable");
+    assert.equal(events("cooldown_started").length, 0, `no durable stop is claimed: ${JSON.stringify(logs)}`);
+    const failedAt = logs.findIndex(l => l.event === "coordinator_write_failed");
+    const pending = events("cooldown_not_persisted");
+    assert.ok(failedAt >= 0);
+    assert.equal(pending.length, halted ? 2 : 1);
+    assert.ok(logs.indexOf(pending[0]) > failedAt, "the stop is reported with the failure that kept it off disk");
+    assert.equal(pending[0].code, "upstream_rate_limited");
+    if (halted) assert.equal(pending[1].halted, true);
+    assert.equal(storage.peek().cooldownUntil, 0, "and indeed it is not on disk");
+    assert.equal(core.status().state, "unverified", "still failing: nothing confirmed");
+    assert.equal(events("cooldown_started").length, 0);
+    storage.failWrites = false;
+    const status = core.status(); // the held outcome is written now
+    assert.equal(status.state, halted ? "halted" : "cooling_down");
+    const started = events("cooldown_started");
+    assert.equal(started.length, halted ? 2 : 1);
+    for (const entry of started) assert.ok(entry.disk.cooldownUntil >= NOW + 900000, "confirmed only after the write");
+    if (halted) assert.equal(started[1].disk.haltCode, "upstream_rate_limited");
+    core.status();
+    assert.equal(events("cooldown_started").length, halted ? 2 : 1, "a confirmed stop is not logged again");
+  }
+});
+
+test("L3: a failed stop write followed by a restart never logs the stop as started", async () => {
+  const { core, storage, events } = loggedCore({ failAfterAdmission: true });
+  await core.fetchChart({ kind: "quote", symbol: "AAPL", client: "a" });
+  storage.failWrites = false;
+  const logs = [];
+  const restarted = new UpstreamCoordinatorCore({ storage, now: () => NOW, log: entry => logs.push(entry), fetchImpl: () => assert.fail("no upstream request") });
+  assert.equal(restarted.status().state, "unverified", "the lost outcome is quarantined");
+  assert.equal(events("cooldown_started").length + logs.filter(l => l.event === "cooldown_started").length, 0);
 });
 
 test("H1: an identifier observed while a request is active cannot clear its later aborted unknown outcome", async () => {

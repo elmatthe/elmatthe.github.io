@@ -1,3 +1,38 @@
+# Handoff - PR 46 R6 stabilization after the qualified R5 review (2026-11-23)
+
+Snapshot: Claude Code on HOME-PC, branch `claude/loving-brown-48hctl`, starting checkpoint
+R5 `d3fd9ec770bc628abbc140b52b74ae3ef56b8f01`. **R6 READY FOR INDEPENDENT REVIEW.** This
+handoff accompanies the R6 commit; resolve its SHA with Git. R6 is not independently accepted.
+
+- Independent R5 review (Codex): **QUALIFIED**; H1 and H2 confirmed fixed, no Critical/High.
+- M5 (owner decision): an HTTP 200 status alone is not a completed outcome. A 200 whose body
+  is interrupted, times out or is cancelled keeps its marker and quarantines, needing owner
+  reconciliation and reactivation. R5 finalized the interrupted case; that is now quarantined
+  too (one expression in `start()`; the R5 test asserting finalization was replaced).
+  Refusal statuses, complete 200s and the 2 MiB cap are unchanged. Unit + real workerd tests
+  (real socket) for interrupted, timed out and cancelled bodies, plus complete-body controls.
+- L3: `cooldown_started` is logged only after its SQLite write succeeds; a failed write logs
+  `cooldown_not_persisted`. Unit + real workerd (logs read from workerd, SQLite trigger fault).
+- L4: README no longer says a timed-out place is reclaimed; the lifecycle section states the
+  R6 contract and its operational cost.
+- Pre-existing, not R5: the `sources.test.js` stale-price case failed every Monday (two
+  calendar days before a Monday is Friday's current close). The fixture gained
+  `staleSessions`; the browser case runs on a simulated Monday and Tuesday with a Monday
+  weekend control; `unit/price-freshness-calendar.test.mjs` covers every weekday, four time
+  zones and three market closures. No production code changed for it.
+- `wrangler deploy --dry-run` passes for both configurations on HOME-PC; the review's failure
+  was its sandbox denying reads above the workspace.
+- Open, owner decision: M4 (an incident-bound reactivation design is proposed privately for
+  the next phase, not implemented), M1, M2, M3, Q1. CPI workbook preservation unchanged.
+- Verification and exact-SHA CI: recorded in the private R6 report.
+
+Next action: independent review of the pushed R6 SHA (M5 boundary, L3 logs, the Monday
+fixture), then the owner's M4 design decision. Do not merge, mark ready, deploy or activate.
+
+---
+
+Earlier R5 handoff (superseded by R6 above):
+
 # Handoff - PR 46 R5 transport-loss remediation (2026-11-23)
 
 Snapshot: Claude Code on HOME-PC, branch `claude/loving-brown-48hctl`, starting checkpoint

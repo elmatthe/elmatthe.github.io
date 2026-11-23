@@ -181,17 +181,43 @@ const quotes = calls => calls.gateway.filter(c => /\/v1\/quote\?/.test(c.url));
     await context.close();
   }
 
-  /* ---------- 5. stale data is never presented as current ---------- */
-  {
-    const { context, page } = await openRb(browser, { yahoo: { staleDays: 2 } });
+  /* ---------- 5. stale data is never presented as current, on a Monday or a Tuesday ---------- */
+  // The browser's clock and the synthetic source agree on a recent Monday or Tuesday, 17:00 UTC.
+  // The stale price is two weekday sessions old. (It was "two calendar days old", which on a
+  // Monday is Friday's close: current, so this case failed every Monday. The same chain is
+  // checked on every day of the week in unit/price-freshness-calendar.test.mjs.)
+  const recentWeekday = weekday => {
+    let t = Math.floor(Date.now() / 86400000) * 86400000 - 86400000 + 17 * 3600000; // yesterday, 17:00 UTC
+    while (new Date(t).getUTCDay() !== weekday) t -= 86400000;
+    return t;
+  };
+  const onDay = async (at, mode) => {
+    const context = await browser.newContext({ acceptDownloads: true, viewport: { width: 1280, height: 900 } });
+    await context.clock.install({ time: at }); // time then runs on from there
+    const offset = at - Date.now();
+    return openRb(browser, { ...mode, now: () => Date.now() + offset }, { context });
+  };
+  for (const [weekday, day] of [[1, "Monday"], [2, "Tuesday"]]) {
+    const { context, page } = await onDay(recentWeekday(weekday), { yahoo: { staleSessions: 2 } });
     await holdings(page, ["AAPL,1,50,", "VEQT.TO,1,50,"]);
     await page.click("#rbPriceAll");
     await idle(page);
-    check(/Check date|older than the latest session/.test(await line(page, 0)), `a two-day-old price is flagged (${await line(page, 0)})`);
+    check(/Check date|older than the latest session/.test(await line(page, 0)), `${day}: a price two sessions old is flagged (${await line(page, 0)})`);
     await page.click("#rbRun");
-    check(/Plan withheld/.test(await page.locator("#rbResults").innerText()) && await page.locator("#rbAcceptStale").count() === 1, "the plan waits until older prices are accepted");
+    check(/Plan withheld/.test(await page.locator("#rbResults").innerText()) && await page.locator("#rbAcceptStale").count() === 1, `${day}: the plan waits until older prices are accepted`);
     await page.click("#rbAcceptStale"); // the banner is rebuilt with the plan, so check() could not confirm it
-    check(/Plan uses older prices you accepted/.test(await page.locator("#rbResults").innerText()), "accepted older prices are labelled in the plan");
+    check(/Plan uses older prices you accepted/.test(await page.locator("#rbResults").innerText()), `${day}: accepted older prices are labelled in the plan`);
+    await context.close();
+  }
+  {
+    // The weekend is not staleness: on a Monday, Friday's close is the latest session.
+    const { context, page } = await onDay(recentWeekday(1), {});
+    await holdings(page, ["AAPL,1,50,", "VEQT.TO,1,50,"]);
+    await page.click("#rbPriceAll");
+    await idle(page);
+    check(!/Check date|older than the latest session/.test(await line(page, 0)), `Monday: Friday's close is current, not flagged (${await line(page, 0)})`);
+    await page.click("#rbRun");
+    check(!/Plan withheld/.test(await page.locator("#rbResults").innerText()) && await page.locator("#rbAcceptStale").count() === 0, "Monday: the plan does not wait for Friday's close");
     await context.close();
   }
 

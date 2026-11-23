@@ -73,6 +73,7 @@ have received the request and refused it; the refusal was lost with the connecti
   retains the marker, quarantines the source and answers `busy`, like a timeout.
 - The breaker counter still counts the failure; the counter and the marker are separate.
 - A body lost after a status was observed finalizes that status (200 or a refusal).
+  *Superseded for HTTP 200 by the R6 entry below: a status alone never finalizes a 200.*
 - Cost: any transport failure now needs the owner's reconciliation and a fresh identifier,
   as a timeout already did. Workers cannot prove a failure happened before dispatch, so no
   narrower exception was attempted.
@@ -80,3 +81,26 @@ have received the request and refused it; the refusal was lost with the connecti
 Not changed here, left for an owner decision: the review's M4 (a provisioned identifier
 the coordinator never observed is not bound to the incident it later clears) and L3
 (`cooldown_started` is logged before its write succeeds).
+
+## 2026-11-23: an HTTP 200 status alone is not a completed outcome (PR 46 R6)
+
+The independent R5 review (Codex, QUALIFIED, finding M5 Medium) showed that an observed
+HTTP 200 followed by the body deadline was quarantined, while the R5 docs said a status
+always finalizes. R5 also finalized a 200 whose body was interrupted without an abort.
+
+- Owner decision: receiving HTTP 200 headers does not establish that the upstream work
+  completed. A 200 whose body does not finish, whether interrupted, timed out or cancelled,
+  keeps its marker and quarantines the source, exactly as a lost status does. Releasing the
+  place early could defeat the protection against unresolved upstream work; availability is
+  not bought by assuming it ended.
+- Consequence: a genuinely incomplete response needs owner reconciliation and an explicit
+  reactivation. Cached answers are still served meanwhile.
+- Unchanged: a refusal status is committed when it arrives, before its body is touched; a
+  complete 200 finalizes; a 200 over the 2 MiB cap is a complete answer refused by the
+  gateway's own limit and finalizes. The persistence design is unchanged.
+- L3: `cooldown_started` is logged only after the stop's write succeeds (derived from the
+  last state confirmed on disk); a failed write logs `cooldown_not_persisted`. Stop
+  calculation, precedence and storage order are unchanged.
+
+Still open for the owner: M4 (reactivation not bound to a specific incident; an
+incident-bound design is proposed privately for the next phase), M1, M2, M3 and Q1.

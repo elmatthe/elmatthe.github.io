@@ -119,12 +119,12 @@ upstream code at all; they ask the coordinator and normalize what it returns.
 | Layer | Rule |
 |---|---|
 | Spacing | at least **1 s** between the actual starts of two upstream requests, worldwide, first come first served, as decided at the coordinator. A request waits at most **15 s**; a request whose turn comes later than that, including one whose timer resumed late, is refused and never sent (`throttled`, `Retry-After`) and uses no budget |
-| Concurrency | at most **2** upstream requests in flight, worldwide (others wait in the same queue). A place held by a request that never finishes is reclaimed after its timeout |
+| Concurrency | at most **2** upstream requests in flight, worldwide (others wait in the same queue). A place held by a request that never finishes is **not** reclaimed: at its 8-second timeout its outcome becomes unresolved, its durable marker stays, and no upstream request starts until the owner reconciles and reactivates (see "Durable outcome lifecycle" below) |
 | Budget | at most **20** actual starts in **any** 60 seconds, worldwide. A request counts when it starts: one refused or cancelled while waiting does not count, and one cancelled after it started does |
 | Coalescing | identical concurrent requests, from any isolate, share **one** upstream request and report one retrieval time |
 | Cancellation | a client that disconnects stops waiting at once and the coordinator is told; work nobody is waiting for leaves the queue or is aborted, and is not held against Yahoo. Shared work continues while any client remains. Needs the `enable_request_signal` compatibility flag (in `wrangler.toml`) |
 | Caching | quotes reused **10 min**, history **12 h** (per symbol and range); definitive refusals (unknown symbol, other listing or currency) remembered **30 min**. For speed only: **no safety decision depends on a cache** |
-| Circuit breaker | after Yahoo answers **429**, no upstream request for **15 min**; after **401/403**, **30 min**; after **3** 5xx/timeouts/network errors with no successful answer in between, **2 min** (a timeout, or a network error before any HTTP status, also leaves its outcome unresolved; see below). Cached answers are still served. Reported in `/v1/health` (`upstream.state: "cooling_down"`) |
+| Circuit breaker | after Yahoo answers **429**, no upstream request for **15 min**; after **401/403**, **30 min**; after **3** 5xx/timeouts/network errors with no successful answer in between, **2 min** (a timeout, a network error before any HTTP status, or an HTTP 200 whose body does not finish also leaves its outcome unresolved; see below). Cached answers are still served. Reported in `/v1/health` (`upstream.state: "cooling_down"`) |
 | Yahoo's own wait | a valid `Retry-After` (delta seconds or an HTTP date) on **any** answer other than a success is honoured when it is longer than the minimum above, as an absolute deadline; the `Retry-After` sent to clients is the time really left. Malformed, negative, past or shorter values never shorten the minimum. A **single** 5xx, redirect or other refusal that names a wait is honoured for that wait |
 | Other refusals | a redirect, a 400 or a 451 that names **no** wait is reported and starts no cooldown; the next request can go out within the spacing and budget, up to 20 a minute. It does not end a run of failures either |
 | A deadline never gets shorter | whichever refusal is recorded first, the later deadline stands; a success does not end a stop |
@@ -171,11 +171,27 @@ upstream access. Successful writes, health checks, elapsed budgets, expired dead
 leases, eviction and full runtime restart cannot remove it. The current instance distinguishes
 its own active markers from inherited ones, so two healthy requests can still run concurrently.
 An admitted cancellation, timeout or unknown abort retains its marker; queued cancellation
-continues to use no budget. Only an observed HTTP status is a known outcome. A network error
-before any status (a connection lost before headers, which can hide a 429) also retains its
-marker: the caller gets `busy`, the breaker counter still counts it, and the source stays
-quarantined until the owner acts, at the same availability cost as a timeout. A body lost
-after a status was observed finalizes that status. A subsequently observed complete response
+continues to use no budget. Receiving an HTTP status does **not** by itself finalize an
+outcome; only a complete answer does:
+
+- A network error before any status (a connection lost before headers, which can hide a
+  429) retains its marker: the caller gets `busy`, the breaker counter still counts it, and
+  the source stays quarantined until the owner acts, at the same availability cost as a timeout.
+- An HTTP **200** whose body does not finish, whether interrupted, timed out or cancelled,
+  also retains its marker (owner decision, R6): the status alone does not establish that the
+  upstream work completed. The caller gets `busy` (`cancelled` callers have already gone);
+  an interruption or timeout counts toward the breaker, a cancellation does not.
+- A **refusal** status (429, 401/403, 5xx, a redirect, 404 and other refusals) is the outcome
+  itself: its stop and any `Retry-After` are committed when the status arrives, before the
+  body is read or cancelled, so a lost refusal body changes nothing.
+- An HTTP 200 body larger than 2 MiB is a complete answer the gateway refuses by its own
+  limit: reading stops, the outcome finalizes, and the client gets `upstream_invalid`.
+
+**Operational consequence.** A genuinely incomplete response (a connection that drops
+mid-body, a body slower than the timeout) quarantines all uncached retrieval until the owner
+reconciles it and explicitly reactivates with a fresh `UPSTREAM_REACTIVATION_ID` (below).
+Cached answers are still served. This is deliberate: availability is never bought by
+assuming an unfinished upstream request has ended. A subsequently observed complete response
 may finalize its actual outcome, including a late refusal; cancellation cannot recall provider
 work already sent.
 
@@ -324,6 +340,10 @@ causes a refusal (`listing_mismatch`).
 - The coordinator cannot be reached from the internet: only this Worker's binding can call it.
 - Logs: event name, code, venue, upstream status, cooldown length. Never an IP address,
   URL or header. Workers Logs are disabled (`[observability] enabled = false`).
+  `cooldown_started` is logged only after the stop's SQLite write succeeded. When that write
+  fails, the log says `coordinator_write_failed` and `cooldown_not_persisted` (the stop holds
+  in memory, and nothing is sent, but it is not on disk); `cooldown_started` follows when a
+  later write confirms it.
 - Headers: `Content-Security-Policy: default-src 'none'`, `X-Content-Type-Options:
   nosniff`, `Referrer-Policy: no-referrer`, HSTS.
 
@@ -539,8 +559,13 @@ mandatory finalization with unchanged counters, competing success/refusal comple
 transactional owner-ID rollback, replay, malformed markers, migration, timeout and abort.
 They assert the unsafe second upstream call never occurs. The unit clock tests retain the
 20-second late wake and exact 15,000/15,001 ms deadline boundaries with eligible capacity.
+The R5/R6 regressions cover a connection lost before headers, and an HTTP 200 whose body is
+interrupted, times out (also with a transport that ignores the abort) or is cancelled, each
+quarantined across restarts, with a complete streamed HTTP 200 as the control; and they check
+that `cooldown_started` is never logged before its write succeeds.
 
-`gateway-runtime.test.cjs` runs these scenarios in the real runtime, and `wrangler deploy
+`gateway-runtime.test.cjs` runs these scenarios in the real runtime (the HTTP 200 body faults
+over a real socket, and the logs read from workerd), and `wrangler deploy
 --dry-run` for both configurations. Not covered locally: output gates under slow storage (local
 writes finish at once), idle eviction, Cloudflare's edge, including whether a
 real client disconnect reaches `request.signal` (the tests reach it through a service binding; a
