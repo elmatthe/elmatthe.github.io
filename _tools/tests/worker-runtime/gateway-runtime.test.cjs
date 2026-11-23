@@ -569,6 +569,100 @@ test("L3: a stop whose SQLite write fails is logged as not persisted, and as sta
   assert.equal(world.yahoo.calls.length, 1);
 }));
 
+/* ---------------- R7/L3. a statement that returned is not a commit ---------------- */
+// The R6 review's counterexample: a trigger on the outcome UPDATE inserts a row whose foreign
+// key is DEFERRABLE INITIALLY DEFERRED, so the statement returns and the implicit commit fails.
+const STOP_EVENTS = ["cooldown_started", "cooldown_not_persisted", "coordinator_write_failed", "source_reactivated"];
+for (const seconds of [3600, 172800]) {
+  test(`R7/L3: a ${seconds} s stop whose SQLite commit fails at a deferred foreign key is never logged as started, across a full restart`, { timeout: 120000 }, async () => {
+    const persist = persistDir(`deferred-commit-${seconds}`);
+    const yahoo = syntheticYahoo();
+    const seen = [];
+    let world = await startWorld({ persist, yahoo });
+    try {
+      await world.health();
+      await sql(world, "CREATE TABLE r7_parent (id INTEGER PRIMARY KEY)");
+      await sql(world, "CREATE TABLE r7_child (id INTEGER REFERENCES r7_parent(id) DEFERRABLE INITIALLY DEFERRED)");
+      yahoo.hold = true;
+      const pending = world.ask("isolate-b", "AAPL");
+      await held(yahoo, 1);
+      await sql(world, "CREATE TRIGGER r7_deferred_fault BEFORE UPDATE ON coordinator_state WHEN NEW.cooldown_until > OLD.cooldown_until OR NEW.halt_code IS NOT NULL BEGIN INSERT INTO r7_child VALUES (42); END");
+      yahoo.held.shift().resolve(refusal(seconds));
+      await expectError(await pending, "busy", 503);
+      assert.equal((await world.health()).upstream.state, "unverified");
+      const row = await world.row();
+      assert.equal(row.cooldown_until, 0, "the commit failed");
+      assert.equal(row.halt_code, null);
+      assert.equal(row.unresolved.length, 1, "the admission marker survives");
+      await sleep(300); // any late acknowledgement has had time to arrive
+      seen.push(...world.logs.filter(l => STOP_EVENTS.includes(l.event)));
+      console.log("R7-DEFERRED-COMMIT", JSON.stringify({ seconds, status: 503, cooldown: row.cooldown_until, markers: row.unresolved.length, events: seen }));
+      assert.ok(!seen.some(l => l.event === "cooldown_started"), `no uncommitted stop is claimed: ${JSON.stringify(seen)}`);
+      assert.equal(yahoo.calls.length, 1);
+      await sql(world, "DROP TRIGGER r7_deferred_fault"); // SQLite is healthy; the outcome is still unknown
+    } finally { await world.stop(); }
+    yahoo.hold = false;
+    world = await startWorld({ persist, yahoo });
+    try {
+      await world.advance(40 * DAY_MS);
+      await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
+      assert.equal((await world.health()).upstream.state, "unverified");
+      assert.equal((await world.row()).unresolved.length, 1);
+      assert.equal(yahoo.calls.length, 1, "no second upstream request after a full restart");
+      assert.ok(!world.logs.some(l => l.event === "cooldown_started"));
+    } finally { await world.stop(); }
+    // The owner reconciles and reactivates; the next stop is committed and logged once.
+    world = await startWorld({ persist, yahoo, coordinatorEnv: { UPSTREAM_REACTIVATION_ID: `owner-r7-${seconds}` } });
+    try {
+      yahoo.answer = () => refusal(3600);
+      await expectError(await world.ask("isolate-c", "MSFT"), "upstream_rate_limited", 429);
+      assert.equal(yahoo.calls.length, 2);
+      await eventually(() => world.logs.some(l => l.event === "cooldown_started"), "the confirmed stop is reported");
+      await world.health();
+      await world.health("isolate-c");
+      await sleep(300);
+      const started = world.logs.filter(l => l.event === "cooldown_started");
+      assert.equal(started.length, 1, JSON.stringify(started));
+      assert.ok(started[0].seconds > 3500 && started[0].seconds <= 3600);
+      assert.ok((await world.row()).cooldown_until > 0, "and SQLite has it");
+    } finally { await world.stop(); }
+  });
+}
+
+for (const [order, firstWait, secondWait, expected] of [
+  ["ordinary cooldown first", 3600, 172800, [[3600, false], [null, true]]],
+  ["halt first", 172800, 3600, [[900, false], [null, true], [3600, false]]],
+]) {
+  test(`R7/L3: concurrent stops from two isolates (${order}) are logged once each, after commit, in the order recorded`, { timeout: 60000 }, () => withWorld({}, async world => {
+    world.yahoo.hold = true;
+    const answers = [world.ask("isolate-a", "AAPL"), world.ask("isolate-b", "MSFT")];
+    await held(world.yahoo, 2);
+    const taken = world.yahoo.held.splice(0);
+    taken.find(h => h.symbol === "AAPL").resolve(refusal(firstWait));
+    await answers[0];
+    taken.find(h => h.symbol === "MSFT").resolve(refusal(secondWait));
+    await answers[1];
+    await eventually(() => world.logs.filter(l => l.event === "cooldown_started").length >= expected.length, "both stops are reported");
+    await world.health();
+    await world.health("isolate-c");
+    await sleep(300);
+    const started = world.logs.filter(l => l.event === "cooldown_started");
+    assert.equal(started.length, expected.length, JSON.stringify(started));
+    started.forEach((entry, i) => {
+      const [seconds, halted] = expected[i];
+      assert.equal(entry.code, "upstream_rate_limited");
+      assert.equal(Boolean(entry.halted), halted, JSON.stringify(started));
+      if (seconds === null) assert.equal(entry.seconds, null);
+      else assert.ok(entry.seconds > seconds - 5 && entry.seconds <= seconds, JSON.stringify(started));
+    });
+    assert.ok(!world.logs.some(l => l.event === "cooldown_not_persisted"));
+    const row = await world.row();
+    assert.equal(row.halt_code, "upstream_rate_limited", "the halt stands");
+    assert.deepEqual(row.unresolved, []);
+    assert.equal(world.yahoo.calls.length, 2);
+  }));
+}
+
 /* ---------------- the unmodified entry point ---------------- */
 test("the unmodified Worker: answers come from synthetic Yahoo through the coordinator, in real SQLite", { timeout: 60000 }, () => withWorld({ real: true }, async world => {
   const h = await world.health();

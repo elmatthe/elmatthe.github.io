@@ -185,7 +185,10 @@ outcome; only a complete answer does:
   itself: its stop and any `Retry-After` are committed when the status arrives, before the
   body is read or cancelled, so a lost refusal body changes nothing.
 - An HTTP 200 body larger than 2 MiB is a complete answer the gateway refuses by its own
-  limit: reading stops, the outcome finalizes, and the client gets `upstream_invalid`.
+  limit: reading stops, the outcome finalizes, and the client gets `upstream_invalid`. The
+  rest of the body is cancelled without waiting: a cancellation that never settles, rejects
+  or throws cannot delay the answer or quarantine the source (R7). This does not prove the
+  source finished sending; the 2 MiB already read is the complete answer the policy needs.
 
 **Operational consequence.** A genuinely incomplete response (a connection that drops
 mid-body, a body slower than the timeout) quarantines all uncached retrieval until the owner
@@ -340,10 +343,20 @@ causes a refusal (`listing_mismatch`).
 - The coordinator cannot be reached from the internet: only this Worker's binding can call it.
 - Logs: event name, code, venue, upstream status, cooldown length. Never an IP address,
   URL or header. Workers Logs are disabled (`[observability] enabled = false`).
-  `cooldown_started` is logged only after the stop's SQLite write succeeded. When that write
-  fails, the log says `coordinator_write_failed` and `cooldown_not_persisted` (the stop holds
-  in memory, and nothing is sent, but it is not on disk); `cooldown_started` follows when a
-  later write confirms it.
+  `cooldown_started` (and `source_reactivated`) is logged only once SQLite has **committed**
+  the write, as confirmed by `storage.sync()`: a statement that returns is not yet a commit,
+  and a commit can still fail (R7). Nothing waits for that confirmation, so admission and
+  answers are unchanged; each stop is logged once, in the order it was recorded. When the
+  statement itself fails, the log says `coordinator_write_failed` and `cooldown_not_persisted`
+  (the stop holds in memory, and nothing is sent, but it is not on disk); `cooldown_started`
+  follows when a later write is committed. When the commit fails, the runtime resets the
+  object: the stop is never logged as started, the caller gets `busy`, and the admission
+  marker still on disk quarantines the source until the owner reactivates. In real workerd
+  the reset comes before anything else is logged, so such a failure shows only as `busy` and
+  an `unverified` health; an instance that does see its commit refused logs
+  `coordinator_write_failed` with `stage: "commit"` and refuses everything until it is
+  replaced. A missing `cooldown_started` therefore never means "no stop": health is the
+  authority on the current state.
 - Headers: `Content-Security-Policy: default-src 'none'`, `X-Content-Type-Options:
   nosniff`, `Referrer-Policy: no-referrer`, HSTS.
 
@@ -562,10 +575,17 @@ They assert the unsafe second upstream call never occurs. The unit clock tests r
 The R5/R6 regressions cover a connection lost before headers, and an HTTP 200 whose body is
 interrupted, times out (also with a transport that ignores the abort) or is cancelled, each
 quarantined across restarts, with a complete streamed HTTP 200 as the control; and they check
-that `cooldown_started` is never logged before its write succeeds.
+that `cooldown_started` is never logged before its write succeeds. The R7 regressions hold each
+commit until the test commits or rolls it back: a stop or halt whose statement returned but
+whose commit failed (never logged as started, marker kept, quarantined across a restart, no
+second request), a confirmation that never settles, concurrent stops confirmed out of order
+(logged once each, in order, halt kept), failed-write recovery and a rolled-back reactivation;
+and an oversize HTTP 200 whose cancellation never settles, rejects or throws, at exactly
+2 MiB and one byte over.
 
 `gateway-runtime.test.cjs` runs these scenarios in the real runtime (the HTTP 200 body faults
-over a real socket, and the logs read from workerd), and `wrangler deploy
+over a real socket, the logs read from workerd, and a real SQLite commit failing at a deferred
+foreign key, for a stop and a halt, across a full persisted restart), and `wrangler deploy
 --dry-run` for both configurations. Not covered locally: output gates under slow storage (local
 writes finish at once), idle eviction, Cloudflare's edge, including whether a
 real client disconnect reaches `request.signal` (the tests reach it through a service binding; a

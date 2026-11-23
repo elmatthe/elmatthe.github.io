@@ -76,7 +76,9 @@ export function parseUpstreamRetryAfter(value, nowMs) {
   return at > nowMs ? at : null;
 }
 
-// Reads at most `limit` bytes of a body; null when it is larger.
+// Reads at most `limit` bytes of a body; null when it is larger. Past the limit nothing more
+// is read, and the stream is cancelled without waiting for the cancellation: one that never
+// settles must not hold the answer, and its outcome changes nothing (R7/L5).
 async function readCapped(stream, limit) {
   if (!stream) return "";
   const reader = stream.getReader();
@@ -86,7 +88,10 @@ async function readCapped(stream, limit) {
     const { done, value } = await reader.read();
     if (done) break;
     size += value.byteLength;
-    if (size > limit) { try { await reader.cancel(); } catch (_) { /* closed */ } return null; }
+    if (size > limit) {
+      try { Promise.resolve(reader.cancel()).catch(() => { /* closed */ }); } catch (_) { /* closed */ }
+      return null;
+    }
     chunks.push(value);
   }
   const all = new Uint8Array(size);
@@ -123,7 +128,11 @@ function verifiedState(state) {
 }
 
 // The Durable Object's SQLite storage (ctx.storage). Every call is synchronous and throws on
-// failure (a full database, an exhausted daily allowance).
+// failure (a full database, an exhausted daily allowance). A statement that returns is not yet
+// committed: the runtime commits the implicit transaction later, and a commit can still fail
+// (a deferred constraint, for example), in which case it resets the object and discards its
+// outgoing messages. `confirm` is the commit acknowledgement: storage.sync() resolves only once
+// every earlier write is on disk (R7/L3).
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS coordinator_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -164,6 +173,7 @@ export function sqlStorage(storage) {
       return { state: { cooldownUntil: row.cooldown_until, cooldownCode: row.cooldown_code, haltCode: row.halt_code, failures: row.failures, starts: JSON.parse(row.starts), unresolved: JSON.parse(row.unresolved) }, seen };
     },
     write: state => upsert(state).rowsWritten,
+    confirm: () => storage.sync(),
     // One transaction: an id is never recorded as used unless its effect is recorded too.
     reactivate(state, id, at) {
       storage.transactionSync(() => {
@@ -198,7 +208,10 @@ export class UpstreamCoordinatorCore {
     this.log = log;
     this.L = { ...UPSTREAM_LIMITS, ...limits };
     this.state = null; // loaded on first use; null means not verified yet
-    this.durable = null; // the state last read from or confirmed on disk
+    this.durable = null; // the state last read from disk or whose commit storage confirmed
+    this.unconfirmed = []; // writes whose statement succeeded, awaiting commit: { seq, state, event }
+    this.writeSeq = 0;
+    this.commitFailed = false; // storage refused to confirm a commit: memory is ahead of disk
     this.seen = new Set();
     this.unsaved = false; // a known state/outcome is held in memory but its write failed
     this.quarantine = new Set(); // inherited or locally unknown outcomes; never expires
@@ -211,6 +224,10 @@ export class UpstreamCoordinatorCore {
   /* ---------------- state ---------------- */
   // Throws when the state cannot be verified; callers refuse in that case.
   ready() {
+    // The runtime resets an object whose commit failed. Until that happens this instance's
+    // memory may hold effects disk does not (a rolled-back reactivation, for one), so it
+    // admits nothing and writes nothing more; the next instance reads what disk really has.
+    if (this.commitFailed) throw new Error("storage commit failed");
     if (!this.state) {
       const { state, seen } = this.storage.read();
       // Reactivation always writes its state and history together. History without the
@@ -224,7 +241,7 @@ export class UpstreamCoordinatorCore {
     if (this.unsaved) {
       this.storage.write(this.state);
       this.unsaved = false;
-      this.persisted(this.state);
+      this.wrote(this.state);
     }
     this.inFlightAt(this.now());
     this.applyReactivation();
@@ -247,9 +264,8 @@ export class UpstreamCoordinatorCore {
     const ended = this.state.haltCode !== null;
     this.seen.add(id);
     this.state = next;
-    this.durable = next;
     this.quarantine.clear();
-    if (ended) this.log({ event: "source_reactivated" });
+    this.wrote(next, ended ? { event: "source_reactivated" } : null); // logged once committed
   }
 
   currentStop(t = this.now()) {
@@ -263,6 +279,12 @@ export class UpstreamCoordinatorCore {
   // `ready` refuse everything until the write succeeds.
   commitOutcome(next) {
     this.state = next;
+    if (this.commitFailed) {
+      // See `ready`: nothing more is written by an instance whose commit failed. Its marker on
+      // disk keeps the outcome unresolved for the next instance.
+      this.logStops(this.durable, next, "cooldown_not_persisted");
+      return false;
+    }
     try {
       this.storage.write(next);
     } catch (_) {
@@ -272,16 +294,43 @@ export class UpstreamCoordinatorCore {
       return false;
     }
     this.unsaved = false;
-    this.persisted(next);
+    this.wrote(next);
     return true;
   }
 
-  // `durable` is the state last confirmed on disk. `cooldown_started` reports a stop only
-  // once it is there (R6/L3); a stop held in memory after a failed write is reported as
-  // `cooldown_not_persisted`, and as `cooldown_started` when a later write confirms it.
-  persisted(state) {
-    this.logStops(this.durable, state, "cooldown_started");
-    this.durable = state;
+  // Durable logging (R6/L3, R7). A statement that returned is not a commit, so `durable` (the
+  // state last confirmed on disk) moves, and `cooldown_started` / `source_reactivated` are
+  // logged, only when storage confirms the commit. Nothing here is awaited: the caller,
+  // including the admission block, carries on synchronously, and an outgoing request is held by
+  // the runtime's output gate until the same commit. Every write is the whole state row and a
+  // confirmation covers every earlier write, so writes are confirmed strictly in order, each
+  // once: a stop is logged once, in the order it was recorded, whatever order the
+  // acknowledgements arrive in. A refused or failed confirmation is reported as not persisted
+  // and nothing in it is ever reported as started.
+  wrote(state, event = null) {
+    const seq = ++this.writeSeq;
+    this.unconfirmed.push({ seq, state, event });
+    let confirmation;
+    try { confirmation = Promise.resolve(this.storage.confirm()); } catch (error) { confirmation = Promise.reject(error); }
+    confirmation.then(() => this.committed(seq), () => this.notCommitted(seq)).catch(() => { /* a log sink failed */ });
+  }
+  committed(seq) {
+    if (this.commitFailed) return; // a failed commit before it: its own success proves nothing logged here
+    while (this.unconfirmed.length && this.unconfirmed[0].seq <= seq) {
+      const { state, event } = this.unconfirmed.shift();
+      this.logStops(this.durable, state, "cooldown_started");
+      if (event) this.log(event);
+      this.durable = state;
+    }
+  }
+  notCommitted(seq) {
+    if (!this.unconfirmed.some(write => write.seq <= seq)) return; // confirmed already, or reported
+    const lost = this.unconfirmed.at(-1).state;
+    this.unconfirmed = [];
+    this.commitFailed = true;
+    this.unsaved = true;
+    this.log({ event: "coordinator_write_failed", stage: "commit" });
+    this.logStops(this.durable, lost, "cooldown_not_persisted");
   }
   logStops(before, after, event) {
     const was = before ?? EMPTY_STATE;
@@ -512,7 +561,7 @@ export class UpstreamCoordinatorCore {
       return COORDINATOR_UNAVAILABLE;
     }
     this.state = next;
-    this.durable = next; // admission changes no stop, so there is nothing to log
+    this.wrote(next); // changes no stop; tracked so the next confirmed stop is compared with it
     work.admissionId = id;
     this.unsaved = false;
     return null;

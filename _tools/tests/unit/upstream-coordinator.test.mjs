@@ -418,12 +418,14 @@ test("M5 control: a complete HTTP 200 streamed in parts still finalizes, and the
 });
 
 /* ---------------- R6/L3. a stop is logged as started only once it is on disk ---------------- */
-// Each log entry is recorded with what storage held at that moment.
+// Each log entry is recorded with what storage had committed at that moment. The commit
+// acknowledgement (storage.sync()) is asynchronous: `settle` lets it arrive.
+const settle = () => new Promise(resolve => setImmediate(resolve));
 function loggedCore({ status = 429, retryAfter = "3600", failAfterAdmission = false } = {}) {
   const storage = memoryStorage();
   const logs = [];
   const core = new UpstreamCoordinatorCore({
-    storage, now: () => NOW, log: entry => logs.push({ ...entry, disk: storage.peek() }), limits: { upstreamMinSpacingMs: 0 },
+    storage, now: () => NOW, log: entry => logs.push({ ...entry, disk: storage.peekCommitted() }), limits: { upstreamMinSpacingMs: 0 },
     fetchImpl: async () => {
       if (failAfterAdmission) storage.failWrites = true; // the admission is on disk; the outcome write fails
       return new Response("x", { status, headers: { "Retry-After": retryAfter } });
@@ -436,6 +438,7 @@ test("L3: cooldown_started is logged only once the stop is on disk", async () =>
   for (const [retryAfter, halted] of [["3600", false], ["172800", true]]) {
     const { core, logs, events } = loggedCore({ retryAfter });
     assert.equal((await core.fetchChart({ kind: "quote", symbol: "AAPL", client: "a" })).code, "upstream_rate_limited");
+    await settle();
     const started = events("cooldown_started");
     assert.equal(started.length, halted ? 2 : 1, JSON.stringify(logs));
     for (const entry of started) {
@@ -465,11 +468,14 @@ test("L3: a stop whose write fails is logged as not persisted, never as started,
     storage.failWrites = false;
     const status = core.status(); // the held outcome is written now
     assert.equal(status.state, halted ? "halted" : "cooling_down");
+    assert.equal(events("cooldown_started").length, 0, "written, but not yet confirmed as committed");
+    await settle();
     const started = events("cooldown_started");
     assert.equal(started.length, halted ? 2 : 1);
     for (const entry of started) assert.ok(entry.disk.cooldownUntil >= NOW + 900000, "confirmed only after the write");
     if (halted) assert.equal(started[1].disk.haltCode, "upstream_rate_limited");
     core.status();
+    await settle();
     assert.equal(events("cooldown_started").length, halted ? 2 : 1, "a confirmed stop is not logged again");
   }
 });
@@ -481,7 +487,287 @@ test("L3: a failed stop write followed by a restart never logs the stop as start
   const logs = [];
   const restarted = new UpstreamCoordinatorCore({ storage, now: () => NOW, log: entry => logs.push(entry), fetchImpl: () => assert.fail("no upstream request") });
   assert.equal(restarted.status().state, "unverified", "the lost outcome is quarantined");
+  await settle();
   assert.equal(events("cooldown_started").length + logs.filter(l => l.event === "cooldown_started").length, 0);
+});
+
+/* ---------------- R7/L3. a statement that returned is not a commit ---------------- */
+// The R6 review's counterexample: the outcome UPDATE returns, then the implicit commit fails
+// (a deferred foreign key in real SQLite, ../worker-runtime/). Here `commits: "manual"` holds
+// each batch until the test commits or rolls it back. Yahoo answers when the test says.
+function commitCore({ env = {}, storage = memoryStorage() } = {}) {
+  const logs = [];
+  const answers = [];
+  const core = new UpstreamCoordinatorCore({
+    storage, env, now: () => NOW, limits: { upstreamMinSpacingMs: 0 },
+    log: entry => logs.push({ ...entry, disk: storage.peekCommitted() }),
+    fetchImpl: () => new Promise(resolve => answers.push(resolve)),
+  });
+  const ask = symbol => core.fetchChart({ kind: "quote", symbol, client: symbol });
+  const refuse = (index, seconds) => answers[index](new Response("x", { status: 429, headers: { "Retry-After": String(seconds) } }));
+  const events = name => logs.filter(l => l.event === name);
+  return { storage, logs, core, answers, ask, refuse, events };
+}
+
+for (const [seconds, halted] of [[3600, false], [172800, true]]) {
+  test(`R7/L3: a ${seconds} s stop whose commit fails after its statement returned is never logged as started`, async () => {
+    const { storage, logs, core, answers, ask, refuse, events } = commitCore();
+    storage.commits = "manual";
+    const reply = ask("AAPL");
+    await until(() => answers.length === 1, "admission");
+    storage.commit(); // the admission is committed, as the output gate requires before the fetch leaves
+    await settle();
+    refuse(0, seconds);
+    assert.equal((await reply).code, "upstream_rate_limited");
+    assert.ok(storage.peek().cooldownUntil > NOW, "the statement returned: the uncommitted row has the stop");
+    await settle();
+    assert.equal(events("cooldown_started").length, 0, "not committed yet, so not claimed");
+
+    storage.rollback(); // the commit fails
+    await settle();
+    assert.equal(events("cooldown_started").length, 0, `no uncommitted stop is claimed: ${JSON.stringify(logs)}`);
+    const failed = events("coordinator_write_failed");
+    assert.equal(failed.length, 1);
+    assert.equal(failed[0].stage, "commit");
+    const lost = events("cooldown_not_persisted");
+    assert.equal(lost.length, halted ? 2 : 1, "the stop is reported as not persisted");
+    assert.ok(logs.indexOf(lost[0]) > logs.indexOf(failed[0]));
+    if (halted) assert.equal(lost[1].halted, true);
+    const disk = storage.peek();
+    assert.equal(disk.cooldownUntil, 0, "the commit really failed");
+    assert.equal(disk.haltCode, null);
+    assert.equal(disk.unresolved.length, 1, "the admission marker survives");
+
+    assert.equal(core.status().state, "unverified", "this instance's memory is ahead of disk: it trusts neither");
+    assert.equal((await ask("MSFT")).code, "coordinator_unavailable");
+    assert.equal(answers.length, 1, "no second upstream request");
+    await settle();
+    assert.equal(storage.peek().cooldownUntil, 0, "and it writes nothing more");
+
+    // The runtime resets the object; the next instance reads disk, where the marker quarantines.
+    storage.commits = "auto";
+    const restarted = commitCore({ storage });
+    assert.equal(restarted.core.status().state, "unverified");
+    assert.equal((await restarted.ask("SPY")).code, "coordinator_unavailable");
+    assert.equal(restarted.answers.length, 0, "no upstream request after the restart either");
+    await settle();
+    assert.equal(events("cooldown_started").length + restarted.events("cooldown_started").length, 0);
+  });
+
+  test(`R7/L3: a ${seconds} s stop is logged as started once its commit is confirmed, and only then`, async () => {
+    const { storage, core, answers, ask, refuse, events } = commitCore();
+    storage.commits = "manual";
+    const reply = ask("AAPL");
+    await until(() => answers.length === 1, "admission");
+    storage.commit();
+    await settle();
+    refuse(0, seconds);
+    await reply;
+    await settle();
+    assert.equal(events("cooldown_started").length, 0);
+    storage.commit();
+    await settle();
+    const started = events("cooldown_started");
+    assert.equal(started.length, halted ? 2 : 1);
+    for (const entry of started) assert.ok(entry.disk.cooldownUntil > NOW, "committed when it was logged");
+    if (halted) assert.equal(started[1].disk.haltCode, "upstream_rate_limited");
+    assert.equal(events("cooldown_not_persisted").length, 0);
+    core.status();
+    core.status();
+    await settle();
+    assert.equal(events("cooldown_started").length, halted ? 2 : 1, "never logged twice");
+  });
+}
+
+test("R7/L3: a commit acknowledgement that never settles holds no answer, claims no stop, and the stop still holds", async () => {
+  const { storage, core, answers, ask, refuse, events } = commitCore();
+  storage.commits = "never";
+  const reply = ask("AAPL");
+  await until(() => answers.length === 1, "admission");
+  refuse(0, 3600);
+  assert.equal((await reply).code, "upstream_rate_limited", "the answer does not wait for the acknowledgement");
+  await settle();
+  assert.equal(events("cooldown_started").length, 0);
+  assert.equal(core.status().state, "cooling_down");
+  assert.equal((await ask("MSFT")).code, "upstream_rate_limited");
+  assert.equal(answers.length, 1);
+});
+
+for (const [order, firstSeconds, secondSeconds] of [["cooldown first", 3600, 172800], ["halt first", 172800, 3600]]) {
+  test(`R7/L3: concurrent stops (${order}) are logged once each, in the order recorded, whatever order their acknowledgements arrive in`, async () => {
+    const { storage, ask, answers, refuse, events, logs } = commitCore();
+    const replies = [ask("AAPL"), ask("MSFT")];
+    await until(() => answers.length === 2, "two admissions");
+    await settle();
+    storage.commits = "manual";
+    refuse(0, firstSeconds);
+    await replies[0];
+    refuse(1, secondSeconds);
+    await replies[1];
+    storage.commit({ reverse: true });
+    await settle();
+    const started = events("cooldown_started").map(({ seconds, halted = false }) => ({ seconds, halted }));
+    const expected = firstSeconds === 3600
+      ? [{ seconds: 3600, halted: false }, { seconds: null, halted: true }] // the halt's own 900 s cannot shorten 3600 s
+      : [{ seconds: 900, halted: false }, { seconds: null, halted: true }, { seconds: 3600, halted: false }];
+    assert.deepEqual(started, expected, JSON.stringify(logs));
+    const disk = storage.peekCommitted();
+    assert.equal(disk.haltCode, "upstream_rate_limited", "the ordinary cooldown did not touch the halt");
+    assert.equal(disk.cooldownUntil, NOW + 3600000);
+    assert.deepEqual(disk.unresolved, []);
+    storage.commits = "auto";
+    await settle();
+    assert.equal(events("cooldown_started").length, expected.length, "no duplicates");
+  });
+}
+
+test("R7/L3: failed-write recovery is logged as started only when the rewrite's commit is confirmed; a failed rewrite commit quarantines", async () => {
+  for (const rewriteCommits of [true, false]) {
+    const { core, storage, logs, events } = loggedCore({ failAfterAdmission: true });
+    assert.equal((await core.fetchChart({ kind: "quote", symbol: "AAPL", client: "a" })).code, "coordinator_unavailable");
+    assert.equal(events("cooldown_not_persisted").length, 1, "statement failure");
+    storage.failWrites = false;
+    storage.commits = "manual";
+    assert.equal(core.status().state, "cooling_down", "the held outcome is rewritten");
+    await settle();
+    assert.equal(events("cooldown_started").length, 0, "rewritten, not yet committed");
+    if (rewriteCommits) {
+      storage.commit();
+      await settle();
+      assert.equal(events("cooldown_started").length, 1);
+      assert.equal(events("cooldown_started")[0].disk.cooldownUntil, NOW + 3600000);
+      assert.equal(core.status().state, "cooling_down");
+    } else {
+      storage.rollback();
+      await settle();
+      assert.equal(events("cooldown_started").length, 0, JSON.stringify(logs));
+      assert.equal(events("cooldown_not_persisted").length, 2, "the statement failure, then the commit failure");
+      assert.equal(core.status().state, "unverified");
+      assert.equal(storage.peek().unresolved.length, 1, "the marker is still on disk");
+      storage.commits = "auto";
+      const restarted = new UpstreamCoordinatorCore({ storage, now: () => NOW, log: () => {}, fetchImpl: () => assert.fail("no upstream request") });
+      assert.equal(restarted.status().state, "unverified");
+    }
+  }
+});
+
+test("R7/L3: a reactivation whose commit fails is not reported, consumes nothing, and ends no halt", async () => {
+  const env = {};
+  const { storage, core, answers, ask, refuse, events } = commitCore({ env });
+  const reply = ask("AAPL");
+  await until(() => answers.length === 1, "admission");
+  refuse(0, 172800);
+  await reply;
+  await settle();
+  assert.equal(events("cooldown_started").length, 2, "the halt is committed");
+  storage.commits = "manual";
+  env.UPSTREAM_REACTIVATION_ID = "owner-r7-commit";
+  assert.equal(core.status().state, "cooling_down", "the statement returned: the halt ends, its 900 s minimum remains");
+  await settle();
+  assert.equal(events("source_reactivated").length, 0, "not committed, so not reported");
+  storage.rollback();
+  await settle();
+  assert.equal(events("source_reactivated").length, 0);
+  assert.equal(core.status().state, "unverified", "an instance whose commit failed trusts nothing it holds");
+  assert.equal((await ask("MSFT")).code, "coordinator_unavailable");
+  assert.equal(answers.length, 1);
+  assert.equal(storage.peek().haltCode, "upstream_rate_limited", "the halt is still on disk");
+  assert.deepEqual(storage.read().seen, [], "the identifier was not recorded");
+
+  storage.commits = "auto";
+  const restarted = commitCore({ env: {}, storage });
+  assert.equal(restarted.core.status().state, "halted", "the next instance reads the halt");
+  env.UPSTREAM_REACTIVATION_ID = "owner-r7-commit";
+  const fresh = commitCore({ env, storage });
+  assert.equal(fresh.core.status().state, "cooling_down", "the identifier, never recorded, still ends the halt once");
+  await settle();
+  assert.equal(fresh.events("source_reactivated").length, 1, "reported once it is committed");
+  assert.deepEqual(storage.read().seen, ["owner-r7-commit"]);
+});
+
+/* ---------------- R7/L5. an oversize body does not wait for its cancellation ---------------- */
+const CAP = 2 * 1024 * 1024;
+// An HTTP 200 body of `size` bytes in 64 KiB chunks whose cancellation behaves as `cancel` says.
+function cappedBody(bytes, size, cancel) {
+  const body = new Uint8Array(size).fill(0x20);
+  body.set(bytes.subarray(0, Math.min(bytes.length, size)));
+  let at = 0;
+  const source = {
+    pull(c) {
+      if (at >= size) { c.close(); return; }
+      c.enqueue(body.slice(at, at + 65536));
+      at += 65536;
+    },
+  };
+  if (cancel === "never") source.cancel = () => new Promise(() => {});
+  if (cancel === "reject") source.cancel = () => Promise.reject(new Error("synthetic cancel failure"));
+  if (cancel === "throw") source.cancel = () => { throw new Error("synthetic synchronous cancel failure"); };
+  return new ReadableStream(source, { highWaterMark: 0 });
+}
+const within = (promise, ms, label) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${label}: still pending after ${ms} ms`)), ms).unref())]);
+
+for (const cancel of ["never", "reject", "throw"]) {
+  test(`R7/L5: an HTTP 200 over 2 MiB whose cancellation ${cancel === "never" ? "never settles" : cancel === "reject" ? "rejects" : "throws"} is refused at once, finalized, and frees capacity`, async () => {
+    const unhandled = [];
+    const onUnhandled = reason => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const w = world({ limits: { upstreamMinSpacingMs: 0 } });
+      const first = w.isolate().ask("AAPL");
+      await until(() => w.starts.length === 1, "admission");
+      const h = w.held.shift();
+      const json = new Uint8Array(await (await yahooFetch({ now: w.clock.now })(h.url)).arrayBuffer());
+      h.raw(new Response(cappedBody(json, CAP + 1, cancel), { status: 200 }));
+      const answer = await within(first, 2000, "the oversize answer");
+      assert.equal(answer.status, 502);
+      assert.equal(await code(answer), "upstream_invalid");
+      assert.deepEqual(w.storage.peek().unresolved, [], "a complete oversize answer finalizes (owner policy)");
+      assert.equal(w.storage.peek().failures, 0);
+      assert.equal((await w.isolate().health()).upstream.state, "ok");
+      const next = w.isolate().ask("MSFT");
+      await until(() => w.starts.length === 2, "capacity returns");
+      releaseAll(w);
+      assert.equal((await next).status, 200);
+      await settle();
+      assert.deepEqual(unhandled, [], "no unhandled rejection");
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+}
+
+test("R7/L5: the cap is exact: 2 MiB is accepted, 2 MiB plus one byte is not, with a cancellation that never settles", async () => {
+  for (const [size, status] of [[CAP, 200], [CAP + 1, 502]]) {
+    const w = world({ limits: { upstreamMinSpacingMs: 0 } });
+    const first = w.isolate().ask("AAPL");
+    await until(() => w.starts.length === 1, "admission");
+    const h = w.held.shift();
+    const json = new Uint8Array(await (await yahooFetch({ now: w.clock.now })(h.url)).arrayBuffer());
+    h.raw(new Response(cappedBody(json, size, "never"), { status: 200 }));
+    const answer = await within(first, 2000, `${size} bytes`);
+    assert.equal(answer.status, status, `${size} bytes`);
+    assert.deepEqual(w.storage.peek().unresolved, []);
+  }
+});
+
+test("R7/L5: a body that fails below the cap is still incomplete: its marker stays (M5)", async () => {
+  const w = world({ limits: { upstreamMinSpacingMs: 0 } });
+  const first = w.isolate().ask("AAPL");
+  await until(() => w.starts.length === 1, "admission");
+  let sent = 0;
+  const failing = new ReadableStream({
+    pull(c) {
+      if (sent >= CAP - 65536) { c.error(new TypeError("connection reset")); return; }
+      c.enqueue(new Uint8Array(65536).fill(0x20));
+      sent += 65536;
+    },
+    cancel: () => new Promise(() => {}),
+  }, { highWaterMark: 0 });
+  w.held.shift().raw(new Response(failing, { status: 200 }));
+  await refused(await within(first, 2000, "the interrupted answer"), "busy");
+  assert.equal(w.storage.peek().unresolved.length, 1);
+  assert.equal((await w.isolate().health()).upstream.state, "unverified");
+  assert.equal(w.starts.length, 1);
 });
 
 test("H1: an identifier observed while a request is active cannot clear its later aborted unknown outcome", async () => {

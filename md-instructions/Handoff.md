@@ -1,3 +1,33 @@
+# Handoff - PR 46 R7 stabilization after the qualified R6 review (2026-11-23)
+
+Snapshot: Claude Code on HOME-PC, branch `claude/loving-brown-48hctl`, starting checkpoint
+R6 `f017726e1b0d7ea5da73837f99b70eb001b62340`. **R7 READY FOR INDEPENDENT REVIEW** once its
+gate and CI results are recorded in the private R7 report. This handoff accompanies the R7
+commit; resolve its SHA with Git. R7 is not independently accepted.
+
+- Independent R6 review (Codex): **QUALIFIED**; H1, H2, M5 and the Monday regression pass.
+- L3 (Low), fixed: `cooldown_started` / `source_reactivated` are logged only after
+  `storage.sync()` confirms the commit, not when the SQL statement returns. A refused
+  confirmation ends the instance (admits and writes nothing more). Real workerd regression:
+  Codex's deferred-foreign-key commit failure, for a stop and a halt, across a full
+  persisted restart (fails on R6, passes on R7); unit cases for rollback, never-settling and
+  out-of-order acknowledgements, recovery and a rolled-back reactivation.
+- L5 (Low), fixed: an oversize HTTP 200 cancels the rest of its body without waiting;
+  regressions for a cancellation that never settles, rejects or throws, at the exact cap.
+- L6 (Low), fixed: the calendar test pins 1 and 4 sessions as literals; a 4 -> 5 or 4 -> 3
+  threshold mutation now fails it. Production freshness code unchanged.
+- Open, owner decision, not changed: M4 (incident-bound reactivation, proposed privately),
+  M1, M2, M3, Q1, L1. CPI workbook preservation unchanged.
+- Verification and exact-SHA CI: recorded in the private R7 report.
+
+Next action: fresh independent review of the pushed R7 SHA (deferred-commit logging, the
+never-settling cancellation, the threshold mutation), then the owner's M4 decision. Do not
+merge, mark ready, deploy or activate.
+
+---
+
+Earlier R6 handoff (superseded by R7 above):
+
 # Handoff - PR 46 R6 stabilization after the qualified R5 review (2026-11-23)
 
 Snapshot: Claude Code on HOME-PC, branch `claude/loving-brown-48hctl`, starting checkpoint

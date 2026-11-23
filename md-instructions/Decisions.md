@@ -104,3 +104,33 @@ always finalizes. R5 also finalized a 200 whose body was interrupted without an 
 
 Still open for the owner: M4 (reactivation not bound to a specific incident; an
 incident-bound design is proposed privately for the next phase), M1, M2, M3 and Q1.
+
+## 2026-11-23: a logged stop is a committed stop (PR 46 R7)
+
+The independent R6 review (Codex, QUALIFIED) reproduced in real workerd that a SQLite
+statement can return and its implicit commit still fail (a deferred foreign key): R6 had
+already logged `cooldown_started` for a stop that was rolled back (L3). It also found that
+an oversize body waited for its stream cancellation (L5) and that the calendar test derived
+its too-old threshold from the constant it should pin (L6).
+
+- `cooldown_started` and `source_reactivated` are logged only when `storage.sync()` confirms
+  the commit (Cloudflare: it resolves only once every earlier write is on disk). Writes are
+  tracked in order and confirmed in order, so a stop is logged once, in recording order,
+  whatever order acknowledgements arrive in. Nothing is awaited: the admission decision, its
+  write and `fetch()` stay one synchronous step, and the output gate still holds the request
+  until the same commit. Considered and rejected: awaiting `sync()` in the outcome path
+  before answering. It would delay every answer and protect nothing more, since the runtime
+  already withholds the answer until the commit, and a reset object never resumes the await.
+- A refused confirmation ends that instance: it admits nothing and writes nothing more
+  until the runtime replaces it, because its memory may hold effects disk does not (a
+  rolled-back reactivation would otherwise be rewritten without its consumed identifier).
+  This mirrors the platform, which resets an object whose commit fails; in real workerd the
+  reset happens before any handler logs, so a commit failure shows as `busy` and
+  `unverified` health, never as a started stop. Statement failures keep the R6 behaviour:
+  `cooldown_not_persisted`, rewrite on recovery, `cooldown_started` once that commit is
+  confirmed.
+- An oversize HTTP 200 cancels the rest of its body without waiting. The 2 MiB cap and the
+  finalization policy are unchanged.
+- The calendar test pins one session (stale) and four (too old) as literals.
+
+Unchanged and still open: M4, M1, M2, M3, Q1, L1.

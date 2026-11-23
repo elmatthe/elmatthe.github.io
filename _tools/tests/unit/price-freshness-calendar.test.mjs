@@ -79,9 +79,16 @@ test("on a Monday, Friday's close is current; on Saturday and Sunday too", () =>
   }
 });
 
+// The policy is pinned with literals, independently of the exported constants (R7/L6): a
+// threshold moved from four sessions to five (or three) must fail here.
+test("the policy itself: one missed session is stale and four are too old", () => {
+  assert.equal(STALE_SESSIONS, 1);
+  assert.equal(TOO_OLD_SESSIONS, 4);
+});
+
 test("sessions, not days, set the threshold: one missed session is stale, four are too old, never current", () => {
   for (const now of moments) {
-    for (const [sessions, expected] of [[STALE_SESSIONS, "stale"], [TOO_OLD_SESSIONS - 1, "stale"], [TOO_OLD_SESSIONS, "too_old"]]) {
+    for (const [sessions, expected] of [[1, "stale"], [2, "stale"], [3, "stale"], [4, "too_old"], [5, "too_old"]]) {
       const r = seen("AAPL", now, { staleSessions: sessions });
       assert.equal(r.missed, sessions, label(now));
       assert.equal(r.freshness, expected, `${sessions} sessions on ${label(now)}`);

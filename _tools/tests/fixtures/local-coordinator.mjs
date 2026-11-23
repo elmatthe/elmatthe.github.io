@@ -6,31 +6,67 @@ import { UpstreamCoordinatorCore } from "../../../_services/market-data-gateway/
 import { createGateway } from "../../../_services/market-data-gateway/src/gateway.js";
 
 // The same contract as sqlStorage, serialized so nothing survives by reference, with the
-// failures a test can ask for.
+// failures a test can ask for. Like SQLite in a Durable Object, a statement that returns is
+// not yet committed. `commits` chooses what `confirm` (storage.sync()) does:
+//   "auto"    every write is committed as it is made, and confirmed at once;
+//   "manual"  writes since the last commit wait, visible to reads as in one SQLite connection,
+//             until `commit()` confirms them or `rollback()` restores the last commit and
+//             refuses their confirmations (a deferred constraint failing at commit);
+//   "never"   a confirmation that never settles.
 export function memoryStorage() {
   let row = null;
-  const seen = new Set();
+  let seen = new Set();
+  let batch = null; // manual mode: { row, seen, waiters } as of the last commit
+  const open = () => { if (storage.commits === "manual" && !batch) batch = { row, seen: new Set(seen), waiters: [] }; };
   const storage = {
     failReads: false,
     failWrites: false,
     failReactivation: false,
+    commits: "auto",
     writes: 0,
+    confirms: 0,
     read() {
       if (storage.failReads) throw new Error("storage read failed");
       return { state: row === null ? null : JSON.parse(row), seen: [...seen] };
     },
     write(state) {
       if (storage.failWrites) throw new Error("database or disk is full: SQLITE_FULL");
+      open();
       storage.writes += 1;
       row = JSON.stringify(state);
       return 1;
     },
     reactivate(state, id) {
       if (storage.failWrites || storage.failReactivation) throw new Error("database or disk is full: SQLITE_FULL");
+      open();
       seen.add(id);
       row = JSON.stringify(state);
     },
+    confirm() {
+      storage.confirms += 1;
+      if (storage.commits === "never") return new Promise(() => {});
+      if (!batch) return Promise.resolve();
+      return new Promise((resolve, reject) => batch.waiters.push({ resolve, reject }));
+    },
+    // Settles the waiting batch; `reverse` delivers the acknowledgements in the opposite order.
+    commit({ reverse = false } = {}) {
+      const waiters = batch?.waiters ?? [];
+      batch = null;
+      (reverse ? [...waiters].reverse() : waiters).forEach(w => w.resolve());
+    },
+    rollback() {
+      if (!batch) return;
+      ({ row, seen } = batch);
+      const { waiters } = batch;
+      batch = null;
+      waiters.forEach(w => w.reject(new Error("FOREIGN KEY constraint failed: SQLITE_CONSTRAINT_FOREIGNKEY")));
+    },
     peek: () => (row === null ? null : JSON.parse(row)),
+    // What a fresh instance would read if the waiting batch were lost.
+    peekCommitted() {
+      const committed = batch ? batch.row : row;
+      return committed === null ? null : JSON.parse(committed);
+    },
     corrupt: state => { row = JSON.stringify(state); },
   };
   return storage;
