@@ -1,3 +1,25 @@
+# Handoff - PR 46 M4 incident-bound approval (2026-11-23)
+
+Snapshot: Claude Code on HOME-PC, branch `claude/loving-brown-48hctl`, starting checkpoint
+R7 `3a8b90b19d9cf4e82252ed913f446db6b7deb089` (independent R7 review: QUALIFIED; L3a accepted).
+This handoff accompanies the M4 commit; resolve its SHA with Git. M4 is implemented, tested
+and independently reviewed as recorded in the private M4 report; not deployed.
+
+- M4 fixed: an approval (`UPSTREAM_INCIDENT_APPROVAL = g<generation>-<nonce>`) clears only the
+  current incident, once, at the object's start, with the source off; any scope change
+  rotates the nonce; `UPSTREAM_REACTIVATION_ID` is ignored. Health reads never write.
+  Owner recovery via Data Studio `SELECT` queries (gateway README, "Incidents and the owner's
+  approval"). Decision record: `Decisions.md` 2026-11-23 M4.
+- Deployment prerequisite (owner): delete any `UPSTREAM_REACTIVATION_ID` from the live Worker
+  with the first deployment of this version.
+- Open, unchanged: M1, M2, M3, Q1, L1; L3a (accepted). CPI workbook preservation unchanged.
+
+Next action: owner review of PR 46 and the release priorities for the four applications. Do
+not merge, mark ready, deploy or activate without the owner.
+
+---
+
+Earlier R7 handoff (superseded by M4 above):
 # Handoff - PR 46 R7 stabilization after the qualified R6 review (2026-11-23)
 
 Snapshot: Claude Code on HOME-PC, branch `claude/loving-brown-48hctl`, starting checkpoint

@@ -39,8 +39,8 @@
 //     concurrent requests; and stopped entirely for 15 minutes after Yahoo answers 429 and
 //     30 minutes after 401/403, or for as long as Yahoo's own Retry-After says when that is
 //     longer (a circuit breaker; no retry is ever sent upstream). A wait above
-//     MAX_COOLDOWN_SECONDS halts the source until the owner reactivates it
-//     (UPSTREAM_REACTIVATION_ID). If the coordinator cannot be reached or its state cannot
+//     MAX_COOLDOWN_SECONDS halts the source until the owner approves that incident
+//     (UPSTREAM_INCIDENT_APPROVAL, read by the coordinator). If the coordinator cannot be reached or its state cannot
 //     be verified, nothing is sent (fail closed). This file makes no upstream request;
 //   * answers are cached (10 min / 12 h, definitive refusals 30 min). The caches are for
 //     speed only: no safety decision depends on them;
@@ -55,11 +55,11 @@
 import { VENUES, parseSymbol } from "./venues.js";
 import { SOURCE_ID, SOURCE_INFO, HISTORY_RANGES, HISTORY_INTERVALS, UpstreamError, normalizeQuote, normalizeHistory } from "./yahoo-chart.js";
 import { VERSION, COOLDOWN_SECONDS, COORDINATOR_UNAVAILABLE, UNVERIFIED_RETRY_SECONDS, UPSTREAM_LIMITS } from "./coordinator.js";
+import { sourceState } from "./activation.js";
 
 export { VERSION, COOLDOWN_SECONDS, MAX_COOLDOWN_SECONDS, FAILURES_BEFORE_COOLDOWN, parseUpstreamRetryAfter } from "./coordinator.js";
+export { sourceState, OWNER_ATTESTATION_VALUE } from "./activation.js";
 
-// The exact value of OWNER_ATTESTATION that switches the source on (with KEYLESS_SOURCE).
-export const OWNER_ATTESTATION_VALUE = "owner-confirms-yahoo-permission";
 export const DEFAULT_ORIGINS = Object.freeze(["https://elmatthe.github.io"]);
 
 // Limits are deliberately conservative: a slow answer is better than an upstream block.
@@ -119,20 +119,6 @@ const RETRY_AFTER = { rate_limited: 60, throttled: 60, busy: 5, upstream_rate_li
 const DEFINITIVE = new Set(["invalid_symbol", "unsupported_listing", "symbol_not_found", "listing_mismatch", "currency_mismatch", "currency_unknown", "unsupported_instrument"]);
 
 const ENDPOINT_PARAMS = { "/v1/quote": ["symbol"], "/v1/history": ["interval", "range", "symbol"] };
-
-// Whether the keyless source may be used, and why not. Both settings are required.
-export function sourceState(env = {}) {
-  const configured = String(env.KEYLESS_SOURCE ?? "").trim();
-  const attestation = String(env.OWNER_ATTESTATION ?? "").trim();
-  if (!configured || configured === "none" || configured === "off") {
-    return { enabled: false, source: "none", activation: null, reason: "The keyless source is switched off on this gateway (KEYLESS_SOURCE is not set)." };
-  }
-  if (configured !== SOURCE_ID) return { enabled: false, source: "none", activation: null, reason: "An unknown keyless source is configured; it stays switched off." };
-  if (attestation !== OWNER_ATTESTATION_VALUE) {
-    return { enabled: false, source: SOURCE_ID, activation: null, reason: "Yahoo Finance retrieval is switched off: the operator has not activated it on this gateway (OWNER_ATTESTATION is not set)." };
-  }
-  return { enabled: true, source: SOURCE_ID, activation: "owner_attestation", reason: null };
-}
 
 // Only exact https origins (or loopback http origins for local development) are accepted.
 export function parseOrigins(value) {

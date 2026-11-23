@@ -13,32 +13,48 @@ import { createGateway } from "../../../_services/market-data-gateway/src/gatewa
 //             until `commit()` confirms them or `rollback()` restores the last commit and
 //             refuses their confirmations (a deferred constraint failing at commit);
 //   "never"   a confirmation that never settles.
+//
+// `seal` stands for sqlStorage's `m4_row`: the six columns as the coordinator last wrote them.
+// `corrupt` (and `legacyReactivation`) write the row as other code would, without the seal.
+const sealOf = state => (state ? JSON.stringify([state.cooldownUntil, state.cooldownCode, state.haltCode, state.failures, state.starts, state.unresolved]) : null);
 export function memoryStorage() {
   let row = null;
-  let seen = new Set();
-  let batch = null; // manual mode: { row, seen, waiters } as of the last commit
-  const open = () => { if (storage.commits === "manual" && !batch) batch = { row, seen: new Set(seen), waiters: [] }; };
+  let seen = new Set(); // legacy UPSTREAM_REACTIVATION_ID history (reactivation_ids)
+  let approvals = new Map(); // incident_approvals: generation -> scope
+  let seal = null;
+  let batch = null; // manual mode: the stored values as of the last commit, and the waiters
+  const open = () => { if (storage.commits === "manual" && !batch) batch = { row, seen: new Set(seen), approvals: new Map(approvals), seal, waiters: [] }; };
   const storage = {
     failReads: false,
     failWrites: false,
-    failReactivation: false,
+    failApproval: false, // only the approval transaction fails
     commits: "auto",
     writes: 0,
     confirms: 0,
     read() {
       if (storage.failReads) throw new Error("storage read failed");
-      return { state: row === null ? null : JSON.parse(row), seen: [...seen] };
+      const state = row === null ? null : JSON.parse(row);
+      return { state, seen: [...seen], approvals: [...approvals.keys()], sealed: state === null || seal === sealOf(state) };
     },
     write(state) {
       if (storage.failWrites) throw new Error("database or disk is full: SQLITE_FULL");
       open();
       storage.writes += 1;
       row = JSON.stringify(state);
+      seal = sealOf(state);
       return 1;
     },
-    reactivate(state, id) {
-      if (storage.failWrites || storage.failReactivation) throw new Error("database or disk is full: SQLITE_FULL");
+    approve(state, generation, scope) {
+      if (storage.failWrites || storage.failApproval) throw new Error("database or disk is full: SQLITE_FULL");
+      if (approvals.has(generation)) throw new Error("UNIQUE constraint failed: incident_approvals.generation");
       open();
+      approvals.set(generation, structuredClone(scope));
+      row = JSON.stringify(state);
+      seal = sealOf(state);
+    },
+    approvals: () => [...approvals.keys()],
+    // What an older version's UPSTREAM_REACTIVATION_ID wrote: history plus a row, no seal.
+    legacyReactivation(state, id) {
       seen.add(id);
       row = JSON.stringify(state);
     },
@@ -56,7 +72,7 @@ export function memoryStorage() {
     },
     rollback() {
       if (!batch) return;
-      ({ row, seen } = batch);
+      ({ row, seen, approvals, seal } = batch);
       const { waiters } = batch;
       batch = null;
       waiters.forEach(w => w.reject(new Error("FOREIGN KEY constraint failed: SQLITE_CONSTRAINT_FOREIGNKEY")));

@@ -6,7 +6,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createGateway, LIMITS, COOLDOWN_SECONDS, MAX_COOLDOWN_SECONDS, VERSION } from "../../../_services/market-data-gateway/src/gateway.js";
-import { UpstreamCoordinatorCore } from "../../../_services/market-data-gateway/src/coordinator.js";
+import { UpstreamCoordinatorCore, APPROVAL_DRAIN_MS } from "../../../_services/market-data-gateway/src/coordinator.js";
 import { yahooFetch } from "../fixtures/yahoo-chart.mjs";
 import { localCoordinator, memoryStorage } from "../fixtures/local-coordinator.mjs";
 
@@ -111,6 +111,11 @@ function world({ limits = {}, coordinatorEnv = {}, storage = memoryStorage(), ca
   };
   return { clock, held, starts, violations, coordinator, storage, isolate, enter, elapsed: () => clock.now() - NOW };
 }
+// The value the owner reads from storage (Data Studio) to approve the current incident (M4).
+const approvalFor = storage => {
+  const { incident } = storage.peek();
+  return `g${incident.generation}-${incident.nonce}`;
+};
 const code = async r => (await r.clone().json()).error?.code;
 const releaseAll = w => w.held.splice(0).forEach(h => h.ok());
 const refused = async (r, expected, retryAfter) => {
@@ -202,8 +207,8 @@ for (const refusalFirst of [false, true]) {
   });
 }
 
-test("H1: only a fresh owner identifier resolves restart uncertainty; failed transaction and old identifiers do not", async () => {
-  const env = { UPSTREAM_REACTIVATION_ID: "before-uncertainty" };
+test("H1/M4: only the owner's approval of the current incident resolves restart uncertainty; a failed transaction and older values do not", async () => {
+  const env = { UPSTREAM_INCIDENT_APPROVAL: `g1-${"a".repeat(26)}`, UPSTREAM_REACTIVATION_ID: "before-uncertainty" };
   const w = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: env });
   await w.isolate().health();
   const answer = w.isolate().ask("AAPL");
@@ -214,15 +219,18 @@ test("H1: only a fresh owner identifier resolves restart uncertainty; failed tra
   w.coordinator.restart();
   w.storage.failWrites = false;
   await refused(await w.isolate().ask("MSFT"), "busy", 60);
-  env.UPSTREAM_REACTIVATION_ID = "owner-after-drain";
-  w.storage.failReactivation = true;
+  assert.equal(w.storage.peek().approvalResult.result, "mismatch", "a value set before the incident cannot name it");
+  await w.clock.jump(APPROVAL_DRAIN_MS);
+  env.UPSTREAM_INCIDENT_APPROVAL = approvalFor(w.storage);
+  w.storage.failApproval = true;
+  w.coordinator.restart();
   await refused(await w.isolate().ask("SPY"), "busy", 60);
   assert.equal(w.storage.peek().unresolved.length, 1);
-  assert.ok(!w.storage.read().seen.includes("owner-after-drain"), "failed transaction did not consume the identifier");
-  w.storage.failReactivation = false;
-  await reachable(w, "SPY");
+  assert.deepEqual(w.storage.approvals(), [], "failed transaction did not consume the approval");
+  w.storage.failApproval = false;
+  await reachable(w, "SPY"); // the same start, retried: the transaction now succeeds
   assert.deepEqual(w.storage.peek().unresolved, []);
-  assert.ok(w.storage.read().seen.includes("owner-after-drain"));
+  assert.deepEqual(w.storage.approvals(), [1]);
   const later = w.isolate().ask("VST");
   await until(() => w.starts.length === 3, "later admission");
   w.storage.failWrites = true;
@@ -230,18 +238,21 @@ test("H1: only a fresh owner identifier resolves restart uncertainty; failed tra
   await later;
   w.coordinator.restart();
   w.storage.failWrites = false;
-  for (const id of ["before-uncertainty", "owner-after-drain"]) {
-    env.UPSTREAM_REACTIVATION_ID = id;
+  await w.clock.jump(APPROVAL_DRAIN_MS);
+  for (const value of [`g1-${"a".repeat(26)}`, env.UPSTREAM_INCIDENT_APPROVAL]) {
+    env.UPSTREAM_INCIDENT_APPROVAL = value;
+    w.coordinator.restart();
     await refused(await w.isolate().ask("SAP.DE"), "busy", 60);
   }
+  assert.equal(w.storage.peek().approvalResult.result, "consumed");
   assert.equal(w.starts.length, 3);
 });
 
 test("H1: reactivation history without its state row is inconsistent, not pristine", async () => {
   const storage = memoryStorage();
-  storage.reactivate({ cooldownUntil: 0, cooldownCode: null, haltCode: null, failures: 0, starts: [], unresolved: [] }, "previous-owner");
+  storage.legacyReactivation({ cooldownUntil: 0, cooldownCode: null, haltCode: null, failures: 0, starts: [], unresolved: [] }, "previous-owner");
   storage.corrupt(null);
-  const w = world({ storage, coordinatorEnv: { UPSTREAM_REACTIVATION_ID: "new-owner" } });
+  const w = world({ storage, coordinatorEnv: { UPSTREAM_INCIDENT_APPROVAL: `g1-${"a".repeat(26)}` } });
   await refused(await w.isolate().ask("AAPL"), "busy", 60);
   assert.equal(w.starts.length, 0);
   assert.equal((await w.isolate().health()).upstream.state, "unverified");
@@ -254,7 +265,7 @@ test("H1: malformed and inconsistent unresolved state fails closed without owner
   for (const unresolved of [null, {}, [null], [{ id: "", startedAt: NOW }], [{ id: "bad", startedAt: -1 }], [marker, marker], [marker, { id: "second", startedAt: NOW }, { id: "third", startedAt: NOW }], [{ id: "missing-start", startedAt: NOW + 1 }]]) {
     const storage = memoryStorage();
     storage.corrupt({ ...base, unresolved });
-    const w = world({ storage, coordinatorEnv: { UPSTREAM_REACTIVATION_ID: "cannot-repair" } });
+    const w = world({ storage, coordinatorEnv: { UPSTREAM_INCIDENT_APPROVAL: `g1-${"a".repeat(26)}` } });
     let settled = false;
     const answer = w.isolate().ask("AAPL").finally(() => { settled = true; });
     await until(() => settled || w.starts.length > 0, "malformed storage must be refused");
@@ -466,9 +477,13 @@ test("L3: a stop whose write fails is logged as not persisted, never as started,
     assert.equal(core.status().state, "unverified", "still failing: nothing confirmed");
     assert.equal(events("cooldown_started").length, 0);
     storage.failWrites = false;
-    const status = core.status(); // the held outcome is written now
+    assert.equal(core.status().state, "unverified", "health only reads (M4/D4): it does not rewrite");
+    assert.equal(storage.peek().cooldownUntil, 0);
+    const asked = core.fetchChart({ kind: "quote", symbol: "MSFT", client: "b" }); // the data path writes the held outcome, synchronously
+    const status = core.status();
     assert.equal(status.state, halted ? "halted" : "cooling_down");
     assert.equal(events("cooldown_started").length, 0, "written, but not yet confirmed as committed");
+    assert.equal((await asked).code, "upstream_rate_limited");
     await settle();
     const started = events("cooldown_started");
     assert.equal(started.length, halted ? 2 : 1);
@@ -628,7 +643,8 @@ test("R7/L3: failed-write recovery is logged as started only when the rewrite's 
     assert.equal(events("cooldown_not_persisted").length, 1, "statement failure");
     storage.failWrites = false;
     storage.commits = "manual";
-    assert.equal(core.status().state, "cooling_down", "the held outcome is rewritten");
+    assert.equal((await core.fetchChart({ kind: "quote", symbol: "MSFT", client: "b" })).code, "upstream_rate_limited", "the held outcome is rewritten");
+    assert.equal(core.status().state, "cooling_down");
     await settle();
     assert.equal(events("cooldown_started").length, 0, "rewritten, not yet committed");
     if (rewriteCommits) {
@@ -651,38 +667,44 @@ test("R7/L3: failed-write recovery is logged as started only when the rewrite's 
   }
 });
 
-test("R7/L3: a reactivation whose commit fails is not reported, consumes nothing, and ends no halt", async () => {
-  const env = {};
-  const { storage, core, answers, ask, refuse, events } = commitCore({ env });
+test("R7/L3, M4: an approval whose commit fails is not reported, consumes nothing, and ends no halt", async () => {
+  const { storage, answers, ask, refuse, events } = commitCore();
   const reply = ask("AAPL");
   await until(() => answers.length === 1, "admission");
   refuse(0, 172800);
   await reply;
   await settle();
   assert.equal(events("cooldown_started").length, 2, "the halt is committed");
+  assert.equal(events("incident_opened").length, 1);
+  const env = { UPSTREAM_INCIDENT_APPROVAL: approvalFor(storage) };
+
   storage.commits = "manual";
-  env.UPSTREAM_REACTIVATION_ID = "owner-r7-commit";
-  assert.equal(core.status().state, "cooling_down", "the statement returned: the halt ends, its 900 s minimum remains");
+  const approving = commitCore({ env, storage }); // the deployment that carries the approval
+  assert.equal(approving.core.status().state, "cooling_down", "the statement returned: the halt ends, its 900 s minimum remains");
   await settle();
-  assert.equal(events("source_reactivated").length, 0, "not committed, so not reported");
+  assert.equal(approving.events("incident_resolved").length, 0, "not committed, so not reported");
   storage.rollback();
   await settle();
-  assert.equal(events("source_reactivated").length, 0);
-  assert.equal(core.status().state, "unverified", "an instance whose commit failed trusts nothing it holds");
-  assert.equal((await ask("MSFT")).code, "coordinator_unavailable");
-  assert.equal(answers.length, 1);
+  assert.equal(approving.events("incident_resolved").length, 0);
+  assert.equal(approving.core.status().state, "unverified", "an instance whose commit failed trusts nothing it holds");
+  assert.equal((await approving.ask("MSFT")).code, "coordinator_unavailable");
+  assert.equal(answers.length + approving.answers.length, 1);
   assert.equal(storage.peek().haltCode, "upstream_rate_limited", "the halt is still on disk");
-  assert.deepEqual(storage.read().seen, [], "the identifier was not recorded");
+  assert.deepEqual(storage.approvals(), [], "the approval was not recorded");
 
   storage.commits = "auto";
-  const restarted = commitCore({ env: {}, storage });
+  const restarted = commitCore({ storage });
   assert.equal(restarted.core.status().state, "halted", "the next instance reads the halt");
-  env.UPSTREAM_REACTIVATION_ID = "owner-r7-commit";
   const fresh = commitCore({ env, storage });
-  assert.equal(fresh.core.status().state, "cooling_down", "the identifier, never recorded, still ends the halt once");
+  assert.equal(fresh.core.status().state, "cooling_down", "the approval, never recorded, still ends the halt once");
   await settle();
-  assert.equal(fresh.events("source_reactivated").length, 1, "reported once it is committed");
-  assert.deepEqual(storage.read().seen, ["owner-r7-commit"]);
+  assert.equal(fresh.events("incident_resolved").length, 1, "reported once it is committed");
+  assert.deepEqual(storage.approvals(), [storage.peek().lastGeneration]);
+  const replay = commitCore({ env, storage });
+  assert.equal(replay.core.status().state, "cooling_down");
+  await settle();
+  assert.equal(replay.events("incident_resolved").length, 0, "a used approval does nothing more");
+  assert.equal(storage.peek().approvalResult.result, "consumed");
 });
 
 /* ---------------- R7/L5. an oversize body does not wait for its cancellation ---------------- */
@@ -770,21 +792,22 @@ test("R7/L5: a body that fails below the cap is still incomplete: its marker sta
   assert.equal(w.starts.length, 1);
 });
 
-test("H1: an identifier observed while a request is active cannot clear its later aborted unknown outcome", async () => {
-  const env = {};
+test("H1/M4: an approval in place while a request is active cannot clear its later aborted unknown outcome", async () => {
+  const env = { UPSTREAM_INCIDENT_APPROVAL: `g1-${"a".repeat(26)}` };
   const w = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: env });
   const gone = new AbortController();
   const first = w.isolate().ask("AAPL", { signal: gone.signal });
   await until(() => w.starts.length === 1, "admission");
-  env.UPSTREAM_REACTIVATION_ID = "observed-while-active";
   assert.equal((await w.isolate().health()).upstream.state, "ok", "healthy current-instance concurrency is not uncertainty");
-  assert.equal(w.storage.peek().unresolved.length, 1, "reactivation never erases an active admission");
+  assert.equal(w.storage.peek().unresolved.length, 1, "an approval never erases an active admission");
+  assert.equal(w.storage.peek().incident, null, "a healthy request is not an incident");
   gone.abort();
   assert.equal((await first).status, 499);
-  await until(() => w.storage.peek().unresolved.length === 1, "unknown marker remains");
+  await until(() => w.storage.peek().incident?.scope.markers.length === 1, "the unknown outcome opens an incident");
   w.coordinator.restart();
   await w.clock.jump(40 * 86400000);
   await refused(await w.isolate().ask("MSFT"), "busy", 60);
+  assert.equal(w.storage.peek().approvalResult.result, "mismatch");
   assert.equal(w.starts.length, 1);
 });
 
@@ -1316,7 +1339,7 @@ test("a restarted coordinator recovers its deadline, its halt, its spacing, its 
   assert.equal(failing.starts.length, 3);
 });
 
-/* ---------------- 5. UPSTREAM_REACTIVATION_ID ---------------- */
+/* ---------------- 5. M4: incident-bound approval (UPSTREAM_INCIDENT_APPROVAL) ---------------- */
 async function halt(w, symbol) {
   const before = w.starts.length;
   const answer = w.isolate().ask(symbol);
@@ -1338,66 +1361,148 @@ async function reachable(w, symbol) {
   assert.equal((await answer).status, 200);
 }
 
-test("reactivation: only an identifier this coordinator has never seen ends a halt, and only once", async () => {
-  const env = {};
+// The owner deploys the approval (a new version restarts the coordinator) with the source off.
+function approve(w, env, value = approvalFor(w.storage)) {
+  env.UPSTREAM_INCIDENT_APPROVAL = value;
+  w.coordinator.restart();
+}
+const OFF = {}; // a coordinator env with the source switched off (D2)
+const COORDINATOR_ON = { KEYLESS_SOURCE: "yahoo-chart", OWNER_ATTESTATION: "owner-confirms-yahoo-permission" };
+const lastResult = w => w.storage.peek().approvalResult?.result;
+
+test("M4: an approval prepared before the incident cannot clear it, before or after a restart", async () => {
+  // The value an owner could have set in advance: any generation, any nonce.
+  for (const early of [`g1-${"a".repeat(26)}`, `g2-${"b".repeat(26)}`]) {
+    const env = { ...OFF, UPSTREAM_INCIDENT_APPROVAL: early };
+    const w = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: env });
+    assert.equal((await w.isolate().health()).upstream.state, "ok");
+    await halt(w, "AAPL");
+    await w.clock.jump(COOLDOWN_SECONDS.upstream_rate_limited * 1000);
+    await blockedStill(w, "MSFT", "the value in place does nothing");
+    w.coordinator.restart(); // the next deployment
+    await blockedStill(w, "MSFT", "nor at the next start");
+    assert.ok(["mismatch", "unknown_generation"].includes(lastResult(w)), lastResult(w));
+    assert.equal(w.starts.length, 1);
+  }
+});
+
+test("M4: the approval of the current incident clears it once, at the next start, with the source off; replay and later incidents do nothing", async () => {
+  const env = { ...OFF };
   const w = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: env });
   await halt(w, "AAPL");
-  await w.clock.jump(COOLDOWN_SECONDS.upstream_rate_limited * 1000); // past the ordinary minimum
-
-  for (const bad of ["", "   ", "has space", "../etc", "x".repeat(41)]) {
-    env.UPSTREAM_REACTIVATION_ID = bad;
-    await blockedStill(w, "MSFT", `a malformed id does nothing: ${JSON.stringify(bad)}`);
-  }
-  delete env.UPSTREAM_REACTIVATION_ID;
-  await blockedStill(w, "MSFT", "no id does nothing");
-
-  env.UPSTREAM_REACTIVATION_ID = "2026-11-05";
+  await w.clock.jump(COOLDOWN_SECONDS.upstream_rate_limited * 1000);
+  const first = approvalFor(w.storage);
+  assert.match(first, /^g1-[a-z2-7]{26}$/);
+  env.UPSTREAM_INCIDENT_APPROVAL = first;
+  await blockedStill(w, "MSFT", "not before the coordinator starts again: requests never evaluate it");
+  approve(w, env, first);
   await reachable(w, "MSFT");
-  assert.equal((await w.isolate().health()).upstream.state, "ok");
+  assert.equal(w.starts.length, 2);
+  assert.deepEqual(w.storage.approvals(), [1]);
+  assert.equal(w.storage.peek().incident, null);
 
-  // The same value left in place cannot authorize a later halt.
+  // Replay: the same value at later starts, and with a new incident.
+  w.coordinator.restart();
+  assert.equal((await w.isolate().health()).upstream.state, "ok");
+  assert.equal(lastResult(w), "consumed");
   await halt(w, "SPY");
   await w.clock.jump(COOLDOWN_SECONDS.upstream_rate_limited * 1000);
-  await blockedStill(w, "VST", "a used id does nothing");
-
-  env.UPSTREAM_REACTIVATION_ID = "2026-11-06";
+  assert.equal(w.storage.peek().incident.generation, 2);
+  w.coordinator.restart();
+  await blockedStill(w, "VST", "an earlier incident's approval does nothing for a new one");
+  assert.equal(lastResult(w), "consumed");
+  approve(w, env);
   await reachable(w, "VST");
+  assert.deepEqual(w.storage.approvals(), [1, 2]);
+  assert.equal(w.starts.length, 4);
 
-  // A rollback that restores an older value cannot end a halt either, even after a restart.
-  await halt(w, "SAP.DE");
-  await w.clock.jump(COOLDOWN_SECONDS.upstream_rate_limited * 1000);
-  env.UPSTREAM_REACTIVATION_ID = "2026-11-05";
-  w.coordinator.restart();
-  await blockedStill(w, "VOD.L", "an older id does nothing after a rollback");
-  env.UPSTREAM_REACTIVATION_ID = "2026-11-06";
-  w.coordinator.restart();
-  await blockedStill(w, "VOD.L", "the latest used id does nothing after a restart");
-
-  env.UPSTREAM_REACTIVATION_ID = "2026-11-07";
-  w.coordinator.restart();
-  await reachable(w, "VOD.L");
+  for (const bad of ["", "   ", "G3-x", `g0-${"a".repeat(26)}`, `g1-${"A".repeat(26)}`, `g1-${"a".repeat(27)}`, "2026-11-05"]) {
+    const v = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: { ...OFF } });
+    await halt(v, "AAPL");
+    await v.clock.jump(COOLDOWN_SECONDS.upstream_rate_limited * 1000);
+    const nonce = v.storage.peek().incident.nonce;
+    approve(v, v.coordinator.env, bad === "G3-x" ? `G1-${nonce}` : bad);
+    await blockedStill(v, "MSFT", `a malformed or foreign value does nothing: ${JSON.stringify(bad)}`);
+  }
 });
 
-test("reactivation: an identifier set before a halt does not authorize it in advance", async () => {
-  const env = { UPSTREAM_REACTIVATION_ID: "set-early" };
+test("M4: a change of the incident rotates it: an approval read before the change no longer matches", async () => {
+  const env = { ...OFF };
   const w = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: env });
-  assert.equal((await w.isolate().health()).upstream.state, "ok"); // the coordinator has seen it
-  await halt(w, "AAPL");
-  await w.clock.jump(COOLDOWN_SECONDS.upstream_rate_limited * 1000);
-  await blockedStill(w, "MSFT", "the id was already used up when the halt began");
+  const answers = [...await w.enter(w.isolate(), ["AAPL"]), ...await w.enter(w.isolate(), ["MSFT"])];
+  await until(() => w.starts.length === 2, "two in flight");
+  w.held.shift().reject(new TypeError("connection reset before headers")); // an unknown outcome
+  await refused(await answers[0], "busy");
+  const scopeOne = w.storage.peek().incident;
+  assert.equal(scopeOne.generation, 1);
+  assert.deepEqual(scopeOne.scope.halt, null);
+  assert.equal(scopeOne.scope.markers.length, 1);
+  const early = approvalFor(w.storage);
+  w.held.shift().status(429, { "Retry-After": "172800" }); // then a halt-level direction
+  await answers[1];
+  const scopeTwo = w.storage.peek().incident;
+  assert.equal(scopeTwo.generation, 2, "the halt is a new generation");
+  assert.notEqual(scopeTwo.nonce, scopeOne.nonce);
+  await w.clock.jump(COOLDOWN_SECONDS.upstream_rate_limited * 1000); // past the drain and the halt's own minimum
+  approve(w, env, early);
+  await refused(await w.isolate().ask("SPY"), "busy");
+  assert.equal(lastResult(w), "stale_generation");
+  approve(w, env);
+  await reachable(w, "SPY");
+  assert.deepEqual(w.storage.peek().unresolved, []);
+  assert.equal(w.storage.peek().haltCode, null, "the halt and the unknown outcome end together");
+  assert.equal(w.starts.length, 3);
+
+  // A repeated halt-level direction while halted is new evidence: it rotates too.
+  const v = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: { ...OFF } });
+  const pair = [...await v.enter(v.isolate(), ["AAPL"]), ...await v.enter(v.isolate(), ["MSFT"])];
+  await until(() => v.starts.length === 2, "two in flight");
+  v.held.shift().status(429, { "Retry-After": "172800" });
+  await pair[0];
+  const before = approvalFor(v.storage);
+  v.held.shift().status(429, { "Retry-After": "259200" });
+  await pair[1];
+  assert.notEqual(approvalFor(v.storage), before);
+  approve(v, v.coordinator.env, before);
+  await blockedStill(v, "SPY", "approved before the second direction");
+  // An ordinary refusal under the halt changes nothing about the incident.
+  const w3 = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: { ...OFF } });
+  const both = [...await w3.enter(w3.isolate(), ["AAPL"]), ...await w3.enter(w3.isolate(), ["MSFT"])];
+  await until(() => w3.starts.length === 2, "two in flight");
+  w3.held.shift().status(429, { "Retry-After": "172800" });
+  await both[0];
+  const halted = approvalFor(w3.storage);
+  w3.held.shift().status(429, { "Retry-After": "3600" });
+  await both[1];
+  assert.equal(approvalFor(w3.storage), halted, "a cooldown is not part of the incident");
 });
 
-test("reactivation: the identifier is read by the coordinator alone; a value in a Worker's settings does nothing", async () => {
-  const w = world({ limits: { upstreamMinSpacingMs: 0 } });
-  await halt(w, "AAPL");
-  await w.clock.jump(COOLDOWN_SECONDS.upstream_rate_limited * 1000);
-  const before = w.starts.length;
-  await refused(await w.isolate({ env: { UPSTREAM_REACTIVATION_ID: "from-the-worker" } }).ask("MSFT"), "upstream_rate_limited");
-  assert.equal(w.starts.length, before);
+test("M4: an approval is refused while the source is on, and while the incident's request may still be running", async () => {
+  const env = { ...COORDINATOR_ON };
+  const w = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: env });
+  const answer = w.isolate().ask("AAPL");
+  await until(() => w.starts.length === 1, "admission");
+  w.held.shift().reject(new TypeError("connection reset before headers"));
+  await refused(await answer, "busy");
+  approve(w, env);
+  await refused(await w.isolate().ask("MSFT"), "busy");
+  assert.equal(lastResult(w), "source_on", "recovery is a deliberate source-off deployment (D2)");
+  delete env.KEYLESS_SOURCE; // the source-off deployment
+  w.coordinator.restart();
+  await refused(await w.isolate().ask("MSFT"), "busy");
+  assert.equal(lastResult(w), "work_may_be_running", "the request is 0 s old: it may still be running");
+  assert.equal(w.storage.peek().unresolved.length, 1);
+  await w.clock.jump(APPROVAL_DRAIN_MS);
+  w.coordinator.restart();
+  assert.equal((await w.isolate().health()).upstream.state, "ok", "the source-off start applied the approval");
+  env.KEYLESS_SOURCE = COORDINATOR_ON.KEYLESS_SOURCE; // and the source-on deployment after it
+  w.coordinator.restart();
+  await reachable(w, "MSFT");
+  assert.equal(w.starts.length, 2);
 });
 
-test("reactivation ends only a halt: an ordinary cooldown still runs to its deadline", async () => {
-  const env = {};
+test("M4: an approval ends only the incident: an ordinary cooldown still runs to its deadline", async () => {
+  const env = { ...OFF };
   const w = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: env });
   const answers = [...await w.enter(w.isolate(), ["AAPL"]), ...await w.enter(w.isolate(), ["MSFT"])];
   await until(() => w.starts.length === 2, "both");
@@ -1406,55 +1511,102 @@ test("reactivation ends only a halt: an ordinary cooldown still runs to its dead
   w.held[1].status(429, { "Retry-After": "3600" }); // an ordinary cooldown under it
   await answers[1];
   await w.clock.advance(1000000);
-  env.UPSTREAM_REACTIVATION_ID = "2026-11-05";
+  approve(w, env);
   await refused(await w.isolate().ask("SPY"), "upstream_rate_limited", 2600);
+  assert.equal(w.storage.peek().haltCode, null);
   assert.equal(w.starts.length, 2);
   await w.clock.advance(2600000);
   await reachable(w, "SPY");
 
-  // An ordinary cooldown alone: a new id does not shorten it.
-  const plain = {};
-  const p = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: plain });
+  // An ordinary cooldown alone is no incident: there is nothing to approve.
+  const p = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: { ...OFF } });
   const refusedOnce = p.isolate().ask("AAPL");
   await until(() => p.starts.length === 1, "start");
   p.held.shift().status(429, { "Retry-After": "3600" });
   await refusedOnce;
-  plain.UPSTREAM_REACTIVATION_ID = "not-for-cooldowns";
+  assert.equal(p.storage.peek().incident, null);
+  approve(p, p.coordinator.env, `g1-${"a".repeat(26)}`);
   await refused(await p.isolate().ask("MSFT"), "upstream_rate_limited", 3600);
+  assert.equal(lastResult(p), "no_incident");
   assert.equal(p.starts.length, 1);
 });
 
-test("reactivation that cannot be written leaves the halt in force", async () => {
-  const env = {};
-  const w = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: env });
-  await halt(w, "AAPL");
-  await w.clock.jump(COOLDOWN_SECONDS.upstream_rate_limited * 1000);
-  w.storage.failWrites = true;
-  env.UPSTREAM_REACTIVATION_ID = "2026-11-05";
-  const answer = await w.isolate().ask("MSFT");
-  assert.equal(answer.status, 503);
-  await refused(answer, "busy");
-  assert.equal(w.starts.length, 1);
-  assert.equal(w.storage.peek().haltCode, "upstream_rate_limited");
-  w.storage.failWrites = false;
-  await reachable(w, "MSFT");
+test("M4: an approval that cannot be written leaves the incident in force and is not used up", async () => {
+  for (const failure of ["failWrites", "failApproval"]) {
+    const env = { ...OFF };
+    const w = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: env });
+    await halt(w, "AAPL");
+    await w.clock.jump(COOLDOWN_SECONDS.upstream_rate_limited * 1000);
+    w.storage[failure] = true;
+    approve(w, env);
+    const answer = await w.isolate().ask("MSFT");
+    await refused(answer, "busy", 60);
+    assert.equal(w.starts.length, 1, "nothing is sent on an approval that was not recorded");
+    assert.equal(w.storage.peek().haltCode, "upstream_rate_limited");
+    assert.deepEqual(w.storage.approvals(), []);
+    assert.equal((await w.isolate().health()).upstream.state, "unverified");
+    w.storage[failure] = false;
+    await reachable(w, "MSFT"); // the start is retried, and the approval still matches
+    assert.deepEqual(w.storage.approvals(), [1]);
+  }
+});
 
-  // Only the transaction fails, while ordinary writes work: the halt must not be ended in memory
-  // and then written out by the next admission, with the identifier never recorded as used.
-  const only = {};
-  const v = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: only });
-  await halt(v, "AAPL");
-  await v.clock.jump(COOLDOWN_SECONDS.upstream_rate_limited * 1000);
-  v.storage.failReactivation = true;
-  only.UPSTREAM_REACTIVATION_ID = "2026-11-05";
-  const refused1 = await v.isolate().ask("MSFT");
-  assert.equal(refused1.status, 503);
-  await refused(refused1, "busy", 60);
-  assert.equal(v.starts.length, 1, "nothing is sent on a reactivation that was not recorded");
-  assert.equal(v.storage.peek().haltCode, "upstream_rate_limited");
-  assert.equal((await v.isolate().health()).upstream.state, "unverified");
-  v.storage.failReactivation = false;
-  await reachable(v, "MSFT"); // not used up by the failed attempt
+test("M4: health reads change nothing, however often: no write, no rotation, no approval", async () => {
+  const env = { ...OFF };
+  const w = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: env });
+  const answer = w.isolate().ask("AAPL");
+  await until(() => w.starts.length === 1, "admission");
+  w.held.shift().reject(new TypeError("connection reset before headers"));
+  await refused(await answer, "busy");
+  await w.clock.jump(APPROVAL_DRAIN_MS);
+  env.UPSTREAM_INCIDENT_APPROVAL = approvalFor(w.storage); // in env, but this instance has started
+  const disk = JSON.stringify(w.storage.peek());
+  const writes = w.storage.writes;
+  for (let i = 0; i < 50; i++) assert.equal((await w.isolate().health()).upstream.state, "unverified");
+  assert.equal(JSON.stringify(w.storage.peek()), disk);
+  assert.equal(w.storage.writes, writes);
+  assert.deepEqual(w.storage.approvals(), []);
+  assert.equal(w.starts.length, 1);
+  // A started instance's status alone, with a failed write held in memory: still nothing written.
+  const core = new UpstreamCoordinatorCore({ storage: memoryStorage(), env: {}, now: () => NOW, log: () => {} });
+  core.status();
+  core.unsaved = true;
+  const held = core.storage.writes;
+  for (let i = 0; i < 10; i++) assert.equal(core.status().state, "unverified");
+  assert.equal(core.storage.writes, held);
+});
+
+test("M4: state written before M4, or by other code, is bound to a new incident; the legacy identifier does nothing", async () => {
+  // An R7 row: a halt and an unknown outcome, no incident fields, a legacy identifier in env.
+  const storage = memoryStorage();
+  storage.corrupt({ cooldownUntil: NOW + 900000, cooldownCode: "upstream_rate_limited", haltCode: "upstream_rate_limited", failures: 0, starts: [NOW], unresolved: [{ id: "r7-marker", startedAt: NOW }] });
+  const env = { ...OFF, UPSTREAM_REACTIVATION_ID: "never-seen-2026" };
+  const w = world({ storage, limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: env });
+  await refused(await w.isolate().ask("AAPL"), "busy");
+  const bound = storage.peek().incident;
+  assert.equal(bound.generation, 1);
+  assert.deepEqual(bound.scope, { halt: "upstream_rate_limited", markers: ["r7-marker"] });
+  assert.equal(storage.read().sealed, true, "written by M4 from now on");
+  await w.clock.jump(APPROVAL_DRAIN_MS + 900000);
+  w.coordinator.restart();
+  await refused(await w.isolate().ask("AAPL"), "busy");
+  assert.equal(w.starts.length, 0);
+  approve(w, env);
+  await reachable(w, "AAPL");
+
+  // A rollback to an older version writes the row without the seal: a later approval prepared
+  // for the M4 incident cannot match what the older code left.
+  await halt(w, "MSFT");
+  await w.clock.jump(COOLDOWN_SECONDS.upstream_rate_limited * 1000);
+  const old = approvalFor(storage);
+  const row = storage.peek();
+  storage.corrupt({ ...row, starts: [...row.starts, w.clock.now()] }); // an older version's own write
+  approve(w, env, old);
+  await blockedStill(w, "SPY", "rebound after a foreign write");
+  assert.equal(lastResult(w), "stale_generation");
+  assert.equal(storage.peek().incident.generation, row.incident.generation + 1);
+  approve(w, env);
+  await reachable(w, "SPY");
 });
 
 /* ---------------- 6. storage that fails ---------------- */
@@ -1772,7 +1924,7 @@ test("configuration: the coordinator is bound in both configurations, SQLite-bac
   }
   assert.match(top, /\[exports\.UpstreamCoordinator\]\ntype = "durable-object"\nstorage = "sqlite"\n/, "the only kind of Durable Object Workers Free offers");
   assert.doesNotMatch(toml, /\[\[migrations\]\]/, "exports and migrations are mutually exclusive");
-  assert.doesNotMatch(toml, /UPSTREAM_REACTIVATION_ID/, "a value kept in the configuration would be used up by the first deployment");
+  assert.doesNotMatch(toml, /UPSTREAM_REACTIVATION_ID|UPSTREAM_INCIDENT_APPROVAL/, "an approval is a secret set for one incident, never configuration");
 
   const worker = await read("src/worker.js");
   assert.match(worker, /export class UpstreamCoordinator extends DurableObject/);
@@ -1781,7 +1933,9 @@ test("configuration: the coordinator is bound in both configurations, SQLite-bac
   const gateway = (await read("src/gateway.js")).replace(/^\s*\/\/.*$/gm, "");
   assert.doesNotMatch(gateway, /\bfetch\s*\(/, "the Worker never contacts the data source");
   assert.doesNotMatch(gateway, /chartUrl|query1\.finance/, "the Worker cannot even build the address");
-  assert.doesNotMatch(gateway, /UPSTREAM_REACTIVATION_ID/, "reactivation is read by the coordinator alone");
+  assert.doesNotMatch(gateway, /UPSTREAM_REACTIVATION_ID|UPSTREAM_INCIDENT_APPROVAL/, "an approval is read by the coordinator alone");
+  const coordinatorSource = (await read("src/coordinator.js")).replace(/^\s*\/\/.*$/gm, "");
+  assert.doesNotMatch(coordinatorSource, /UPSTREAM_REACTIVATION_ID/, "the pre-M4 identifier is no longer accepted (M4/D5)");
   assert.doesNotMatch(gateway, /state\/cooldown/, "no stop in the Cache API");
 });
 

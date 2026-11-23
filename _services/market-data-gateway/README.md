@@ -119,7 +119,7 @@ upstream code at all; they ask the coordinator and normalize what it returns.
 | Layer | Rule |
 |---|---|
 | Spacing | at least **1 s** between the actual starts of two upstream requests, worldwide, first come first served, as decided at the coordinator. A request waits at most **15 s**; a request whose turn comes later than that, including one whose timer resumed late, is refused and never sent (`throttled`, `Retry-After`) and uses no budget |
-| Concurrency | at most **2** upstream requests in flight, worldwide (others wait in the same queue). A place held by a request that never finishes is **not** reclaimed: at its 8-second timeout its outcome becomes unresolved, its durable marker stays, and no upstream request starts until the owner reconciles and reactivates (see "Durable outcome lifecycle" below) |
+| Concurrency | at most **2** upstream requests in flight, worldwide (others wait in the same queue). A place held by a request that never finishes is **not** reclaimed: at its 8-second timeout its outcome becomes unresolved, its durable marker stays, and no upstream request starts until the owner reconciles and approves that incident (see "Incidents and the owner's approval" below) |
 | Budget | at most **20** actual starts in **any** 60 seconds, worldwide. A request counts when it starts: one refused or cancelled while waiting does not count, and one cancelled after it started does |
 | Coalescing | identical concurrent requests, from any isolate, share **one** upstream request and report one retrieval time |
 | Cancellation | a client that disconnects stops waiting at once and the coordinator is told; work nobody is waiting for leaves the queue or is aborted, and is not held against Yahoo. Shared work continues while any client remains. Needs the `enable_request_signal` compatibility flag (in `wrangler.toml`) |
@@ -128,7 +128,7 @@ upstream code at all; they ask the coordinator and normalize what it returns.
 | Yahoo's own wait | a valid `Retry-After` (delta seconds or an HTTP date) on **any** answer other than a success is honoured when it is longer than the minimum above, as an absolute deadline; the `Retry-After` sent to clients is the time really left. Malformed, negative, past or shorter values never shorten the minimum. A **single** 5xx, redirect or other refusal that names a wait is honoured for that wait |
 | Other refusals | a redirect, a 400 or a 451 that names **no** wait is reported and starts no cooldown; the next request can go out within the spacing and budget, up to 20 a minute. It does not end a run of failures either |
 | A deadline never gets shorter | whichever refusal is recorded first, the later deadline stands; a success does not end a stop |
-| Longer than 24 h | a wait above `MAX_COOLDOWN_SECONDS` (**24 h**) halts Yahoo requests until the owner reactivates them (next section), however much time passes; it is never turned into an early retry, and an ordinary cooldown cannot overwrite it. `/v1/health` shows `upstream.state: "halted"`, refusals carry `manualReactivationRequired: true` and `Retry-After: 86400` |
+| Longer than 24 h | a wait above `MAX_COOLDOWN_SECONDS` (**24 h**) halts Yahoo requests until the owner approves that incident ("Incidents and the owner's approval" below), however much time passes; it is never turned into an early retry, and an ordinary cooldown cannot overwrite it. `/v1/health` shows `upstream.state: "halted"`, refusals carry `manualReactivationRequired: true` and `Retry-After: 86400` |
 | Fail closed | a coordinator that is missing, failing or silent, state that cannot be read or is not well formed, or a write that fails means **no upstream request**: clients get `busy` (503, `Retry-After: 60`), `/v1/health` shows `status: "degraded"` and `upstream.state: "unverified"` with a `reason`. A failed call is never repeated, because it may already have started the request |
 | Per client | **30** requests per minute and **2** in flight per client (hashed IP) per isolate, plus the `RATE_LIMITER` binding (30/min per location). This protects the Worker from one client; Yahoo's protection does not depend on it |
 | No retries | the gateway never retries Yahoo; the pages and desktop apps retry only a network error reaching the gateway, once |
@@ -192,47 +192,113 @@ outcome; only a complete answer does:
 
 **Operational consequence.** A genuinely incomplete response (a connection that drops
 mid-body, a body slower than the timeout) quarantines all uncached retrieval until the owner
-reconciles it and explicitly reactivates with a fresh `UPSTREAM_REACTIVATION_ID` (below).
+reconciles it and approves exactly that incident (`UPSTREAM_INCIDENT_APPROVAL`, below).
 Cached answers are still served. This is deliberate: availability is never bought by
 assuming an unfinished upstream request has ended. A subsequently observed complete response
 may finalize its actual outcome, including a late refusal; cancellation cannot recall provider
 work already sent.
 
 Migration adds `unresolved` to the existing row without renaming the class or namespace or
-changing reactivation history. Existing R3 starts cannot establish completed outcomes: a
+changing earlier history. Existing R3 starts cannot establish completed outcomes: a
 nonempty legacy start list migrates to one conservative unresolved marker and requires owner
 review. Empty/new state migrates cleanly. Malformed JSON, duplicate markers, more than two
-markers or markers inconsistent with recorded starts fail closed; reactivation cannot repair
-malformed state. Owner-ID history without its state row is also rejected as inconsistent.
+markers or markers inconsistent with recorded starts fail closed; an approval cannot repair
+malformed state. History without its state row is also rejected as inconsistent.
 Never downgrade to R3 code that ignores unresolved markers.
 
-**`UPSTREAM_REACTIVATION_ID` (owner only).** A non-sensitive variable, read by the coordinator
-from its own settings; no request can supply it. Exactly:
+### Incidents and the owner's approval (M4)
 
-- A value this coordinator has **never seen** ends a halt. The value and the ending are recorded
-  in one transaction. Format: 1 to 40 of `A-Z a-z 0-9 . _ -` (for example today's date).
-- A value it **has seen** does nothing, ever. So a value left in place cannot authorize a later
-  halt, a value set before a halt began cannot end it, and a rollback that restores an older
-  value cannot end one.
-- An empty or malformed value does nothing, and removing the value does nothing.
-- It ends a halt and explicitly resolves inherited/unknown outcomes. An ordinary cooldown
-  still runs to its deadline, including one recorded while halted. Active local work cannot
-  be cleared while a quarantine exists. The consumed identifier and every clearance share
-  one transaction; failure preserves both quarantine and replay protection.
+An **incident** is a halt (a wait above 24 h) or an unresolved outcome. It is never an
+ordinary cooldown, which ends by itself. The coordinator gives each incident an identity,
+stored with it in the same SQLite write that records the halt or the unknown outcome:
 
-For an unresolved outcome, automatic reconciliation is not proved safe. Keep retrieval off
-and review provider directions and operational evidence first. A provider request may still
-be executing after the coordinator stops; a local deadline or successful health check is no
-proof it ended. The owner must arrange a safe drain/reconciliation and explicitly authorize
-reopening, honoring all known provider waits or permission requirements. If that cannot be
-established, leave the source quarantined. Do not delete state, reset ID history, reuse an old
-identifier, or treat storage recovery as reconciliation. Source-off/drain deployment hardening
-remains a separate production acceptance requirement (M3).
+- a **generation** (1, 2, 3, …; never reused) and a **nonce** (128 random bits), and
+- its **scope**: the halt, and the unresolved requests it covers.
 
-After that owner decision, read `/v1/health`, then set a fresh value in the dashboard (Settings → Variables
-and Secrets) or with `npx wrangler@4 deploy --env production --var UPSTREAM_REACTIVATION_ID:2026-11-05`,
-and read `/v1/health` again. Do not keep it in `wrangler.toml`. A later deploy that drops the
-value is harmless.
+Any change of scope (another unknown outcome, a halt, a further halt-level direction from
+Yahoo, a restart that finds requests in flight, or a row written by other code) gives the
+incident a **new generation and nonce** in the same write. Clearing it needs the approval of
+that exact incident:
+
+```
+UPSTREAM_INCIDENT_APPROVAL = g<generation>-<nonce>     for example g3-mfrggzdfmztwq2lknnwg23tpob
+```
+
+The coordinator evaluates this secret **only when it starts** (a deployment, including a
+secret change, restarts it): never on a request, a health check or a status read. It accepts
+the value only if all of these hold, and otherwise records why not (`approval_result`):
+
+| Check | Refused as |
+|---|---|
+| `g<number>-<26 characters a–z 2–7>` exactly | `malformed` |
+| this generation was not approved before | `consumed` |
+| an incident is open | `no_incident` |
+| it names the current generation | `stale_generation` / `unknown_generation` |
+| it carries that generation's nonce | `mismatch` |
+| **the source is switched off** in this deployment (`KEYLESS_SOURCE` or `OWNER_ATTESTATION` not set) | `source_on` |
+| the newest request of the incident started at least 60 s ago (an old instance's request may still finish) | `work_may_be_running` |
+
+An accepted approval, its record (`incident_approvals`) and the clearing of the halt and of
+the incident's unresolved requests are **one transaction**: if it fails, nothing changes and
+the same approval applies at the next start. Cooldowns are never shortened: an ordinary
+cooldown, including the 15-minute minimum recorded with a halt, still runs to its deadline.
+A value written before an incident cannot contain its nonce, so it can never clear it; a value
+left in place after use does nothing (`consumed`); a later incident has a new generation.
+The approval is logged as `incident_resolved` only once SQLite has committed it. The value
+itself is never logged.
+
+`UPSTREAM_REACTIVATION_ID`, the mechanism before M4, is **no longer read**: a value left in
+place does nothing. Delete it from the deployed Worker before or with the first deployment of
+this version (Settings → Variables and Secrets, or `npx wrangler@4 secret delete` /
+remove the variable): an older version would still honour it after a rollback.
+
+#### Owner recovery procedure (Data Studio, read-only)
+
+The owner reads the coordinator's state in the Cloudflare dashboard, without any public
+endpoint: **Workers & Pages → Durable Objects → the `UpstreamCoordinator` namespace → Data
+Studio**, object name **`yahoo-chart`**. Data Studio can also write: run **only the `SELECT`
+statements below**. A manual change to the state row is detected and gives the incident a new
+generation, but do not rely on that. Every query starts the object first, so it also shows the
+result of any approval the current deployment carries.
+
+1. **Switch the source off** (dashboard: delete or empty `OWNER_ATTESTATION` and save; or
+   `npx wrangler@4 deploy` with the top-level settings). Data requests now answer
+   `source_disabled`; nothing reaches Yahoo.
+2. **Read the incident:**
+
+   ```sql
+   SELECT 'g' || incident_generation || '-' || incident_nonce AS approval,
+          halt_code, cooldown_until, cooldown_code, unresolved, incident_scope,
+          incident_opened_at, approval_result
+   FROM coordinator_state WHERE id = 1;
+   ```
+
+   `approval` is empty when there is no open incident. `unresolved` lists each unknown request
+   with its start time (ms since 1970, UTC); `incident_scope` is what the approval covers.
+3. **Investigate and reconcile** Yahoo's directions and your permission. Automatic
+   reconciliation is not proved safe: a provider request may still have run after the
+   coordinator stopped. Honour every known provider wait or permission requirement; if that
+   cannot be established, leave the source off. Do not delete state or tables, edit rows, or
+   treat storage recovery as reconciliation.
+4. **Approve that incident only**, with the source still off:
+
+   ```bash
+   npx wrangler@4 secret put UPSTREAM_INCIDENT_APPROVAL --env production
+   ```
+
+   and paste the `approval` value. (`secret put` deploys a new version; keep the source off in
+   that deployment. Never put the value in `wrangler.toml`.)
+5. **Verify** with the query of step 2. Expected: `approval` empty, `halt_code` empty,
+   `unresolved` `[]`. Otherwise `approval_result` says why (`work_may_be_running`: run the
+   query again after a minute and redeploy the secret if needed; `stale_generation` or
+   `mismatch`: the incident changed, start again at step 2). History of approvals:
+
+   ```sql
+   SELECT generation, approved_at, scope FROM incident_approvals ORDER BY generation;
+   ```
+
+6. **Switch the source on** again (restore `OWNER_ATTESTATION`). The approval may stay in place
+   (it is now `consumed`) or be removed (`npx wrangler@4 secret delete UPSTREAM_INCIDENT_APPROVAL`).
 
 **What this cannot guarantee.**
 
@@ -255,7 +321,7 @@ value is harmless.
 - Identical requests at different times each use budget if the cache misses; on a `workers.dev`
   address the Cache API may be per isolate.
 - A state row that is not well formed stops the source until it is repaired, by design: there is
-  no automatic repair. Repair requires a separately reviewed owner procedure preserving all stops and consumed IDs; deleting state is not a reactivation mechanism.
+  no automatic repair. Repair requires a separately reviewed owner procedure preserving all stops and consumed IDs; deleting state is not a recovery mechanism.
 
 Expected volume: the Rebalancer's 14-holding sample costs at most 14 requests (about 14 s
 with the 1 s spacing when nothing is cached); a Stock comparison one per ticker. The free
@@ -343,7 +409,7 @@ causes a refusal (`listing_mismatch`).
 - The coordinator cannot be reached from the internet: only this Worker's binding can call it.
 - Logs: event name, code, venue, upstream status, cooldown length. Never an IP address,
   URL or header. Workers Logs are disabled (`[observability] enabled = false`).
-  `cooldown_started` (and `source_reactivated`) is logged only once SQLite has **committed**
+  `cooldown_started` (and `incident_opened` / `incident_rotated` / `incident_resolved`, which carry the generation, never the nonce) is logged only once SQLite has **committed**
   the write, as confirmed by `storage.sync()`: a statement that returns is not yet a commit,
   and a commit can still fail (R7). Nothing waits for that confirmation, so admission and
   answers are unchanged; each stop is logged once, in the order it was recorded. When the
@@ -351,7 +417,7 @@ causes a refusal (`listing_mismatch`).
   (the stop holds in memory, and nothing is sent, but it is not on disk); `cooldown_started`
   follows when a later write is committed. When the commit fails, the runtime resets the
   object: the stop is never logged as started, the caller gets `busy`, and the admission
-  marker still on disk quarantines the source until the owner reactivates. In real workerd
+  marker still on disk quarantines the source until the owner approves the incident. In real workerd
   the reset comes before anything else is logged, so such a failure shows only as `busy` and
   an `unverified` health; an instance that does see its commit refused logs
   `coordinator_write_failed` with `stage: "commit"` and refuses everything until it is
@@ -391,7 +457,7 @@ only; that is the kind used here. **This is from Cloudflare's documentation and
 | 13,000 GB-s of duration | 10,800 GB-s | One object at 128 MB cannot be active more than 86,400 s a day |
 | 100,000 rows written | approximately 57,600 nominal/day | 20 starts/minute times 1,440 minutes times two row writes: admission and mandatory outcome finalization. Markers add no rows or normal-path writes. Migration, recovery retries, owner-ID transactions and other account users are additional |
 | 5,000,000 rows read | a few per wake-up | State is read once per instance and then kept in memory |
-| 5 GB stored | one small state payload with at most two unresolved markers, plus one row per reactivation value | Actual SQLite allocation exceeds payload size; consumed owner history is retained |
+| 5 GB stored | one small state payload with at most two unresolved markers, plus one row per approved incident (and any pre-M4 reactivation history) | Actual SQLite allocation exceeds payload size; consumed owner history is retained |
 
 Above an allowance, "further operations of that type will fail with an error", and nothing is
 billed on Workers Free. Each of those failures fails closed here: a call that fails, or a write
@@ -422,6 +488,8 @@ typed into a terminal or chat).
    old version's stops live in its isolates and are not carried over.
 2. Read "Roll back" below. After this deployment `wrangler rollback` cannot return to any version
    from before it.
+3. Delete any `UPSTREAM_REACTIVATION_ID` variable from the live Worker (Settings → Variables and
+   Secrets). This version ignores it (M4), but an older version would honour it after a rollback.
 
 ```bash
 npx wrangler@4 deploy --env production
@@ -517,7 +585,7 @@ broker. A `listing_mismatch` for a correct listing means the exchange code in
   gateway.
 - **Destructive cleanup:** deleting a class, namespace or Worker can permanently erase
   unresolved outcomes, provider stops and consumed identifiers. It is not a recovery or
-  reactivation procedure. Do not recreate state to reopen access. Any separately authorized
+  recovery procedure. Do not recreate state to reopen access. Any separately authorized
   retirement requires retrieval off and owner reconciliation; a manual halt or lost outcome
   has no deadline that proves it is safe to resume. This path has not been exercised.
 - **Usage:** dashboard → Workers & Pages → market-data-gateway → Metrics, and Durable Objects for the coordinator.
@@ -562,7 +630,7 @@ on `de720dc` and 0 here (usage at the top of the file).
 
 `upstream-coordinator.test.mjs` covers several isolates sharing one coordinator on a clock the test
 controls, with timers that fire late or never: overdue admission, deadlines recorded in either
-order, halts, restart and recovery, the exact reactivation rules, unreadable, unwritable and
+order, halts, restart and recovery, the exact incident approval rules (M4), unreadable, unwritable and
 malformed state, a stop while requests are queued, clients leaving, and a missing or failing
 coordinator. At every simulated start it checks that the start is already on disk and no stop is.
 The R4 regressions include actual SQLite triggers rejecting outcome updates while allowing
@@ -579,13 +647,22 @@ that `cooldown_started` is never logged before its write succeeds. The R7 regres
 commit until the test commits or rolls it back: a stop or halt whose statement returned but
 whose commit failed (never logged as started, marker kept, quarantined across a restart, no
 second request), a confirmation that never settles, concurrent stops confirmed out of order
-(logged once each, in order, halt kept), failed-write recovery and a rolled-back reactivation;
+(logged once each, in order, halt kept), failed-write recovery and a rolled-back approval;
 and an oversize HTTP 200 whose cancellation never settles, rejects or throws, at exactly
-2 MiB and one byte over.
+2 MiB and one byte over. The M4 regressions check that an approval written before an incident,
+an earlier incident's approval, a replayed or malformed value, an approval while the source is on
+or within 60 s of the incident's newest request, and the pre-M4 identifier clear nothing; that a
+scope change (a second unknown outcome, a halt, a repeated halt-level direction, a restart, a row
+written by an older version) rotates the generation and nonce; that the exact approval clears the
+incident once, atomically with its record, without shortening a cooldown; that a failed approval
+transaction or commit changes nothing and applies at the next start; that legacy R3/R7 rows are
+bound to a new incident; and that health reads never write. Each counts the synthetic upstream
+requests.
 
 `gateway-runtime.test.cjs` runs these scenarios in the real runtime (the HTTP 200 body faults
 over a real socket, the logs read from workerd, and a real SQLite commit failing at a deferred
-foreign key, for a stop and a halt, across a full persisted restart), and `wrangler deploy
+foreign key, for a stop, a halt and an approval, across a full persisted restart; the M4 approval
+cycle across source-off and source-on deployments, using the README's Data Studio query), and `wrangler deploy
 --dry-run` for both configurations. Not covered locally: output gates under slow storage (local
 writes finish at once), idle eviction, Cloudflare's edge, including whether a
 real client disconnect reaches `request.signal` (the tests reach it through a service binding; a
@@ -597,7 +674,7 @@ refused symbols and parameters, mismatched/malformed answers, HTTP 429/403/503,
 redirects, oversize bodies, timeouts, CORS, per-client and shared limits, actual-start
 spacing, the in-flight limit and the hard 15 s wait on a virtual clock, cancellation, the
 source's `Retry-After` (seconds, HTTP date, invalid values, longest deadline, the stop above
-24 h and its reactivation), coalescing, remembered refusals, the circuit breaker, no-Origin
+24 h and its approval), coalescing, remembered refusals, the circuit breaker, no-Origin
 clients, caching and logs. `keyless.test.mjs` runs the browser
 adapter against this Worker (pauses, fallback, order). `test_desktop_gateway.py` runs the
 desktop package against this Worker served on 127.0.0.1 by `gateway_server.mjs`.

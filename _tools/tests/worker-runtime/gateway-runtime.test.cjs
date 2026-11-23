@@ -23,7 +23,7 @@ const { Miniflare, Log, LogLevel } = require("miniflare");
 const ROOT = path.resolve(__dirname, "../../..");
 const SERVICE = path.join(ROOT, "_services/market-data-gateway");
 const SRC = "_services/market-data-gateway/src";
-const SOURCE_MODULES = ["worker.js", "gateway.js", "coordinator.js", "venues.js", "yahoo-chart.js"].map(f => `${SRC}/${f}`);
+const SOURCE_MODULES = ["worker.js", "gateway.js", "coordinator.js", "activation.js", "venues.js", "yahoo-chart.js"].map(f => `${SRC}/${f}`);
 const TEST_ENTRY = "_tools/tests/worker-runtime/test-entry.mjs";
 const CLIENT = "_tools/tests/worker-runtime/client-worker.mjs";
 const ORIGIN = "https://elmatthe.github.io";
@@ -224,10 +224,16 @@ for (const seconds of [3600, 172800]) {
   }));
 }
 
-for (const seconds of [3600, 172800]) test(`H1: full workerd disposal preserves unresolved ${seconds}s SQLite outcome and only a new owner identifier can resolve it`, { timeout: 120000 }, async () => {
+// M4: what the owner reads in Data Studio, exactly as documented in the gateway README. Any query
+// starts the object first, so this is also how an approval is applied while the source is off.
+const INCIDENT_QUERY = "SELECT 'g' || incident_generation || '-' || incident_nonce AS approval, halt_code, unresolved, incident_scope, approval_result FROM coordinator_state WHERE id = 1";
+const incidentOf = async world => (await sql(world, INCIDENT_QUERY))[0];
+const SOURCE_OFF = { KEYLESS_SOURCE: "" }; // the coordinator's own settings in a source-off deployment
+
+for (const seconds of [3600, 172800]) test(`H1/M4: full workerd disposal preserves unresolved ${seconds}s SQLite outcome and only the owner's approval of that incident can resolve it`, { timeout: 120000 }, async () => {
   const persist = persistDir(`unresolved-restart-${seconds}`);
   const yahoo = syntheticYahoo();
-  const oldId = { UPSTREAM_REACTIVATION_ID: "observed-before-fault" };
+  const oldId = { UPSTREAM_REACTIVATION_ID: "observed-before-fault", UPSTREAM_INCIDENT_APPROVAL: `g1-${"a".repeat(26)}` };
   let world = await startWorld({ persist, yahoo, coordinatorEnv: oldId });
   try {
     await world.health();
@@ -245,21 +251,37 @@ for (const seconds of [3600, 172800]) test(`H1: full workerd disposal preserves 
     assert.equal((await world.health()).upstream.state, "unverified");
     assert.equal(yahoo.calls.length, 1, "runtime recreation and storage recovery cannot authorize a second request");
     assert.equal((await world.row()).unresolved.length, 1);
-    // Fail the state update after the transaction inserted its ID: neither effect may survive.
+    assert.match((await incidentOf(world)).approval_result, /"mismatch"/, "a value set before the incident cannot name it");
+    assert.deepEqual(await sql(world, "SELECT id FROM reactivation_ids"), [], "the pre-M4 identifier is not used");
+    // Fail the state update after the transaction inserted the approval: neither effect may survive.
     await sql(world, "CREATE TRIGGER fail_reactivation BEFORE UPDATE ON coordinator_state WHEN OLD.unresolved != '[]' AND NEW.unresolved = '[]' BEGIN SELECT RAISE(FAIL, 'synthetic transaction fault'); END");
   } finally { await world.stop(); }
-  const freshId = { UPSTREAM_REACTIVATION_ID: "owner-after-reconciliation" };
-  world = await startWorld({ persist, yahoo, coordinatorEnv: freshId });
+  // The source-off deployment that carries the owner's approval of exactly this incident.
+  let approval;
+  world = await startWorld({ persist, yahoo, coordinatorEnv: SOURCE_OFF });
+  try { approval = (await incidentOf(world)).approval; } finally { await world.stop(); }
+  world = await startWorld({ persist, yahoo, coordinatorEnv: { ...SOURCE_OFF, UPSTREAM_INCIDENT_APPROVAL: approval } });
   try {
     await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
     assert.equal(yahoo.calls.length, 1);
     assert.equal((await world.row()).unresolved.length, 1);
-    const used = await sql(world, "SELECT id FROM reactivation_ids WHERE id = 'owner-after-reconciliation'");
-    assert.deepEqual(used, [], "reactivation failure did not independently consume its identifier");
+    assert.deepEqual(await sql(world, "SELECT generation FROM incident_approvals"), [], "the failed transaction did not consume the approval");
     await sql(world, "DROP TRIGGER fail_reactivation");
+  } finally { await world.stop(); }
+  world = await startWorld({ persist, yahoo, coordinatorEnv: { ...SOURCE_OFF, UPSTREAM_INCIDENT_APPROVAL: approval } });
+  try {
+    const after = await incidentOf(world); // the Data Studio query starts the object: the approval applies
+    assert.equal(after.approval, null);
+    assert.equal(after.unresolved, "[]");
+    assert.deepEqual(await sql(world, "SELECT generation FROM incident_approvals"), [{ generation: 1 }]);
+    assert.equal(yahoo.calls.length, 1, "approving sends nothing");
+  } finally { await world.stop(); }
+  world = await startWorld({ persist, yahoo, coordinatorEnv: { UPSTREAM_INCIDENT_APPROVAL: approval } }); // source on again
+  try {
     assert.equal((await world.ask("isolate-c", "MSFT")).status, 200);
     assert.deepEqual((await world.row()).unresolved, []);
     assert.equal(yahoo.calls.length, 2);
+    assert.match((await incidentOf(world)).approval_result, /"consumed"/);
   } finally { await world.stop(); }
 });
 
@@ -346,8 +368,9 @@ test("H1: malformed and inconsistent SQLite unresolved markers fail closed", { t
   assert.equal(world.yahoo.calls.length, 1);
 }));
 
-test("H1: real SQLite history without its state row fails closed", { timeout: 60000 }, () => withWorld({ coordinatorEnv: { UPSTREAM_REACTIVATION_ID: "previous-owner" } }, async world => {
+test("H1: real SQLite history without its state row fails closed", { timeout: 60000 }, () => withWorld({}, async world => {
   await world.health();
+  await sql(world, "INSERT INTO reactivation_ids (id, first_seen_at) VALUES ('previous-owner', 1)"); // written by an earlier version
   await sql(world, "DELETE FROM coordinator_state");
   await world.test("reset");
   await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
@@ -356,18 +379,53 @@ test("H1: real SQLite history without its state row fails closed", { timeout: 60
   assert.deepEqual(await sql(world, "SELECT id FROM reactivation_ids"), [{ id: "previous-owner" }]);
 }));
 
-test("H1: existing R3 state migrates conservatively without losing its stop or consumed identifiers", { timeout: 60000 }, () => withWorld({ coordinatorEnv: { UPSTREAM_REACTIVATION_ID: "legacy-consumed-id" } }, async world => {
+test("H1/M4: existing R3 and R7 state migrates conservatively: its stop, history and unknown outcomes become one new incident", { timeout: 60000 }, () => withWorld({ coordinatorEnv: { UPSTREAM_REACTIVATION_ID: "legacy-never-seen" } }, async world => {
   assert.equal((await world.ask("isolate-b", "AAPL")).status, 200);
   const before = await world.row();
+  await sql(world, "INSERT INTO reactivation_ids (id, first_seen_at) VALUES ('legacy-consumed-id', 1)");
   await sql(world, "UPDATE coordinator_state SET halt_code = 'upstream_rate_limited'");
-  await sql(world, "ALTER TABLE coordinator_state DROP COLUMN unresolved");
+  // Back to the R3 table: no unresolved column and none of the M4 columns.
+  for (const column of ["unresolved", "incident_generation", "incident_nonce", "incident_scope", "incident_opened_at", "approval_result", "m4_row"]) {
+    await sql(world, `ALTER TABLE coordinator_state DROP COLUMN ${column}`);
+  }
+  await sql(world, "DROP TABLE incident_approvals");
   await world.test("reset");
   await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
   const migrated = await world.row();
   assert.equal(migrated.unresolved.length, 1, "R3 starts do not prove all outcomes finished");
   assert.deepEqual(migrated.starts, before.starts);
   assert.equal(migrated.halt_code, "upstream_rate_limited");
-  assert.deepEqual(await sql(world, "SELECT id FROM reactivation_ids"), [{ id: "legacy-consumed-id" }]);
+  const incident = await incidentOf(world);
+  assert.match(incident.approval, /^g1-[a-z2-7]{26}$/, "bound to a new incident with a fresh nonce");
+  assert.deepEqual(JSON.parse(incident.incident_scope), { halt: "upstream_rate_limited", markers: ["legacy-outcome"] });
+  assert.deepEqual(await sql(world, "SELECT id FROM reactivation_ids"), [{ id: "legacy-consumed-id" }], "history kept; the legacy identifier in env is not used");
+  assert.equal(world.yahoo.calls.length, 1);
+}));
+
+test("M4: a row an older version wrote after M4 (a rollback) is bound to a new incident; an approval prepared before cannot match", { timeout: 60000 }, () => withWorld({ coordinatorEnv: SOURCE_OFF }, async world => {
+  world.yahoo.answer = () => refusal(172800);
+  await expectError(await world.ask("isolate-b", "AAPL"), "upstream_rate_limited", 429);
+  world.yahoo.answer = null;
+  const first = await incidentOf(world);
+  assert.match(first.approval, /^g1-/);
+  // R7 writes only its six columns: a new start and the halt again, leaving the M4 columns as they were.
+  const row = await world.row();
+  await sql(world, `UPDATE coordinator_state SET starts = '${JSON.stringify([...row.starts, row.starts[0] + 5000])}'`);
+  await world.test("reset");
+  const rebound = await incidentOf(world);
+  assert.match(rebound.approval, /^g2-/, "a foreign write gets a new generation and nonce");
+  assert.notEqual(rebound.approval.slice(3), first.approval.slice(3));
+  assert.equal(world.yahoo.calls.length, 1);
+}));
+
+test("M4: health and status reads write nothing, however often", { timeout: 60000 }, () => withWorld({}, async world => {
+  world.yahoo.answer = () => refusal(172800);
+  await expectError(await world.ask("isolate-b", "AAPL"), "upstream_rate_limited", 429);
+  world.yahoo.answer = null;
+  const snapshot = async () => JSON.stringify(await sql(world, "SELECT * FROM coordinator_state"));
+  const before = await snapshot();
+  for (let i = 0; i < 20; i++) assert.equal((await world.health(i % 2 ? "isolate-b" : "isolate-c")).upstream.state, "halted");
+  assert.equal(await snapshot(), before);
   assert.equal(world.yahoo.calls.length, 1);
 }));
 
@@ -572,7 +630,7 @@ test("L3: a stop whose SQLite write fails is logged as not persisted, and as sta
 /* ---------------- R7/L3. a statement that returned is not a commit ---------------- */
 // The R6 review's counterexample: a trigger on the outcome UPDATE inserts a row whose foreign
 // key is DEFERRABLE INITIALLY DEFERRED, so the statement returns and the implicit commit fails.
-const STOP_EVENTS = ["cooldown_started", "cooldown_not_persisted", "coordinator_write_failed", "source_reactivated"];
+const STOP_EVENTS = ["cooldown_started", "cooldown_not_persisted", "coordinator_write_failed", "incident_resolved"];
 for (const seconds of [3600, 172800]) {
   test(`R7/L3: a ${seconds} s stop whose SQLite commit fails at a deferred foreign key is never logged as started, across a full restart`, { timeout: 120000 }, async () => {
     const persist = persistDir(`deferred-commit-${seconds}`);
@@ -611,8 +669,17 @@ for (const seconds of [3600, 172800]) {
       assert.equal(yahoo.calls.length, 1, "no second upstream request after a full restart");
       assert.ok(!world.logs.some(l => l.event === "cooldown_started"));
     } finally { await world.stop(); }
-    // The owner reconciles and reactivates; the next stop is committed and logged once.
-    world = await startWorld({ persist, yahoo, coordinatorEnv: { UPSTREAM_REACTIVATION_ID: `owner-r7-${seconds}` } });
+    // The owner reconciles and approves the incident with the source off; the next stop, with the
+    // source on again, is committed and logged once.
+    let approval;
+    world = await startWorld({ persist, yahoo, coordinatorEnv: SOURCE_OFF });
+    try { approval = (await incidentOf(world)).approval; } finally { await world.stop(); }
+    world = await startWorld({ persist, yahoo, coordinatorEnv: { ...SOURCE_OFF, UPSTREAM_INCIDENT_APPROVAL: approval } });
+    try {
+      assert.equal((await incidentOf(world)).approval, null, "the approval applied at the object's start");
+      await eventually(() => world.logs.some(l => l.event === "incident_resolved"), "the committed approval is reported");
+    } finally { await world.stop(); }
+    world = await startWorld({ persist, yahoo });
     try {
       yahoo.answer = () => refusal(3600);
       await expectError(await world.ask("isolate-c", "MSFT"), "upstream_rate_limited", 429);
@@ -802,12 +869,14 @@ test("5. spacing and budget survive the object being reset; a reset request is r
   world.yahoo.held.splice(0).forEach(h => h.resolve());
 }));
 
-test("6. reactivation in the real runtime: a new identifier ends a halt once; a used or restored one does not", { timeout: 120000 }, async () => {
+test("6. M4 in the real runtime: only the current incident's approval, with the source off, ends it, once", { timeout: 180000 }, async () => {
   const persist = persistDir("reactivation");
   const yahoo = syntheticYahoo();
-  const session = async (id, body) => {
-    const world = await startWorld({ persist, yahoo, coordinatorEnv: id ? { UPSTREAM_REACTIVATION_ID: id } : {} });
-    try { await body(world); } finally { await world.stop(); }
+  // `approval`: the UPSTREAM_INCIDENT_APPROVAL secret of this deployment; `off`: the source is
+  // switched off in it (the coordinator's own settings).
+  const session = async ({ approval = null, off = false } = {}, body) => {
+    const world = await startWorld({ persist, yahoo, coordinatorEnv: { ...(off ? SOURCE_OFF : {}), ...(approval ? { UPSTREAM_INCIDENT_APPROVAL: approval } : {}) } });
+    try { return await body(world); } finally { await world.stop(); }
   };
   const haltNow = async (world, symbol) => {
     yahoo.answer = () => refusal(172800);
@@ -823,24 +892,74 @@ test("6. reactivation in the real runtime: a new identifier ends a halt once; a 
     assert.equal(yahoo.calls.length, before);
   };
 
-  await session(null, async world => { await haltNow(world, "AAPL"); });
-  await session(null, async world => { await stillHalted(world, "MSFT"); }); // a restart alone changes nothing
-  await session("2026-11-05", async world => {
+  const early = `g1-${"a".repeat(26)}`; // set before any incident exists
+  await session({ approval: early }, async world => { await haltNow(world, "AAPL"); });
+  await session({ approval: early, off: true }, async world => { assert.match((await incidentOf(world)).approval_result, /"mismatch"/); });
+  await session({ approval: early }, async world => { await stillHalted(world, "MSFT"); }); // a restart alone changes nothing
+  const first = await session({ off: true }, async world => (await incidentOf(world)).approval);
+  await session({ approval: first }, async world => { // the source is on: refused (D2)
+    await stillHalted(world, "MSFT");
+    assert.match((await incidentOf(world)).approval_result, /"source_on"/);
+  });
+  await session({ approval: first, off: true }, async world => {
+    const after = await incidentOf(world);
+    assert.equal(after.approval, null, "applied at the start of the source-off deployment");
+    assert.equal(after.halt_code, null);
+  });
+  await session({ approval: first }, async world => { // source on again; the value is left in place
     assert.equal((await world.health()).upstream.state, "ok");
     assert.equal((await world.ask("isolate-c", "MSFT")).status, 200);
     await sleep(1000);
     await haltNow(world, "SPY");
     await stillHalted(world, "VST"); // the same value, still in place, does nothing
   });
-  await session("2026-11-05", async world => { await stillHalted(world, "VST"); }); // nor after a restart
-  await session("2026-11-06", async world => {
-    assert.equal((await world.ask("isolate-c", "VST")).status, 200);
-    await sleep(1000);
-    await haltNow(world, "SAP.DE");
-  });
-  await session("2026-11-05", async world => { await stillHalted(world, "VOD.L"); }); // a rollback restoring an old value
-  await session("2026-11-07", async world => { assert.equal((await world.ask("isolate-c", "VOD.L")).status, 200); });
+  await session({ approval: first, off: true }, async world => { assert.match((await incidentOf(world)).approval_result, /"consumed"/); });
+  await session({ approval: first }, async world => { await stillHalted(world, "VST"); }); // nor after a restart
+  const second = await session({ off: true }, async world => (await incidentOf(world)).approval);
+  assert.match(second, /^g2-/);
+  await session({ approval: second, off: true }, async world => { assert.equal((await incidentOf(world)).approval, null); });
+  await session({}, async world => { assert.equal((await world.ask("isolate-c", "VST")).status, 200); });
+  assert.deepEqual(await session({}, world => sql(world, "SELECT generation FROM incident_approvals ORDER BY generation")), [{ generation: 1 }, { generation: 2 }]);
+  assert.equal(yahoo.calls.length, 4, "AAPL, MSFT, SPY, VST: nothing else ever reached the source");
   assert.deepEqual(yahoo.strays, []);
+});
+
+test("6. M4: an approval whose SQLite commit fails at a deferred foreign key ends nothing, is not reported, and applies once at the next start", { timeout: 180000 }, async () => {
+  const persist = persistDir("approval-deferred-commit");
+  const yahoo = syntheticYahoo();
+  let world = await startWorld({ persist, yahoo });
+  let approval;
+  try {
+    yahoo.answer = () => refusal(172800);
+    await expectError(await world.ask("isolate-b", "AAPL"), "upstream_rate_limited", 429);
+    yahoo.answer = null;
+    await sql(world, "CREATE TABLE m4_parent (id INTEGER PRIMARY KEY)");
+    await sql(world, "CREATE TABLE m4_child (id INTEGER REFERENCES m4_parent(id) DEFERRABLE INITIALLY DEFERRED)");
+    await sql(world, "CREATE TRIGGER m4_deferred_fault AFTER INSERT ON incident_approvals BEGIN INSERT INTO m4_child VALUES (42); END");
+    approval = (await incidentOf(world)).approval;
+  } finally { await world.stop(); }
+  world = await startWorld({ persist, yahoo, coordinatorEnv: { ...SOURCE_OFF, UPSTREAM_INCIDENT_APPROVAL: approval } });
+  try {
+    // The object's start applies the approval, the statements return, the commit fails: the runtime
+    // resets the object. Whatever the first request gets, nothing may change on disk.
+    await world.mf.getWorker("isolate-a").then(host => host.fetch(`https://gateway.test/__test/sql?q=${encodeURIComponent("SELECT 1")}`)).then(r => r.text()).catch(() => {});
+    await sleep(300);
+    assert.ok(!world.logs.some(l => l.event === "incident_resolved"), JSON.stringify(world.logs));
+  } finally { await world.stop(); }
+  world = await startWorld({ persist, yahoo }); // no approval in this deployment: nothing is evaluated
+  try {
+    const state = await incidentOf(world);
+    assert.equal(state.approval, approval, "the incident, its nonce and its halt survive the failed commit");
+    assert.equal(state.halt_code, "upstream_rate_limited");
+    assert.deepEqual(await sql(world, "SELECT generation FROM incident_approvals"), [], "and the approval was not used up");
+    await sql(world, "DROP TRIGGER m4_deferred_fault");
+  } finally { await world.stop(); }
+  world = await startWorld({ persist, yahoo, coordinatorEnv: { ...SOURCE_OFF, UPSTREAM_INCIDENT_APPROVAL: approval } });
+  try {
+    assert.equal((await incidentOf(world)).approval, null, "the same approval applies once the commit can succeed");
+    await eventually(() => world.logs.filter(l => l.event === "incident_resolved").length === 1, "reported once committed");
+    assert.equal(yahoo.calls.length, 1);
+  } finally { await world.stop(); }
 });
 
 /* ---------------- 7. storage that fails, for real ---------------- */

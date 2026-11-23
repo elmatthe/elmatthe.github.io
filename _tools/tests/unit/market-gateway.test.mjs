@@ -935,9 +935,17 @@ test("B3: a wait beyond the permitted maximum stops the source until the owner r
     advance(60 * 86400000); // long after any date the source named
     RA(await get(quote("MSFT"), { ip: "b" }), MAX_COOLDOWN_SECONDS);
     assert.equal(calls.length, 1, "no automatic retry, however long it has been");
-    // The owner's explicit reactivation (a new UPSTREAM_REACTIVATION_ID) clears it.
-    coordinator.env.UPSTREAM_REACTIVATION_ID = "2026-11-05";
-    assert.equal((await get(quote("MSFT"), { ip: "c" })).status, 200, value);
+    // A value that is not this incident's approval does nothing, even after a restart.
+    coordinator.env.UPSTREAM_REACTIVATION_ID = "2026-11-05"; // the pre-M4 mechanism is gone
+    coordinator.restart();
+    RA(await get(quote("MSFT"), { ip: "c" }), MAX_COOLDOWN_SECONDS);
+    assert.equal(calls.length, 1);
+    // The owner's approval of exactly this incident, read from storage, clears it at the next
+    // start of the coordinator (a new deployment), with the source off in the coordinator's env.
+    const { incident } = coordinator.storage.peek();
+    coordinator.env.UPSTREAM_INCIDENT_APPROVAL = `g${incident.generation}-${incident.nonce}`;
+    coordinator.restart();
+    assert.equal((await get(quote("MSFT"), { ip: "d" })).status, 200, value);
     assert.equal(calls.length, 2);
   }
   // Exactly the maximum is still an ordinary cooldown that ends by itself.
