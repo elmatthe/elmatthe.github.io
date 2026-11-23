@@ -1,5 +1,25 @@
 # CPI-Webscraper — Changelog
 
+## Unreleased — 2026-11-23 (PR 46 application fixes)
+- Public `files/CPI.xlsx`: chart caches are now kept empty (format code and point count, no values) instead of
+  removed. Removing them made Excel drop chart 1's legend customizations (a hidden entry and a formatted entry)
+  the first time the workbook was saved, with or without a download. Regenerated from the canonical workbook;
+  still no S&P 500 values or cached results (`_tools/cpi_public_workbook.py --check`).
+- Excel refusing the automation (RPC_E_CALL_REJECTED: busy, or a prompt such as Microsoft 365's "Powering your
+  experiences" notice) now ends with a clear message and the file unchanged, instead of a raw COM error; a
+  private Excel instance that refuses to close is ended instead of being left hidden. A failure while closing
+  Excel no longer reports a completed save as failed.
+- The opt-in real-Excel regression now checks the actual preservation contract (formulas, effective formatting,
+  structure, names, chart definitions, raw values outside the written months, and model results when the source
+  is already calculated) instead of byte-level cached values, which the public copy cannot have. It can also run
+  on a private workbook (`CPI_EXCEL_WORKBOOK`). Passes on the public copy and the canonical workbook.
+- README: reopening in Excel recalculates the model (verified with real Excel).
+- Source validation now uses the same "today" as the range clamp and the unfinished-month blanking, so a
+  download crossing midnight at a month end cannot validate against a different month.
+- Tests: an independent table of the 19 columns' official series IDs, and a hand-computed CSV (end-of-month
+  reduction with weekends, holidays, a leap day and a missing last day; blank gaps; current month) that the
+  desktop and web engines must both reproduce byte for byte.
+
 ## v0.4.0 — 2026-11-03 (website copy)
 - Public `files/CPI.xlsx`: removed the 121 S&P 500 values (column N) and every saved formula, spill and chart
   result (they could be derived from them; Excel recalculates on first open), the local absolute path, the Office

@@ -124,8 +124,8 @@ def test_daily_end_of_month_reduction_identical():
         assert browser == desktop, rows
 
 
-def _desktop_csv(monkeypatch, tmp_path, start, end):
-    fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+def _desktop_csv(monkeypatch, tmp_path, start, end, fixture_path=FIXTURE, today=TODAY):
+    fixture = json.loads(Path(fixture_path).read_text(encoding="utf-8"))
 
     def get(url, params=None, timeout=None, headers=None):
         response = Mock()
@@ -144,7 +144,7 @@ def _desktop_csv(monkeypatch, tmp_path, start, end):
         return response
 
     monkeypatch.setattr(ds.requests, "get", get)
-    rows = ds.build_rows(start, end, "placeholder-key", today=TODAY)
+    rows = ds.build_rows(start, end, "placeholder-key", today=today)
     config = cpi_config.load_config(CPI / "scripts" / "config-default.toml")
     path = tmp_path / "desktop.csv"
     workbook_io.write_to_csv(rows, path, config)
@@ -198,3 +198,132 @@ def test_known_difference_single_month_with_a_published_gap(monkeypatch, tmp_pat
     assert row[5] == "", "Alberta CPI (column F) is blank"
     assert all(row[i] != "" for i in (1, 2, 3, 4)), "the other Canadian columns are kept"
     assert browser["failed"] == []
+
+
+def test_parity_does_not_depend_on_the_wall_clock(monkeypatch, tmp_path):
+    """Regression: build_rows(today=...) validated against date.today(), so the fixed-today
+    case 2026-11 failed once the real clock reached 2027-02 (lag boundary 2026-11)."""
+    class Later(date):
+        @classmethod
+        def today(cls):
+            return cls(2027, 3, 1)
+
+    monkeypatch.setattr(ds, "date", Later)
+    monkeypatch.setattr(workbook_io, "date", Later)  # rows now carry Later dates
+    desktop = _desktop_csv(monkeypatch, tmp_path, "2026-11", "2026-11")
+    (browser,) = js({"op": "csv", "fixture": str(FIXTURE), "cases": [{"start": "2026-11", "end": "2026-11"}]})
+    assert browser["csv"].encode("utf-8") == desktop
+
+
+# ---------------------------------------------------------------------------------------
+# Independent expected values. A small hand-written fixture (not generate.py, not the
+# implementation) whose expected CSV is worked out by hand from the series definitions:
+#   * B-L, P-S are monthly series used exactly as published (FEDFUNDS, GS10 and GS2 are
+#     already FRED's monthly averages of daily rates: nothing is re-averaged locally);
+#   * M/N/O (DFF, SP500, T10Y2Y) take the LAST VALID daily observation of each calendar
+#     month: weekends (SP500/T10Y2Y have no weekend rows, DFF has 7-day rows), market
+#     holidays and a missing last day (FRED ".") fall back to the previous valid day;
+#   * the current month (today 2024-04-10) is blank in M/N/O even though April data exist;
+#   * FRED "." and StatCan ".." are blank (never 0, never the previous month's value);
+#   * months not yet published are blank; rows are keyed YYYY-MM-01.
+HAND_TODAY = "2024-04-10"
+HAND_HEADERS = ["Date", "Headline CPI - Unadjusted CDN", "Headline CPI - Seasonally Adjusted CDN", "Core CPI - Unadjusted CDN",
+                "Core CPI - Seasonally Adjusted CDN", "Alberta CPI - Unadjusted CDN", "Headline CPI - Unadjusted US",
+                "Headline CPI - Seasonally Adjusted US", "Core CPI - Unadjusted US", "Core CPI - Seasonally Adjusted US",
+                "Unemployment Rate - Seasonally Adjusted US", "Monthly Effective Fed Fund Rate US", "Monthly Fed Fund Rate - EOP US",
+                "SP by month US", "10yr vs 2yr US", "10-Year Treasury Yield - Monthly Average US",
+                "2-Year Treasury Yield - Monthly Average US", "PCE - Seasonally Adjusted US", "Core PCE - Seasonally Adjusted US"]
+# Official identifiers per column (Statistics Canada tables 18-10-0004 NSA / 18-10-0006 SA;
+# FRED series IDs), written out independently of schema.js and data_sources.py.
+HAND_SOURCES = {"B": "41690973", "C": "41690914", "D": "41691233", "E": "41690924", "F": "41692327",
+                "G": "CPIAUCNS", "H": "CPIAUCSL", "I": "CPILFENS", "J": "CPILFESL", "K": "UNRATE", "L": "FEDFUNDS",
+                "M": "DFF", "N": "SP500", "O": "T10Y2Y", "P": "GS10", "Q": "GS2", "R": "PCEPI", "S": "PCEPILFE"}
+HAND_EOM = {"M", "N", "O"}
+
+
+def _hand_fixture():
+    def sc(ym, value):
+        return {"refPer": f"{ym}-01", "value": value, "decimals": 1, "scalarFactorCode": 0, "symbolCode": 0,
+                "statusCode": 1 if value is None else 0, "securityLevelCode": 0, "releaseTime": "2024-03-19T08:30", "frequencyCode": 6}
+
+    def fr(day, value):
+        return {"realtime_start": HAND_TODAY, "realtime_end": HAND_TODAY, "date": day, "value": value}
+
+    months = ["2023-11", "2023-12", "2024-01", "2024-02", "2024-03"]
+    statcan = {  # published through 2024-02 on 2024-04-10; None is StatCan ".."
+        "41690973": [158.3, 157.6, 158.3, 158.8], "41690914": [158.7, 159.0, 159.1, 159.3],
+        "41691233": [152.2, 151.9, 152.6, 153.0], "41690924": [152.4, 152.6, 152.9, 153.1],
+        "41692327": [164.8, None, 165.0, 165.6],
+    }
+    monthly = {  # FRED text as published; "." is FRED's missing value
+        "CPIAUCNS": ["307.051", "306.746", "308.417", "310.326"], "CPIAUCSL": ["307.531", "308.024", "309.685", "311.054"],
+        "CPILFENS": ["311.380", "310.919", "313.157", "314.651"], "CPILFESL": ["311.649", "312.711", "313.948", "315.130"],
+        "UNRATE": ["3.7", "3.7", "3.7", "3.9", "3.8"], "FEDFUNDS": ["5.33", "5.33", "5.33", "5.33", "5.33"],
+        "GS10": ["4.50", "4.02", "4.06", "4.21", "4.21"], "GS2": ["4.89", "4.46", "4.32", ".", "4.59"],
+        "PCEPI": ["121.231", "121.373", "121.701", "122.000"], "PCEPILFE": ["120.987", "121.188", "121.761", "122.051"],
+    }
+    daily = {
+        # DFF is a 7-day series (weekend rows exist). 2023-12-31 (Sun) is ".": the 30th wins.
+        "DFF": [("2023-11-28", "5.32"), ("2023-11-29", "5.33"), ("2023-11-30", "5.34"),
+                ("2023-12-29", "5.32"), ("2023-12-30", "5.31"), ("2023-12-31", "."),
+                ("2024-01-30", "5.33"), ("2024-01-31", "5.32"), ("2024-02-28", "5.31"), ("2024-02-29", "5.30"),
+                ("2024-03-29", "5.34"), ("2024-03-30", "5.34"), ("2024-03-31", "5.33"),
+                ("2024-04-01", "5.33"), ("2024-04-08", "5.32")],
+        # Trading days only: 2023-12-30/31 is a weekend; 2024-03-29 is Good Friday (".").
+        "SP500": [("2023-11-29", "4550.58"), ("2023-11-30", "4567.80"), ("2023-12-28", "4783.35"), ("2023-12-29", "4769.83"),
+                  ("2024-01-30", "4924.97"), ("2024-01-31", "4845.65"), ("2024-02-28", "5069.76"), ("2024-02-29", "5096.27"),
+                  ("2024-03-27", "5248.49"), ("2024-03-28", "5254.35"), ("2024-03-29", "."),
+                  ("2024-04-01", "5243.77"), ("2024-04-09", "5209.91")],
+        "T10Y2Y": [("2023-11-29", "-0.37"), ("2023-11-30", "-0.36"), ("2023-12-28", "-0.38"), ("2023-12-29", "-0.35"),
+                   ("2024-01-30", "-0.30"), ("2024-01-31", "-0.29"), ("2024-02-28", "-0.37"), ("2024-02-29", "-0.39"),
+                   ("2024-03-27", "-0.40"), ("2024-03-28", "-0.39"), ("2024-03-29", "."), ("2024-04-01", "-0.39")],
+    }
+    fixture = {"schema": "cpi.source-fixture.v1", "today": HAND_TODAY, "statcan": {}, "fred": {}}
+    for vector, values in statcan.items():
+        fixture["statcan"][vector] = [sc(ym, v) for ym, v in zip(months, values)]
+    for series, values in monthly.items():
+        fixture["fred"][series] = [fr(f"{ym}-01", v) for ym, v in zip(months, values)]
+    for series, rows in daily.items():
+        obs = [fr(d, v) for d, v in rows]
+        fixture["fred"][series] = obs[::-1] if series == "DFF" else obs  # response order must not matter
+    return fixture
+
+
+# Worked out by hand. Columns: Date, B..S. "" is an empty CSV cell.
+HAND_EXPECTED = [
+    ["2023-11-01", "158.3", "158.7", "152.2", "152.4", "164.8", "307.051", "307.531", "311.38", "311.649", "3.7", "5.33", "5.34", "4567.8", "-0.36", "4.5", "4.89", "121.231", "120.987"],
+    ["2023-12-01", "157.6", "159.0", "151.9", "152.6", "", "306.746", "308.024", "310.919", "312.711", "3.7", "5.33", "5.31", "4769.83", "-0.35", "4.02", "4.46", "121.373", "121.188"],
+    ["2024-01-01", "158.3", "159.1", "152.6", "152.9", "165.0", "308.417", "309.685", "313.157", "313.948", "3.7", "5.33", "5.32", "4845.65", "-0.29", "4.06", "4.32", "121.701", "121.761"],
+    ["2024-02-01", "158.8", "159.3", "153.0", "153.1", "165.6", "310.326", "311.054", "314.651", "315.13", "3.9", "5.33", "5.3", "5096.27", "-0.39", "4.21", "", "122.0", "122.051"],
+    ["2024-03-01", "", "", "", "", "", "", "", "", "", "3.8", "5.33", "5.33", "5254.35", "-0.39", "4.21", "4.59", "", ""],
+    ["2024-04-01", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", ""],
+]
+
+
+def test_column_sources_are_the_official_series():
+    cols = js({"op": "schema"})["columns"]
+    by_col = {c["col"]: c for c in cols}
+    assert {k: by_col[k]["sourceId"] for k in HAND_SOURCES} == HAND_SOURCES, "browser"
+    desktop = {**ds.STATCAN_VECTORS, **ds.FRED_MONTHLY_SERIES, **ds.FRED_DAILY_EOM_SERIES}
+    assert {k: desktop[by_col[k]["id"]] for k in HAND_SOURCES} == HAND_SOURCES, "desktop"
+    assert {k for k, c in by_col.items() if c.get("kind") == "daily_eom"} == HAND_EOM
+    assert set(ds.FRED_DAILY_EOM_SERIES.values()) == {HAND_SOURCES[k] for k in HAND_EOM}
+    # The documentation tables state the same identifiers in the same columns.
+    readme = (CPI / "README.md").read_text(encoding="utf-8")
+    data_doc = (ROOT / "_tools" / "CPI_DATA.md").read_text(encoding="utf-8")
+    for letter, sid in HAND_SOURCES.items():
+        provider = "StatCan" if sid.isdigit() else "FRED"
+        header = HAND_HEADERS[ord(letter) - ord("A")]
+        assert f"| {letter} / `{by_col[letter]['id']}` | {header} | {provider} {sid} |" in readme, letter
+        assert f"| {letter} | {header} | {provider} {sid} |" in data_doc, letter
+
+
+def test_hand_computed_csv_on_both_engines(monkeypatch, tmp_path):
+    path = tmp_path / "hand.json"
+    path.write_text(json.dumps(_hand_fixture()), encoding="utf-8")
+    expected = "\r\n".join(",".join(r) for r in [HAND_HEADERS, *HAND_EXPECTED]) + "\r\n"
+    desktop = _desktop_csv(monkeypatch, tmp_path, "2023-11", "2024-04", fixture_path=path, today=date.fromisoformat(HAND_TODAY))
+    assert desktop.decode("utf-8") == expected, "desktop"
+    (browser,) = js({"op": "csv", "fixture": str(path), "cases": [{"start": "2023-11", "end": "2024-04"}]})
+    assert browser["failed"] == []
+    assert browser["csv"] == expected, "browser"

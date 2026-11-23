@@ -574,14 +574,17 @@ class RebalancerApp:
             frame = ttk.Frame(top)
             frame.pack(fill="x", padx=10, pady=2)
             ttk.Label(frame, text=code, width=6).pack(side="left")
-            var = tk.StringVar(value=f"{self.fx[code]['cadPer'] / self.fx[rep]['cadPer']:.6g}" if code in self.fx and rep in self.fx else "")
+            shown = f"{self.fx[code]['cadPer'] / self.fx[rep]['cadPer']:.6g}" if code in self.fx and rep in self.fx else ""
+            var = tk.StringVar(value=shown)
             ttk.Entry(frame, textvariable=var, width=14).pack(side="left", padx=6)
             ttk.Label(frame, text=self.fx.get(code, {}).get("label", "not loaded")).pack(side="left")
-            entries[code] = var
+            entries[code] = (var, shown)
         ttk.Label(top, text=self.fx_note, wraplength=460, foreground=COLORS[""]).pack(padx=10, pady=6, anchor="w")
 
         def apply() -> None:
-            for code, var in entries.items():
+            for code, (var, shown) in entries.items():
+                if var.get().strip() == shown:
+                    continue  # not edited: keep the loaded rate (full precision, its source), as the web app does
                 value = core.parse_number(var.get())
                 current = self.fx[code]["cadPer"] / self.fx[rep]["cadPer"] if code in self.fx and rep in self.fx else None
                 if value and value > 0 and rep in self.fx and (current is None or abs(value - current) > 1e-12 * max(1, value)):

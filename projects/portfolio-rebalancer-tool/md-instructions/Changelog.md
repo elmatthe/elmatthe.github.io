@@ -1,5 +1,16 @@
 # Portfolio Rebalancer — Changelog
 
+## Unreleased — 2026-11-23 (PR 46 application fixes)
+- Negative shares or target percentages now withhold the plan in both the web and desktop apps ("shares and
+  target must be numbers of 0 or more"). Before, a target of -10% produced a plan selling more shares than held
+  (a 110% / -10% split sold 12 of 10 shares).
+- Desktop: clicking "Use these rates" without editing no longer relabels the loaded exchange rates as "entered
+  by you" (the dialog compared its 6-digit display with the full-precision rate), so notes and exports keep the
+  real source and the full-precision rate.
+- Tests: hand-calculated expectations for FX direction, whole-share rounding, New Money, sell-only, single
+  asset, cash-only and 0% target cases, run on both engines, plus 12 web/desktop parity cases and export
+  read-back.
+
 ## v1.4.0 — 2026-11-04 (candidate; not released)
 - After independent review: Windows now gets a time-zone database (`tzdata`), without which
   every exchange's date silently fell back to UTC there. Exports state the source order each

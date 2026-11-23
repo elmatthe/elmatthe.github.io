@@ -1,3 +1,32 @@
+# Handoff - PR 46 application correctness fixes (2026-11-23)
+
+Snapshot: Claude Code on HOME-PC, branch `claude/loving-brown-48hctl`, starting checkpoint M4
+`a23c06878991437cf161af2fd2f32736a1afd6e3`. Application-only checkpoint; no gateway change. Resolve
+this commit's SHA with Git. Not merged, not deployed.
+
+- CPI: the opt-in real-Excel regression failure (R3) was the test's exact cached-value assumption
+  against the uncalculated public copy; writes preserve the real canonical workbook (CPI Decisions
+  #007). Fixed: the public workbook lost chart 1's legend customizations on its first Excel save
+  (chart caches are now kept empty); a rejected Excel automation call (busy, or Microsoft 365's
+  privacy prompt) ended in a raw COM error and left a hidden EXCEL.EXE; validation used a different
+  "today" than the clamp. Reopening a written workbook recalculates it (verified, real Excel).
+- Monte Carlo: the gate XFAIL was a real silent failure (unreadable target workbook); fixed. CSV
+  number text now matches the web exactly.
+- Rebalancer: negative shares/targets produced plans selling more than held (web and desktop);
+  now withheld. Desktop FX dialog no longer relabels unedited rates as user-entered.
+- Stock (desktop): first price on a Bank of Canada holiday dropped; offline ZAc/ILA CSVs not
+  converted. Both fixed.
+- Reported, not fixed (design/owner decisions): desktop correlation/beta pairs returns by end date
+  across different holiday calendars (web pairs identical intervals); desktop has no ECB fallback
+  for historical FX; sample run counts differ between web and desktop Monte Carlo.
+- Open, unchanged: M1, M2, M3, Q1, L1; L3a accepted; gateway 1.3.0 undeployed.
+
+Next action: owner review of the application fixes; then the release checkpoint (M1/M3
+prerequisites) and UI/UX work. Do not merge, mark ready, deploy or activate without the owner.
+
+---
+
+Earlier M4 handoff (superseded above):
 # Handoff - PR 46 M4 incident-bound approval (2026-11-23)
 
 Snapshot: Claude Code on HOME-PC, branch `claude/loving-brown-48hctl`, starting checkpoint

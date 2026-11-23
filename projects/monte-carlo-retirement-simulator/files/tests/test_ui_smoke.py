@@ -91,6 +91,24 @@ def test_window_runs_seeded_simulation_and_keeps_warnings(tmp_path):
     assert "Saved as mine (Monte Carlo report).xlsx" in app.status_var.get()
     assert app.warnings_var.get() == ""
 
+    # An unreadable target (here a folder named like a workbook; an Excel lock behaves the
+    # same) is reported; Run no longer fails silently inside the Tk callback.
+    shown = []
+    import monte_carlo.ui as ui_module
+    original = ui_module.messagebox.showerror
+    ui_module.messagebox.showerror = lambda title, message: shown.append(message)
+    try:
+        folder = tmp_path / "folder.xlsx"
+        folder.mkdir()
+        app.workbook_path_var.set(str(folder))
+        app.last_path = None
+        app._on_run_clicked()
+    finally:
+        ui_module.messagebox.showerror = original
+    assert not app.is_running and app.last_path is None and folder.is_dir()
+    assert shown and "cannot be opened" in shown[0]
+    assert app.status_var.get().startswith("Error: The selected workbook cannot be opened")
+
     # Fits a 1366x768 screen.
     root.update_idletasks()
     assert root.winfo_reqheight() <= 740 and root.winfo_reqwidth() <= 1366

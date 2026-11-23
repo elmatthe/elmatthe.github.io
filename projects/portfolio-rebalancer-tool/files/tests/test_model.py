@@ -240,6 +240,99 @@ def test_exports_carry_sources_and_no_keys(tmp_path):
     assert [ws.cell(i, 1).value for i in range(2, 16)] == [r["ticker"] for r in SAMPLE_PORTFOLIO["rows"]]
 
 
+def _usd_plan(budget="", **settings):
+    """Four user-priced holdings in four currencies, reporting in USD (CAD per unit: USD 1.40,
+    EUR 1.50, GBP 1.75). X 10 EUR @ 84 = 900 USD; Y 20 CAD @ 35 = 500 USD; Z 4 GBP @ 5000p
+    = 200 GBP = 250 USD; W 5 USD @ 70 = 350 USD. Total 2,000; targets 25% = 500 each."""
+    fx = {"CAD": {"cadPer": 1.0, "kind": "official", "label": "base"}, "USD": {"cadPer": 1.40, "kind": "official", "label": "Bank of Canada, 2026-11-02"},
+          "EUR": {"cadPer": 1.50, "kind": "official", "label": "Bank of Canada, 2026-11-02"}, "GBP": {"cadPer": 1.75, "kind": "official", "label": "Bank of Canada, 2026-11-02"}}
+    rows = [Row("X", "10", "25"), Row("Y", "20", "25"), Row("Z", "4", "25"), Row("W", "5", "25")]
+    for row, (price, currency, scale) in zip(rows, [("84", "EUR", 1), ("35", "CAD", 1), ("5000", "GBP", 0.01), ("70", "USD", 1)]):
+        row.set_manual(price, currency, scale)
+    return build_plan(rows, Settings(reporting="USD", budget=budget, **settings), fx, now=NOW)
+
+
+def test_whole_share_export_values_match_hand_calculation(tmp_path):
+    # Rebalance: X sells 400 USD; Y holds; Z buys 250, W buys 150. Whole shares: X sells 4 = 336 EUR
+    # = 360 USD of proceeds; Z 4 + W 2 = 390 > 360, so Z drops to 3 (187.50 USD = 150 GBP); W 2 = 140.
+    # Buys 327.50, sells 360, cash not invested 32.50.
+    run = _usd_plan(mode="rebalance", whole_shares=True)
+    assert run["plan"] is not None, run["valuation"]
+    expected = {  # ticker: (FX to USD, current, action, trade USD, trade local, trade shares, post shares)
+        "X": (1.5 / 1.4, 900, "Sell", -360, -336, -4, 6), "Y": (1 / 1.4, 500, "Hold", 0, 0, 0, 20),
+        "Z": (1.25, 250, "Buy", 187.5, 150, 3, 7), "W": (1.0, 350, "Buy", 140, 140, 2, 7)}
+    lines = {x["row"].ticker: x for x in action_lines(run)}
+    assert sum(x["after"] for x in lines.values()) == pytest.approx(1.0), "weights after trading add up to 100% (cash excluded)"
+    assert lines["X"]["after"] == pytest.approx((900 - 360) / (2000 + 327.5 - 360))
+    assert any("US$32.50 of sell proceeds is not reinvested after rounding to whole shares" in n for n in run["notes"]["info"])
+
+    def check_table(header, body):
+        col = {name: i for i, name in enumerate(header)}
+        assert len(body) == 4
+        for cells in body:
+            fx, current, action, trade, local, shares, post = expected[cells[col["Ticker (as entered)"]]]
+            assert float(cells[col["FX to USD"]]) == pytest.approx(fx, rel=1e-12)
+            assert float(cells[col["Current value (USD)"]]) == pytest.approx(current, rel=1e-12)
+            assert float(cells[col["Target weight"]]) == pytest.approx(0.25) and float(cells[col["Target value (USD)"]]) == pytest.approx(500)
+            assert cells[col["Action"]] == action
+            assert float(cells[col["Trade value (USD)"]]) == pytest.approx(trade, abs=1e-9)
+            assert float(cells[col["Trade value (local)"]]) == pytest.approx(local, abs=1e-9)
+            assert float(cells[col["Trade shares"]]) == shares and float(cells[col["Post-trade shares"]]) == post
+
+    def check_meta(meta):
+        for key, value in {"Total current": 2000, "Target pool": 2000, "Total buys": 327.5, "Total sells": 360, "Cash not invested": 32.5}.items():
+            assert float(meta[key]) == pytest.approx(value, rel=1e-12), key
+        assert meta["Mode"] == "Rebalance" and meta["Reporting currency"] == "USD" and meta["Share quantities"] == "Whole shares"
+
+    write_csv_export(tmp_path / "plan.csv", run)
+    rows_csv = list(csv.reader((tmp_path / "plan.csv").read_text(encoding="utf-8").splitlines()))
+    start = next(i for i, r in enumerate(rows_csv) if r and r[0] == "Ticker (as entered)")
+    check_table(rows_csv[start], rows_csv[start + 1:start + 5])
+    assert rows_csv[start + 5] == []
+    check_meta({r[0]: r[1] for r in rows_csv[:start] if len(r) == 2})
+    fx_start = next(i for i, r in enumerate(rows_csv) if r and r[0] == "Currency")
+    assert rows_csv[fx_start] == ["Currency", "USD per unit", "Source"]
+    assert {r[0]: float(r[1]) for r in rows_csv[fx_start + 1:fx_start + 4]} == pytest.approx({"CAD": 1 / 1.4, "EUR": 1.5 / 1.4, "GBP": 1.25})
+
+    openpyxl = pytest.importorskip("openpyxl")
+    write_excel_export(tmp_path / "plan.xlsx", run)
+    wb = openpyxl.load_workbook(tmp_path / "plan.xlsx")
+    table = [[c.value for c in row] for row in wb["Trade Plan"].iter_rows()]
+    check_table(table[0], [[str(v) if isinstance(v, str) else v for v in row] for row in table[1:]])
+    check_meta({row[0].value: row[1].value for row in wb["Summary"].iter_rows() if row[0].value and len(row) > 1 and row[1].value is not None})
+
+
+def test_fractional_new_money_totals_reconcile_in_usd(tmp_path):
+    # New Money 600 USD: pool 2,600, targets 650. X (900) is overweight: Hold, never sold.
+    # Underweight: Y 150, Z 400, W 300 = 850 > 600, so buys are scaled by 600/850 (29.4% down):
+    # Y 105.88 USD = 148.24 CAD = 4.2353 sh; Z 282.35 USD = 225.88 GBP = 4.5176 sh; W 211.76 = 3.0252 sh.
+    run = _usd_plan(budget="600", mode="new_money")
+    s = run["plan"]["summary"]
+    assert s["totalBuys"] == pytest.approx(600) and s["totalSells"] == 0 and s["cashLeft"] == pytest.approx(0, abs=1e-9)
+    by = {r["ticker"]: r for r in run["plan"]["results"]}
+    scale = 600 / 850
+    assert by["X"]["action"] == "Hold" and by["X"]["tradeShares"] == 0
+    assert by["Y"]["tradeShares"] == pytest.approx(150 * scale * 1.4 / 35)
+    assert by["Z"]["tradeValueLocal"] == pytest.approx(400 * scale / 1.25) and by["Z"]["tradeShares"] == pytest.approx(400 * scale / 1.25 / 50)
+    assert by["W"]["tradeShares"] == pytest.approx(300 * scale / 70)
+    assert any("scaled down by 29.4%" in n and "US$600.00" in n and "US$850.00" in n for n in run["notes"]["info"])
+    write_csv_export(tmp_path / "plan.csv", run)
+    meta = {r[0]: r[1] for r in csv.reader((tmp_path / "plan.csv").read_text(encoding="utf-8").splitlines()) if len(r) == 2}
+    assert float(meta["New money budget"]) == 600 and float(meta["Total buys"]) == pytest.approx(600) and float(meta["Cash not invested"]) == pytest.approx(0, abs=1e-9)
+
+
+def test_negative_shares_or_target_withhold_the_desktop_plan():
+    # Regression: B with 10 shares and a -10% target was told to sell 12 shares (to -2).
+    fx = {"CAD": {"cadPer": 1.0, "kind": "official", "label": "base"}}
+    for shares, target in (("10", "-10"), ("-10", "50")):
+        a, b = Row("A", "10", "110"), Row("B", shares, target)
+        a.set_manual("100", "CAD")
+        b.set_manual("100", "CAD")
+        run = build_plan([a, b], Settings(mode="rebalance"), fx, now=NOW)
+        assert run["plan"] is None
+        assert run["valuation"]["unpriced"] == [{"rowId": b.id, "ticker": "B", "reason": "shares and target must be numbers of 0 or more"}]
+
+
 def test_formula_like_text_is_neutralized():
     from portfolio_rebalancer.export import safe_text
     for bad in ["=HYPERLINK(\"x\")", "+1", "-2", "@SUM", "\t=1", "＝1"]:

@@ -348,11 +348,13 @@ def fetch_fred_daily_eom(series_id, start_ym, end_ym, api_key, max_retries=3):
     return fetch_fred(series_id,start_ym,end_ym,api_key,True,max_retries)
 
 
-def validate_sources(data, start, end):
+def validate_sources(data, start, end, today=None):
     if set(data) != set(SUPPORTED_IDS[1:]):
         raise SourceError('Incomplete source collection; workbook was not touched.')
     # An empty historical interval after inception is suspicious; allow recent release lag.
-    lag_boundary = (date.today().replace(day=1) - relativedelta(months=3)).isoformat()[:7]
+    # Uses the same "today" as the range clamp and the unfinished-month blanking.
+    today = today or date.today()
+    lag_boundary = (today.replace(day=1) - relativedelta(months=3)).isoformat()[:7]
     for key, observations in data.items():
         if not isinstance(observations, dict):
             raise SourceError('Invalid source collection; workbook was not touched.')
@@ -363,12 +365,15 @@ def validate_sources(data, start, end):
             numeric(value)
         first = EXPECTED_STARTS[key]
         if key == 'us_sp500_eom':
-            first = (date.today() - relativedelta(years=10, months=-1)).isoformat()[:7]
+            first = (today - relativedelta(years=10, months=-1)).isoformat()[:7]
         if not observations and first and max(start, first) <= min(end, lag_boundary):
             raise SourceError('A required source returned no observations in an established historical interval; workbook was not touched.')
 
 
 def build_rows(start_ym, end_ym, api_key, add_missing_data=False, progress=None, cancel=None, today=None):
+    # One "today" for the whole download, so a run that crosses midnight cannot clamp,
+    # blank and validate against different months.
+    today = today or date.today()
     start_ym, end_ym = normalize_range(start_ym,end_ym,today=today)
     if not api_key.strip():
         raise ValueError('Please enter your FRED API key.')
@@ -383,5 +388,5 @@ def build_rows(start_ym, end_ym, api_key, add_missing_data=False, progress=None,
     unfinished = current_month(today)
     for key in FRED_DAILY_EOM_SERIES:
         data[key].pop(unfinished, None)
-    validate_sources(data,start_ym,end_ym)
+    validate_sources(data,start_ym,end_ym,today)
     return [{'date':ym_to_date(ym), **{key:data[key].get(ym) for key in SUPPORTED_IDS[1:]}} for ym in month_range(start_ym,end_ym)]

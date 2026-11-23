@@ -19,6 +19,51 @@ RECALCULATE_NOTE = ('Open the workbook in desktop Excel and press Ctrl+Alt+F9 (f
 class WorkbookError(ValueError):
     pass
 
+# Excel refuses COM calls while it shows a prompt (for example Microsoft 365's
+# "Powering your experiences" privacy notice, which can appear a few seconds after
+# a private instance starts) or is busy: RPC_E_CALL_REJECTED / RPC_E_SERVERCALL_RETRYLATER.
+# A refused call is never executed, so a refusal before Save leaves the file unchanged.
+_REJECTED_HRESULTS = (-2147418111, -2147417846)
+EXCEL_BUSY_MESSAGE = ('Excel did not accept the request: it is busy or is showing a prompt (for example a Microsoft '
+                      'privacy notice or a sign-in). Open Excel normally, answer any prompt, close Excel, then retry. '
+                      'The workbook file was not changed.')
+
+
+def _rejected(exc):
+    while exc is not None:
+        if exc.args and exc.args[0] in _REJECTED_HRESULTS:
+            return True
+        exc = exc.__cause__ or exc.__context__
+    return False
+
+
+def _excel_pid(excel):
+    """Process id of OUR private instance (DispatchEx never shares one), or None."""
+    try:
+        import win32process
+        return win32process.GetWindowThreadProcessId(int(excel.Hwnd))[1]
+    except Exception:  # noqa: BLE001 - best effort; only used to clean up a stuck instance
+        return None
+
+
+def _end_stuck_excel(pid):
+    """Last resort when our private instance refused Close/Quit (for example behind a prompt):
+    give it a few seconds to exit, then end it so no hidden EXCEL.EXE is left running."""
+    if not pid:
+        return
+    try:
+        import win32api, win32con, win32event, win32process
+        handle = win32api.OpenProcess(win32con.PROCESS_TERMINATE | win32con.SYNCHRONIZE, False, pid)
+    except Exception:  # noqa: BLE001 - already gone, or not ours to end
+        return
+    try:
+        if win32event.WaitForSingleObject(handle, 5000) == win32event.WAIT_TIMEOUT:
+            win32process.TerminateProcess(handle, 1)
+    except Exception:  # noqa: BLE001
+        pass
+    finally:
+        win32api.CloseHandle(handle)
+
 def validate_rows(rows, config):
     if not rows or len(rows)+1 > 1048576:
         raise WorkbookError('Dataset must contain 1 to 1048575 monthly rows.')
@@ -74,10 +119,11 @@ def write_to_workbook(rows, workbook_path, config, replace=False):
     import pythoncom
     import win32com.client
     excel = workbook = sheet = target = owned = last = model_sheet = None
-    stats = None
+    stats = pid = None
     pythoncom.CoInitialize()
     try:
         excel = win32com.client.DispatchEx('Excel.Application')
+        pid = _excel_pid(excel)
         excel.Visible = False
         excel.DisplayAlerts = False
         excel.EnableEvents = False
@@ -129,22 +175,32 @@ def write_to_workbook(rows, workbook_path, config, replace=False):
         stats['rows'] = len(values) - 1
     except WorkbookError:
         raise
-    except Exception:
+    except Exception as exc:
+        if _rejected(exc):
+            raise WorkbookError(EXCEL_BUSY_MESSAGE) from None
         raise WorkbookError('Excel could not safely write or save the workbook. Close the workbook, check permissions and Excel availability, then retry. No recovery or row deletion was attempted.') from None
     finally:
+        # Cleanup never replaces the outcome: a completed Save is still reported as
+        # written, and a failed write keeps its own message. An instance that refuses
+        # to close is ended so it cannot linger hidden.
         target = owned = last = sheet = model_sheet = None
+        stuck = False
         try:
             if workbook is not None:
                 workbook.Close(SaveChanges=False)
-        finally:
-            workbook = None
-            try:
-                if excel is not None:
-                    excel.Quit()
-            finally:
-                excel = None
-                gc.collect()
-                pythoncom.CoUninitialize()
+        except Exception:  # noqa: BLE001
+            stuck = True
+        workbook = None
+        try:
+            if excel is not None:
+                excel.Quit()
+        except Exception:  # noqa: BLE001
+            stuck = True
+        excel = None
+        gc.collect()
+        pythoncom.CoUninitialize()
+        if stuck:
+            _end_stuck_excel(pid)
     return stats
 
 

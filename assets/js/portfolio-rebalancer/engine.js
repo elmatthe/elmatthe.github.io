@@ -434,7 +434,8 @@ export function assessValuation(rows, { acceptStale = false } = {}) {
     const src = row.source || {};
     const price = parseNumber(row.price);
     let reason = null;
-    if (shares === null || target === null) reason = "shares and target must be numbers";
+    // Negative shares or targets would be normalized into sells beyond the holding.
+    if (shares === null || target === null || shares < 0 || target < 0) reason = "shares and target must be numbers of 0 or more";
     else if (!(price > 0)) reason = row.problem || "no price yet";
     else if (!row.currency) reason = "quote currency unknown";
     else if (src.kind === "provider" && !src.currencyVerified) reason = "the provider did not confirm the quote currency";

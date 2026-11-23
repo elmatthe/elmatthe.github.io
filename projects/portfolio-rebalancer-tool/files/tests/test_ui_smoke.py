@@ -95,3 +95,58 @@ def test_window_workflow():
         pump(root, 0.5)
         os.system(f"import -window root {shot}")  # noqa: S605 - test artefact only
     app._close()
+
+
+def test_exchange_rate_dialog_keeps_untouched_official_rates():
+    """Regression: "Use these rates" turned every rate it showed (rounded to 6 digits) into a
+    rate "Entered by you", even rates the user never edited. In USD, 1 EUR = 1.6 / 1.3978 =
+    1.144655... USD is shown as 1.14466, so EUR (and CAD, shown as 0.71541) became manual."""
+    from portfolio_rebalancer.model import Row
+
+    try:
+        root = tk.Tk()
+    except tk.TclError as error:
+        pytest.skip(f"no display: {error}")
+    md = MarketData(None, http=FakeProviders(), sleep=lambda s: None, pacing_override_ms=0, now=lambda: 1793718000.0, gateway_url="")
+    app = RebalancerApp(root, market=md)
+    assert pump(root, 5, until=lambda: "EUR" in app.fx and "USD" in app.fx), "official rates load from the mocked Bank of Canada"
+    official = {code: dict(app.fx[code]) for code in ("CAD", "USD", "EUR")}
+    assert official["EUR"]["cadPer"] == 1.6 and official["USD"]["cadPer"] == 1.3978
+    app.reporting.set("USD")
+    sap, veqt = Row("SAP.DE", "1", "50"), Row("VEQT.TO", "1", "50")
+    sap.set_manual("220", "EUR")
+    veqt.set_manual("60", "CAD")
+    app.rows = [sap, veqt]
+    app._render_rows()
+    pump(root, 0.3)
+
+    def dialog_widgets():
+        top = [w for w in root.winfo_children() if isinstance(w, tk.Toplevel)][-1]
+        everything, stack = [], [top]
+        while stack:
+            w = stack.pop(0)  # breadth first: rows in the order they are shown
+            everything.append(w)
+            stack.extend(w.winfo_children())
+        entries = [w for w in everything if isinstance(w, tk.ttk.Entry)]
+        use = next(w for w in everything if isinstance(w, tk.ttk.Button) and w.cget("text") == "Use these rates")
+        return entries, use
+
+    app._fx_dialog()
+    pump(root, 0.2)
+    entries, use = dialog_widgets()
+    assert [e.get() for e in entries] == ["0.71541", "1.14466"], "CAD then EUR, in USD per unit, 6 significant digits"
+    use.invoke()
+    pump(root, 0.2)
+    for code in ("CAD", "EUR"):
+        assert app.fx[code] == official[code], f"{code} was not edited: it keeps its official rate and source"
+    # Editing one rate makes only that one user-entered: 1 EUR = 1.20 USD -> 1.20 x 1.3978 CAD.
+    app._fx_dialog()
+    pump(root, 0.2)
+    entries, use = dialog_widgets()
+    entries[1].delete(0, "end")
+    entries[1].insert(0, "1.20")
+    use.invoke()
+    pump(root, 0.2)
+    assert app.fx["EUR"]["kind"] == "manual" and app.fx["EUR"]["cadPer"] == pytest.approx(1.20 * 1.3978)
+    assert app.fx["CAD"] == official["CAD"]
+    app._close()

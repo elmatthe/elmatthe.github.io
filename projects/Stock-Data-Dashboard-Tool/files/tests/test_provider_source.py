@@ -116,6 +116,34 @@ def test_fx_history_from_bank_of_canada_derived_through_cad():
     assert rate is not None and rate.iloc[0] == pytest.approx(1.85 / 1.40)
 
 
+def test_first_price_on_a_bank_of_canada_holiday_uses_the_previous_fixing():
+    """Regression: rates were requested from the window's first day only, so a first price on
+    a day the Bank of Canada does not publish (Canada Day, 2026-07-01, NYSE open) had no
+    earlier fixing and was dropped from a USD->CAD comparison."""
+    from analytics import normalize_price_frames_to_currency
+
+    fixings = {str(d.date()): 1.30 + 0.01 * i for i, d in enumerate(pd.bdate_range("2026-06-15", "2026-07-10")) if str(d.date()) != "2026-07-01"}
+    asked = []
+
+    def http(url, headers):
+        u = urlparse(url)
+        q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        assert u.netloc == "www.bankofcanada.ca"
+        asked.append(q)
+        return 200, json.dumps({"observations": [{"d": d, "FXUSDCAD": {"v": str(v)}} for d, v in fixings.items() if q["start_date"] <= d <= q["end_date"]]})
+
+    src = source(MarketData(None, http=http, sleep=lambda s: None, pacing_override_ms=0, gateway_url=""))
+    days = pd.bdate_range("2026-07-01", "2026-07-03")
+    frame = pd.DataFrame({"Close": [100.0, 101.0, 102.0], "Adj Close": [100.0, 101.0, 102.0]}, index=days)
+    out, warnings, currencies = normalize_price_frames_to_currency(
+        {"SPY": frame}, {"SPY": "USD"}, "CAD", lambda a, b: src.fetch_fx_rate(a, b, "2026-07-01", "2026-07-03", "Daily"))
+    assert asked[0]["start_date"] < "2026-07-01", "rates are requested from before the window"
+    assert warnings == [] and currencies == {"SPY": "CAD"}
+    # 2026-06-30 is the 12th business day from 2026-06-15 (index 11): 1.30 + 0.11 = 1.41 CAD per USD;
+    # 2026-07-02 is index 13 (1.43) and 2026-07-03 index 14 (1.44).
+    assert out["SPY"]["Close"].tolist() == pytest.approx([100 * 1.41, 101 * 1.43, 102 * 1.44], rel=1e-12)
+
+
 def test_yahoo_first_then_fallback_and_the_desktop_frequency_rule():
     calls = []
     md = market(calls, gateway_url=GATEWAY)

@@ -22,6 +22,9 @@ from market_data.history import boc_history, history_by_sources
 from market_data.sources import describe_skipped, short_failure
 
 MARKET_SOURCE = "Market data (your source list)"
+# Days of exchange-rate history requested before the analysis window (the browser tool
+# uses the same lookback).
+FX_LOOKBACK_DAYS = 14
 
 
 class DataSourceError(Exception):
@@ -387,7 +390,10 @@ class OfflineCsvSource(BaseDataSource):
         currency = None
         if "Currency" in frame.columns:
             raw_values = [str(v).strip() for v in frame["Currency"].dropna() if str(v).strip()]
-            if raw_values and all(v in ("GBp", "GBX") for v in raw_values):
+            # Every minor unit (GBp/GBX pence, ZAc cents, ILA agorot), as long as the file
+            # names only one major currency for this ticker.
+            majors = {MINOR_UNIT_CURRENCIES[v][0] if v in MINOR_UNIT_CURRENCIES else None for v in raw_values}
+            if raw_values and len(majors) == 1 and None not in majors:
                 frame, _, unit_warnings = convert_minor_units(frame, raw_values[0], ticker_key)
                 warnings.extend(unit_warnings)
             currency, currency_warnings = _most_common_currency(frame["Currency"])
@@ -461,8 +467,12 @@ class SourceListHistorySource(BaseDataSource):
         from_code, to_code = normalize_currency(from_currency), normalize_currency(to_currency)
         if not from_code or not to_code or from_code == to_code:
             return None
+        # Fixings from before the window, so a first price on a day without a fixing (a
+        # Bank of Canada holiday) still gets the latest earlier one; align_fx_rate keeps the
+        # 7-day limit. Same lookback as the browser tool.
+        fx_start = (pd.Timestamp(start_date) - pd.Timedelta(days=FX_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
         try:
-            hist = boc_history(self.md, [from_code, to_code], start_date, end_date)
+            hist = boc_history(self.md, [from_code, to_code], fx_start, end_date)
         except DataError:
             return None
         def cad_per(code: str) -> pd.Series:

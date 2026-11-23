@@ -345,8 +345,9 @@ def assess_valuation(rows: list[dict], accept_stale: bool = False) -> dict:
         src = row.get("source") or {}
         price = parse_number(row.get("price"))
         reason = None
-        if shares is None or target is None:
-            reason = "shares and target must be numbers"
+        # Negative shares or targets would be normalized into sells beyond the holding.
+        if shares is None or target is None or shares < 0 or target < 0:
+            reason = "shares and target must be numbers of 0 or more"
         elif not (price is not None and price > 0):
             reason = row.get("problem") or "no price yet"
         elif not row.get("currency"):

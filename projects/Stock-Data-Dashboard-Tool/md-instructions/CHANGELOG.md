@@ -6,6 +6,12 @@
   removed where every history source is read, before resampling. The source order in the
   export is the one at the start of the run. A pause Yahoo Finance asks for longer than two
   hours is honoured (up to 24 hours at a time), not cut short.
+- Financial verification: Bank of Canada rates are now requested from 14 days before the
+  window (as in the browser tool), so a first price on a day without a fixing (Canada Day,
+  for example) is converted with the latest earlier fixing instead of being dropped. Offline
+  CSV prices in `ZAc` (rand cents) and `ILA` (agorot) are now converted to ZAR and ILS, as
+  v0.4.1 intended; before, only pence were. Metrics, correlation and regression are checked
+  against hand arithmetic and numpy/scipy, and against the browser engine on one fixture.
 - Data source "Market data (your source list)" replaces the single provider choice: Yahoo
   Finance through the site's data gateway (no key; first by default), then Alpha Vantage,
   Marketstack and Alpaca with your own keys, in the order you set under "Sources…" (Move
