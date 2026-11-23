@@ -2,8 +2,9 @@
 
 Snapshot: Claude Code on HOME-PC, branch `claude/loving-brown-48hctl`, starting checkpoint
 R7 `3a8b90b19d9cf4e82252ed913f446db6b7deb089` (independent R7 review: QUALIFIED; L3a accepted).
-This handoff accompanies the M4 commit; resolve its SHA with Git. M4 is implemented, tested
-and independently reviewed as recorded in the private M4 report; not deployed.
+This handoff accompanies the M4 commits; resolve the SHA with Git. M4 is implemented and tested;
+the independent Codex review was stopped twice by the provider's content filter before a verdict
+(its partial run found two defects, both fixed). Details in the private M4 report. Not deployed.
 
 - M4 fixed: an approval (`UPSTREAM_INCIDENT_APPROVAL = g<generation>-<nonce>`) clears only the
   current incident, once, at the object's start, with the source off; any scope change

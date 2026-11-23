@@ -154,6 +154,10 @@ earlier could clear an incident the owner never reviewed. Single use alone did n
   read. It is accepted only for the current generation and nonce, if unused, **with the source
   switched off in that deployment** (owner decision D2), and once the incident's newest request
   is 60 s old (an instance that shut down lets a request that touches no storage finish).
+  Only the first start attempt of an instance evaluates it: a request or health check that
+  retries a failed start never retries the approval. A row other code changed while an
+  incident was open, removing its halt or an unresolved request, keeps the source halted under
+  a new incident (found by the independent review's interrupted run).
   Approval, its record and the clearing are one transaction; cooldowns are never shortened.
   `UPSTREAM_REACTIVATION_ID` is no longer read (D5).
 - Owner diagnostics use Cloudflare Data Studio with the documented `SELECT` queries (owner

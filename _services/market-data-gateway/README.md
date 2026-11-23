@@ -217,7 +217,9 @@ stored with it in the same SQLite write that records the halt or the unknown out
 
 Any change of scope (another unknown outcome, a halt, a further halt-level direction from
 Yahoo, a restart that finds requests in flight, or a row written by other code) gives the
-incident a **new generation and nonce** in the same write. Clearing it needs the approval of
+incident a **new generation and nonce** in the same write. If other code (an older version after
+a rollback, a manual edit) removed the halt or an unresolved request of an open incident, that
+is not a recovery: the source stays halted under the new incident. Clearing it needs the approval of
 that exact incident:
 
 ```
@@ -225,7 +227,8 @@ UPSTREAM_INCIDENT_APPROVAL = g<generation>-<nonce>     for example g3-mfrggzdfmz
 ```
 
 The coordinator evaluates this secret **only when it starts** (a deployment, including a
-secret change, restarts it): never on a request, a health check or a status read. It accepts
+secret change, restarts it), once per start: never on a request, a health check or a status read,
+not even when a failed start is retried by one. It accepts
 the value only if all of these hold, and otherwise records why not (`approval_result`):
 
 | Check | Refused as |

@@ -962,6 +962,51 @@ test("6. M4: an approval whose SQLite commit fails at a deferred foreign key end
   } finally { await world.stop(); }
 });
 
+test("6. M4: an approval whose start failed is never retried by health or data requests on the same object, only by the next start", { timeout: 180000 }, async () => {
+  const persist = persistDir("approval-start-retry");
+  const yahoo = syntheticYahoo();
+  let approval;
+  await withWorld({ persist, yahoo }, async world => {
+    yahoo.answer = () => refusal(172800);
+    await expectError(await world.ask("isolate-b", "AAPL"), "upstream_rate_limited", 429);
+    yahoo.answer = null;
+    await world.advance(901000);
+    approval = (await incidentOf(world)).approval;
+    await sql(world, "CREATE TRIGGER m4_reject_approval BEFORE UPDATE OF halt_code ON coordinator_state WHEN NEW.halt_code IS NULL BEGIN SELECT RAISE(ABORT, 'synthetic statement fault'); END");
+  });
+  await withWorld({ persist, yahoo, coordinatorEnv: { ...SOURCE_OFF, UPSTREAM_INCIDENT_APPROVAL: approval } }, async world => {
+    assert.deepEqual(await sql(world, "SELECT generation FROM incident_approvals"), [], "the start's approval failed");
+    await sql(world, "DROP TRIGGER m4_reject_approval");
+    assert.equal((await world.health()).upstream.state, "halted");
+    await expectError(await world.ask("isolate-b", "MSFT"), "upstream_rate_limited", 429);
+    assert.deepEqual(await sql(world, "SELECT generation FROM incident_approvals"), [], "ordinary traffic did not retry it");
+    assert.equal((await incidentOf(world)).halt_code, "upstream_rate_limited");
+    assert.equal(yahoo.calls.length, 1);
+  });
+  await withWorld({ persist, yahoo, coordinatorEnv: { ...SOURCE_OFF, UPSTREAM_INCIDENT_APPROVAL: approval } }, async world => {
+    assert.equal((await incidentOf(world)).approval, null, "the next start applies it");
+    assert.deepEqual(await sql(world, "SELECT generation FROM incident_approvals"), [{ generation: 1 }]);
+    assert.equal(yahoo.calls.length, 1);
+  });
+});
+
+test("6. M4: a halt erased by another writer while its incident is open stays in force, under a new incident", { timeout: 60000 }, () => withWorld({}, async world => {
+  world.yahoo.answer = () => refusal(172800);
+  await expectError(await world.ask("isolate-b", "AAPL"), "upstream_rate_limited", 429);
+  world.yahoo.answer = null;
+  await world.advance(901000);
+  const before = (await incidentOf(world)).approval;
+  await sql(world, "UPDATE coordinator_state SET halt_code = NULL WHERE id = 1"); // a manual edit or an older version
+  await world.test("reset");
+  const after = await incidentOf(world);
+  assert.equal(after.halt_code, "upstream_rate_limited", "re-imposed");
+  assert.match(after.approval, /^g2-/);
+  assert.notEqual(after.approval, before);
+  assert.equal((await world.health()).upstream.state, "halted");
+  await expectError(await world.ask("isolate-b", "MSFT"), "upstream_rate_limited", 429);
+  assert.equal(world.yahoo.calls.length, 1);
+}));
+
 /* ---------------- 7. storage that fails, for real ---------------- */
 test("7. state that is not well formed in real SQLite: nothing is sent", { timeout: 60000 }, () => withWorld({}, async world => {
   assert.equal((await world.ask("isolate-b", "AAPL")).status, 200);

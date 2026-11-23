@@ -228,7 +228,10 @@ test("H1/M4: only the owner's approval of the current incident resolves restart 
   assert.equal(w.storage.peek().unresolved.length, 1);
   assert.deepEqual(w.storage.approvals(), [], "failed transaction did not consume the approval");
   w.storage.failApproval = false;
-  await reachable(w, "SPY"); // the same start, retried: the transaction now succeeds
+  await refused(await w.isolate().ask("SPY"), "busy", 60); // ordinary traffic never retries an approval
+  assert.deepEqual(w.storage.approvals(), []);
+  w.coordinator.restart(); // the next start evaluates it again
+  await reachable(w, "SPY");
   assert.deepEqual(w.storage.peek().unresolved, []);
   assert.deepEqual(w.storage.approvals(), [1]);
   const later = w.isolate().ask("VST");
@@ -1544,10 +1547,43 @@ test("M4: an approval that cannot be written leaves the incident in force and is
     assert.equal(w.starts.length, 1, "nothing is sent on an approval that was not recorded");
     assert.equal(w.storage.peek().haltCode, "upstream_rate_limited");
     assert.deepEqual(w.storage.approvals(), []);
-    assert.equal((await w.isolate().health()).upstream.state, "unverified");
+    assert.equal((await w.isolate().health()).upstream.state, "halted", "the retried start leaves the approval out: still halted");
     w.storage[failure] = false;
-    await reachable(w, "MSFT"); // the start is retried, and the approval still matches
+    // The same instance: requests and health retry the start, never the approval.
+    assert.equal((await w.isolate().health()).upstream.state, "halted");
+    await blockedStill(w, "MSFT", "ordinary traffic does not apply a failed approval");
+    assert.deepEqual(w.storage.approvals(), []);
+    w.coordinator.restart(); // the next start (a deployment) evaluates it again, and it still matches
+    await reachable(w, "MSFT");
     assert.deepEqual(w.storage.approvals(), [1]);
+  }
+});
+
+test("M4: a row another writer changed while an incident was open cannot end it: what it removed stays halted", async () => {
+  for (const [what, edit] of [
+    ["the halt", row => ({ ...row, haltCode: null })],
+    ["the unknown outcome", row => ({ ...row, unresolved: [] })],
+  ]) {
+    const env = { ...OFF };
+    const w = world({ limits: { upstreamMinSpacingMs: 0 }, coordinatorEnv: env });
+    if (what === "the halt") await halt(w, "AAPL");
+    else {
+      const answer = w.isolate().ask("AAPL");
+      await until(() => w.starts.length === 1, "admission");
+      w.held.shift().reject(new TypeError("connection reset before headers"));
+      await refused(await answer, "busy");
+    }
+    await w.clock.jump(COOLDOWN_SECONDS.upstream_rate_limited * 1000);
+    const before = approvalFor(w.storage);
+    w.storage.corrupt(edit(w.storage.peek())); // an older version or a manual edit; the seal no longer matches
+    approve(w, env, before);
+    await refused(await w.isolate().ask("MSFT"), what === "the halt" ? "upstream_rate_limited" : "upstream_unavailable", MAX_COOLDOWN_SECONDS);
+    assert.equal(w.starts.length, 1, `${what} removed by other code is not a recovery`);
+    assert.equal(lastResult(w), "stale_generation");
+    assert.ok(w.storage.peek().haltCode, "halted under a new incident");
+    approve(w, env); // the owner approves the new incident
+    await reachable(w, "MSFT");
+    assert.equal(w.starts.length, 2);
   }
 });
 

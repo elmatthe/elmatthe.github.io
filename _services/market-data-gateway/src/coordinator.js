@@ -306,6 +306,7 @@ export class UpstreamCoordinatorCore {
     this.unconfirmed = []; // writes whose statement succeeded, awaiting commit: { seq, state, event }
     this.writeSeq = 0;
     this.commitFailed = false; // storage refused to confirm a commit: memory is ahead of disk
+    this.approvalAttempted = false; // M4: this instance's one evaluation of UPSTREAM_INCIDENT_APPROVAL
     this.unsaved = false; // a known state/outcome is held in memory but its write failed
     this.quarantine = new Set(); // inherited or locally unknown outcomes; never expires
     this.queue = []; // works waiting for their turn, first come first served
@@ -337,12 +338,26 @@ export class UpstreamCoordinatorCore {
   // request, health check or status read can apply one: a changed secret is a new deployment,
   // which restarts the object. Throws, leaving the instance unverified, if anything fails.
   initialize() {
+    // The approval is evaluated on the first attempt only. If that attempt fails, a later
+    // request or health check retries the rest of the start but never the approval: only a new
+    // start (a deployment) evaluates it again.
+    const evaluate = !this.approvalAttempted;
+    this.approvalAttempted = true;
     const { state: stored, seen, approvals = [], sealed = true } = this.storage.read();
     // Approval and reactivation history are written with the state. History without the
     // state row is lost/corrupt storage, not a pristine coordinator.
     if (stored == null && (seen.length || approvals.length)) throw new Error("coordinator state missing");
-    const { legacy, ...read } = verifiedState(stored);
+    let { legacy, ...read } = verifiedState(stored);
+    const disk = read;
     const t = this.now();
+    // Other code wrote the row while an incident was open (an older version after a rollback, a
+    // manual edit) and removed part of it: that is not a recovery. The source stays halted, under a
+    // new incident the owner must approve.
+    if (!sealed && read.incident) {
+      const kept = read.incident.scope;
+      const lost = (kept.halt !== null && read.haltCode === null) || kept.markers.some(id => !read.unresolved.some(marker => marker.id === id));
+      if (lost) read = { ...read, haltCode: read.haltCode ?? kept.halt ?? "upstream_unavailable" };
+    }
     // After a restart nothing of this instance is in flight: every marker is an outcome nobody
     // knows, and with any halt it is the incident's exact scope. Anything else (a marker the
     // incident does not cover, a halt it does not name, state written before M4 or by other
@@ -355,7 +370,7 @@ export class UpstreamCoordinatorCore {
     else if (legacy || !sealed || !read.incident || !sameScope(read.incident.scope, scope)) next = this.openIncident(read, scope, t);
 
     // UPSTREAM_INCIDENT_APPROVAL (owner only, M4).
-    const raw = String(this.env.UPSTREAM_INCIDENT_APPROVAL ?? "").trim();
+    const raw = evaluate ? String(this.env.UPSTREAM_INCIDENT_APPROVAL ?? "").trim() : "";
     let approved = null;
     if (raw) {
       const result = this.evaluateApproval(raw, next, approvals, t);
@@ -371,7 +386,7 @@ export class UpstreamCoordinatorCore {
     if (approved) this.storage.approve(next, approved.generation, approved.scope, t);
     else if (next !== read || !sealed || legacy) this.storage.write(next);
     this.state = next;
-    this.durable = read;
+    this.durable = disk;
     this.quarantine = new Set(next.unresolved.map(marker => marker.id));
     if (next !== read || approved) this.wrote(next); // incident events are logged once committed
   }
