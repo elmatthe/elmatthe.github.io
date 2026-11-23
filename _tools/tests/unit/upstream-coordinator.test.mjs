@@ -285,23 +285,42 @@ test("H1: recovered sibling finalization commits the known refusal without losin
   assert.equal(w.starts.length, 2);
 });
 
-test("H1: network rejection is finalized as unavailable; SQL rejection stays unverified", async () => {
+// R5 (independent R4 review H2): a request can reach the provider and be refused, and the
+// connection close before the coordinator sees a status. No status means no known outcome.
+test("H2: network rejection before any HTTP status keeps its marker, with or without a working write", async () => {
   for (const failWrites of [false, true]) {
     const w = world({ limits: { upstreamMinSpacingMs: 0 } });
     const first = w.isolate().ask("AAPL");
     await until(() => w.starts.length === 1, "admission");
     w.storage.failWrites = failWrites;
     w.held.shift().reject(new TypeError("synthetic network failure"));
-    await refused(await first, failWrites ? "busy" : "upstream_unavailable");
-    assert.equal(w.storage.peek().unresolved.length, failWrites ? 1 : 0);
-    assert.equal(w.storage.peek().failures, failWrites ? 0 : 1);
+    await refused(await first, "busy", 60);
+    assert.equal(w.storage.peek().unresolved.length, 1, "an unobserved outcome is never finalized");
+    assert.equal(w.storage.peek().failures, failWrites ? 0 : 1, "the breaker still counts the failure when it can be written");
     w.storage.failWrites = false;
-    if (failWrites) {
-      w.coordinator.restart();
-      await refused(await w.isolate().ask("MSFT"), "busy", 60);
-      assert.equal(w.starts.length, 1);
-    }
+    await refused(await w.isolate().ask("MSFT"), "busy", 60);
+    w.coordinator.restart();
+    await w.clock.jump(40 * 86400000);
+    await refused(await w.isolate().ask("SPY"), "busy", 60);
+    assert.equal((await w.isolate().health()).upstream.state, "unverified");
+    assert.equal(w.starts.length, 1, "no second upstream request");
+    assert.equal(w.storage.peek().unresolved.length, 1);
   }
+});
+
+test("H2: a body lost after HTTP 200 was observed is a known outcome and finalizes", async () => {
+  const w = world({ limits: { upstreamMinSpacingMs: 0 } });
+  const first = w.isolate().ask("AAPL");
+  await until(() => w.starts.length === 1, "admission");
+  const body = new ReadableStream({ start(controller) { controller.error(new TypeError("synthetic connection lost mid-body")); } });
+  w.held.shift().raw(new Response(body, { status: 200 }));
+  await refused(await first, "upstream_unavailable");
+  assert.deepEqual(w.storage.peek().unresolved, []);
+  assert.equal(w.storage.peek().failures, 1);
+  const next = w.isolate().ask("MSFT");
+  await until(() => w.starts.length === 2, "capacity returns");
+  releaseAll(w);
+  assert.equal((await next).status, 200);
 });
 
 test("H1: an identifier observed while a request is active cannot clear its later aborted unknown outcome", async () => {

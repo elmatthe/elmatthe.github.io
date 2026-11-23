@@ -533,7 +533,10 @@ export class UpstreamCoordinatorCore {
         networkError = error;
       }
       if (fetchFailed || !response) {
-        const unknown = timedOut || Boolean(work.dropped) || work.controller.signal.aborted || networkError?.name === "AbortError";
+        // Only an observed HTTP status is a known outcome. Without one the request may have
+        // reached the source and been refused (a 429 whose headers were lost with the
+        // connection), so its marker stays. A body lost after a status was observed is known.
+        const unknown = !response || timedOut || Boolean(work.dropped) || work.controller.signal.aborted || networkError?.name === "AbortError";
         const code = timedOut ? "upstream_timeout" : "upstream_unavailable";
         const saved = this.recordOutcome(work.dropped ? "cancelled" : code, null, work.admissionId, unknown);
         if (!saved) return { code: COORDINATOR_UNAVAILABLE };

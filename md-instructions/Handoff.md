@@ -1,3 +1,43 @@
+# Handoff - PR 46 R5 transport-loss remediation (2026-11-23)
+
+Snapshot: Claude Code on HOME-PC, branch `claude/loving-brown-48hctl`, starting checkpoint
+R4 `d025510e24656df85ff1a75ecb1c556d04aba5b8`. **R5 READY FOR FRESH INDEPENDENT REVIEW.**
+This handoff accompanies the R5 commit; resolve its SHA with Git. R5 is not independently
+accepted, and it invalidates the R4 review as acceptance evidence for the new head.
+
+- Independent R4 review (Codex): **FAIL**. Its session ended on a provider content filter
+  before writing its report; the verdict and findings were recovered verbatim from the
+  session transcript and are kept privately with the review evidence.
+- H2 (High), fixed: a connection closed before HTTP headers was finalized as ordinary
+  unavailability; the marker was removed and, after a restart, another isolate reached the
+  source. Reproduced independently in real workerd (3 upstream calls; 1 is safe). Now any
+  `fetch()` rejection with no response keeps its marker, answers `busy` and quarantines,
+  as a timeout does; a body lost after an observed status still finalizes that status.
+  Regressions: unit (`upstream-coordinator`, `market-gateway`) and real workerd (persisted
+  restart, 40-day clock, health, three isolates). Two old tests that encoded the unsafe
+  contract were changed to the safe one; the B2 place-return test now uses an observed 503.
+- L2 (Low), fixed: the R4 handoff named a private report path, which failed the exact-SHA
+  repository scan. Private evidence is now referred to only generically.
+- Open, owner decision, not changed: M4 (Medium) a provisioned identifier the coordinator
+  never observed is not bound to the incident it later clears (operator reconciliation is
+  the guard today); L3 (Low) `cooldown_started` is logged before its write succeeds.
+- Pre-existing, not R4/R5: `sources.test.js` stale-price case uses two calendar days, so on
+  a Monday the "stale" price is Friday's current session; identical since R3.
+- Verification before commit: **314 unit tests**; **38 real workerd/SQLite tests** (the new
+  H2 test fails on R4 code, 37 others unchanged); independent H2 reproduction fails on R4
+  and passes on R5 (4/4, two status-observed controls unchanged); the R4 safe-expectation H1
+  harness 4/4 and the reviewer's R4 harnesses pass except their one assertion of the old
+  transport behaviour, which now fails as intended. The private Full gate runs on the
+  committed head; its result and exact-SHA CI are in the private report.
+
+Next action: fresh independent Codex review of the pushed R5 SHA (H2 pre-header loss in
+real workerd, plus the R4 H1 failed-finalization and restart scenarios), then exact-SHA CI.
+Do not merge, mark the draft ready, deploy or activate retrieval under this checkpoint.
+
+---
+
+Earlier R4 handoff (superseded by the R4 independent FAIL above):
+
 # Handoff - PR 46 R4 durable fail-closed persistence (2026-11-05)
 
 Snapshot: Codex on HOME-PC, branch `claude/loving-brown-48hctl`, starting checkpoint
@@ -23,8 +63,8 @@ Implementation-team verification is complete; independent acceptance is still re
   and widget cases passed unchanged on recheck. Owner authorized the precise stock assertion
   derived from intercepted synthetic prices; ticker exclusion is retained. Subsequent Full
   runs pass; private gate source and expected artifacts were not changed.
-- Private report: `files/dev-work/pr46-verification-gate/reports/R4-IMPLEMENTATION-<SHA>.md`;
-  evidence `files/r4/`. The report records publication and exact-SHA GitHub CI status.
+- Private implementation report and evidence are kept outside the repository's tracked
+  files; the report records publication and exact-SHA GitHub CI status.
   User-owned `.gitignore` remains byte-for-byte unchanged and must never be staged.
 - M1 coordinator activation, M2 health protection, M3 production drain and Q1 response policy
   remain open. Separate CPI Excel preservation remains FAIL (canonical workbook unchanged).

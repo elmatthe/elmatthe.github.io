@@ -100,7 +100,8 @@ async function startWorld({ real = false, env = {}, coordinatorEnv = {}, persist
       env: { UPSTREAM_COORDINATOR: { type: "durable-object", worker: "isolate-a", exportName: "UpstreamCoordinator" }, ...vars({ ...ON, ...env, ...coordinatorEnv }) },
       exports: { UpstreamCoordinator: { type: "durable-object", storage } },
     },
-    dev: { outboundService: { type: "fetcher", handler: request => yahoo.handle(request) } },
+    // `yahoo.raw` (Node req, res) controls the socket itself, for transport faults.
+    dev: { outboundService: yahoo.raw ? { type: "node-handler", handler: yahoo.raw } : { type: "fetcher", handler: request => yahoo.handle(request) } },
   };
   const isolate = name => ({
     config: {
@@ -380,6 +381,45 @@ test("H1: real workerd timeout leaves an unknown marker after eviction and elaps
   await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
   assert.equal(world.yahoo.calls.length, 1);
 }));
+
+// R5 (independent R4 review H2): the source receives the request, and the connection closes
+// before any status line, so a 429 could have been lost with it. The outcome is unknown.
+test("H2: a connection closed before HTTP headers stays unresolved across a full persisted restart", { timeout: 120000 }, async () => {
+  const persist = persistDir("pre-header-close");
+  const yahoo = syntheticYahoo();
+  let closeBeforeHeaders = true;
+  yahoo.raw = async (req, res) => {
+    const symbol = decodeURIComponent(new URL(req.url, "http://synthetic.invalid").pathname.split("/").pop());
+    yahoo.calls.push({ symbol, at: Date.now(), url: req.url });
+    if (closeBeforeHeaders) { req.socket.destroy(); return; }
+    const { yahooFetch } = await loadYahoo();
+    const reply = await yahooFetch({})(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
+    res.writeHead(reply.status, Object.fromEntries(reply.headers));
+    res.end(await reply.text());
+  };
+  let world = await startWorld({ persist, yahoo });
+  try {
+    const first = await world.ask("isolate-b", "AAPL");
+    await expectError(first, "busy", 503);
+    assert.equal(first.headers.get("retry-after"), "60");
+    const row = await world.row();
+    assert.equal(row.unresolved.length, 1, "no observed status, so the marker stays");
+    assert.equal(row.failures, 1, "the breaker still counts the failure");
+    closeBeforeHeaders = false;
+    await world.advance(1500);
+    await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
+  } finally { await world.stop(); }
+  world = await startWorld({ persist, yahoo });
+  try {
+    await world.advance(40 * DAY_MS);
+    assert.equal((await world.health()).upstream.state, "unverified");
+    await expectError(await world.ask("isolate-c", "SPY"), "busy", 503);
+    await expectError(await world.ask("isolate-a", "NVDA"), "busy", 503);
+    assert.deepEqual(yahoo.calls.map(c => c.symbol), ["AAPL"], "restart, clock and health cannot authorize a second request");
+    assert.equal((await world.row()).unresolved.length, 1);
+    assert.deepEqual(yahoo.strays, []);
+  } finally { await world.stop(); }
+});
 
 /* ---------------- the unmodified entry point ---------------- */
 test("the unmodified Worker: answers come from synthetic Yahoo through the coordinator, in real SQLite", { timeout: 60000 }, () => withWorld({ real: true }, async world => {

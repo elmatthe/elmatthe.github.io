@@ -124,7 +124,7 @@ upstream code at all; they ask the coordinator and normalize what it returns.
 | Coalescing | identical concurrent requests, from any isolate, share **one** upstream request and report one retrieval time |
 | Cancellation | a client that disconnects stops waiting at once and the coordinator is told; work nobody is waiting for leaves the queue or is aborted, and is not held against Yahoo. Shared work continues while any client remains. Needs the `enable_request_signal` compatibility flag (in `wrangler.toml`) |
 | Caching | quotes reused **10 min**, history **12 h** (per symbol and range); definitive refusals (unknown symbol, other listing or currency) remembered **30 min**. For speed only: **no safety decision depends on a cache** |
-| Circuit breaker | after Yahoo answers **429**, no upstream request for **15 min**; after **401/403**, **30 min**; after **3** 5xx/timeouts/network errors with no successful answer in between, **2 min**. Cached answers are still served. Reported in `/v1/health` (`upstream.state: "cooling_down"`) |
+| Circuit breaker | after Yahoo answers **429**, no upstream request for **15 min**; after **401/403**, **30 min**; after **3** 5xx/timeouts/network errors with no successful answer in between, **2 min** (a timeout, or a network error before any HTTP status, also leaves its outcome unresolved; see below). Cached answers are still served. Reported in `/v1/health` (`upstream.state: "cooling_down"`) |
 | Yahoo's own wait | a valid `Retry-After` (delta seconds or an HTTP date) on **any** answer other than a success is honoured when it is longer than the minimum above, as an absolute deadline; the `Retry-After` sent to clients is the time really left. Malformed, negative, past or shorter values never shorten the minimum. A **single** 5xx, redirect or other refusal that names a wait is honoured for that wait |
 | Other refusals | a redirect, a 400 or a 451 that names **no** wait is reported and starts no cooldown; the next request can go out within the spacing and budget, up to 20 a minute. It does not end a run of failures either |
 | A deadline never gets shorter | whichever refusal is recorded first, the later deadline stands; a success does not end a stop |
@@ -171,9 +171,13 @@ upstream access. Successful writes, health checks, elapsed budgets, expired dead
 leases, eviction and full runtime restart cannot remove it. The current instance distinguishes
 its own active markers from inherited ones, so two healthy requests can still run concurrently.
 An admitted cancellation, timeout or unknown abort retains its marker; queued cancellation
-continues to use no budget. Network errors without an abort finalize the ordinary unavailable
-outcome and breaker counter. A subsequently observed complete response may finalize its actual
-outcome, including a late refusal; cancellation cannot recall provider work already sent.
+continues to use no budget. Only an observed HTTP status is a known outcome. A network error
+before any status (a connection lost before headers, which can hide a 429) also retains its
+marker: the caller gets `busy`, the breaker counter still counts it, and the source stays
+quarantined until the owner acts, at the same availability cost as a timeout. A body lost
+after a status was observed finalizes that status. A subsequently observed complete response
+may finalize its actual outcome, including a late refusal; cancellation cannot recall provider
+work already sent.
 
 Migration adds `unresolved` to the existing row without renaming the class or namespace or
 changing reactivation history. Existing R3 starts cannot establish completed outcomes: a

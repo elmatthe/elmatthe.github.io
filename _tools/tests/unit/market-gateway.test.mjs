@@ -234,7 +234,7 @@ test("mismatched, malformed and invalid upstream answers are refused (fail close
     assert.equal(r.body.price, undefined);
     assert.ok(!/query1|finance\.yahoo|<html/i.test(JSON.stringify(r.body)), "fixed messages only, never upstream text or URLs");
   }
-  for (const [flag, status, code] of [["huge", 502, "upstream_invalid"], ["redirect", 502, "upstream_invalid"], ["limited", 429, "upstream_rate_limited"], ["blocked", 502, "upstream_blocked"], ["down", 502, "upstream_unavailable"], ["networkError", 502, "upstream_unavailable"]]) {
+  for (const [flag, status, code] of [["huge", 502, "upstream_invalid"], ["redirect", 502, "upstream_invalid"], ["limited", 429, "upstream_rate_limited"], ["blocked", 502, "upstream_blocked"], ["down", 502, "upstream_unavailable"], ["networkError", 503, "busy"]]) { // R5/H2: no HTTP status, no known outcome
     const { get: g } = setup({ mode: { [flag]: true } });
     const r = await g(quote("AAPL"));
     assert.equal(r.status, status, flag);
@@ -661,12 +661,23 @@ test("B2: failed upstream requests give their place back", async () => {
   const { clock, held, starts, askAll } = heldGateway({ limits: { upstreamInFlight: 1, upstreamMinSpacingMs: 100 } });
   const [a, b] = await askAll(["AAPL", "MSFT"]);
   await until(() => starts.length === 1, "first start");
-  held.shift().reject(new TypeError("fetch failed"));
+  held.shift().status(503); // an observed failure is a known outcome
   assert.equal((await a).status, 502);
   await clock.advance(500);
   await until(() => starts.length === 2, "the next request starts after a failure");
   held.shift().ok();
   assert.equal((await b).status, 200);
+});
+
+test("B2/H2: a network failure before any HTTP status keeps its place quarantined", async () => {
+  const { clock, held, starts, askAll } = heldGateway({ limits: { upstreamInFlight: 1, upstreamMinSpacingMs: 100 } });
+  const [a, b] = await askAll(["AAPL", "MSFT"]);
+  await until(() => starts.length === 1, "first start");
+  held.shift().reject(new TypeError("fetch failed"));
+  assert.equal((await a).status, 503);
+  await clock.advance(500);
+  assert.equal((await b).status, 503);
+  assert.equal(starts.length, 1, "the provider may have refused the lost request: nothing else starts");
 });
 
 test("B2/H1: a request that never settles quarantines its expired place", async () => {

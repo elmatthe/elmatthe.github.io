@@ -61,3 +61,22 @@ sufficient, and a successful response or non-stopping refusal sometimes skipped 
 Scope is H1 only. M1 source activation inside the coordinator, M2 health protection,
 M3 production source-off/drain and Q1 unexpected-response policy remain separate work.
 Production 1.1.0 and the separate CPI Excel preservation issue are unchanged.
+
+## 2026-11-23: no HTTP status means no known outcome (PR 46 R5)
+
+The independent R4 review (Codex, FAIL, finding H2 High) reproduced in real workerd that a
+connection closed before response headers was finalized as ordinary unavailability: the
+marker was removed and, after a restart, another isolate reached the source. The source may
+have received the request and refused it; the refusal was lost with the connection.
+
+- Only an observed HTTP status finalizes a marker. A `fetch()` rejection with no response
+  retains the marker, quarantines the source and answers `busy`, like a timeout.
+- The breaker counter still counts the failure; the counter and the marker are separate.
+- A body lost after a status was observed finalizes that status (200 or a refusal).
+- Cost: any transport failure now needs the owner's reconciliation and a fresh identifier,
+  as a timeout already did. Workers cannot prove a failure happened before dispatch, so no
+  narrower exception was attempted.
+
+Not changed here, left for an owner decision: the review's M4 (a provisioned identifier
+the coordinator never observed is not bound to the incident it later clears) and L3
+(`cooldown_started` is logged before its write succeeds).
