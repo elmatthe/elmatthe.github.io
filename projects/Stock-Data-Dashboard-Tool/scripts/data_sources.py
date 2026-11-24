@@ -18,7 +18,7 @@ import pandas as pd
 
 from config import get_files_dir
 from market_data.errors import DataError
-from market_data.history import boc_history, history_by_sources
+from market_data.history import FX_HISTORY_SOURCES, history_by_sources, official_fx_history
 from market_data.sources import describe_skipped, short_failure
 
 MARKET_SOURCE = "Market data (your source list)"
@@ -84,6 +84,10 @@ class BaseDataSource:
         fail soft and keep native-currency behaviour.
         """
         return None
+
+    def prepare_fx(self, currencies, target: str, start_date: str, end_date: str) -> list[str]:
+        """Fetches what fetch_fx_rate needs for these currencies at once; returns warnings."""
+        return []
 
 
 OFFLINE_FOLDER_HELP = (
@@ -419,6 +423,8 @@ class SourceListHistorySource(BaseDataSource):
 
     def __init__(self, market) -> None:
         self.md = market
+        self._fx: dict | None = None
+        self.fx_sources: dict[str, str] = {}  # {native currency: where its rates came from}
 
     def is_configured(self) -> bool:
         return self.md.has_price_source("history")
@@ -462,26 +468,57 @@ class SourceListHistorySource(BaseDataSource):
         return PriceDataResult(identity["displayTicker"], identity.get("name") or identity["displayTicker"], currency, frame, warnings,
                                source=h["sourceName"], tried=tried, skipped=skipped)
 
-    def fetch_fx_rate(self, from_currency: str, to_currency: str, start_date: str, end_date: str, frequency: str) -> Optional[pd.Series]:
-        """`to` units per one `from` unit, from Bank of Canada daily averages (derived through CAD)."""
-        from_code, to_code = normalize_currency(from_currency), normalize_currency(to_currency)
-        if not from_code or not to_code or from_code == to_code:
-            return None
+    def prepare_fx(self, currencies, target: str, start_date: str, end_date: str) -> list[str]:
+        """Fetches the official daily rates for every listing currency of this comparison in
+        ONE request, as the browser tool does: the Bank of Canada, or the ECB when the Bank
+        does not publish one of the currencies or its answer fails. Currencies neither
+        publishes are left out (their series cannot be converted). Returns warnings."""
+        self._fx, warnings = self._official_rates(currencies, target, start_date, end_date)
+        self.fx_sources = {}
+        return warnings
+
+    def _official_rates(self, currencies, target: str, start_date: str, end_date: str) -> tuple[dict, list[str]]:
+        target_code = normalize_currency(target)
+        natives = sorted({normalize_currency(c) for c in currencies if c} - {"", target_code})
+        official = [c for c in natives if any(supports(c) for _name, supports, _fetch in FX_HISTORY_SOURCES)]
+        state = {"key": (start_date, end_date), "covers": set(official) | {target_code, "CAD"}, "series": {}, "provider": None}
+        if not official:
+            return state, []
         # Fixings from before the window, so a first price on a day without a fixing (a
         # Bank of Canada holiday) still gets the latest earlier one; align_fx_rate keeps the
         # 7-day limit. Same lookback as the browser tool.
         fx_start = (pd.Timestamp(start_date) - pd.Timedelta(days=FX_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
         try:
-            hist = boc_history(self.md, [from_code, to_code], fx_start, end_date)
-        except DataError:
+            result = official_fx_history(self.md, official + [target_code], fx_start, end_date)
+        except DataError as exc:
+            return state, [f"Official exchange rates are unavailable ({exc.message}); series in other currencies were left out."]
+        state.update(series=result["series"], provider=result["provider"])
+        return state, []
+
+    def fetch_fx_rate(self, from_currency: str, to_currency: str, start_date: str, end_date: str, frequency: str) -> Optional[pd.Series]:
+        """`to` units per one `from` unit on dates where both official fixings exist (derived
+        through CAD; boc.js crossHistory), from the rates prepare_fx fetched for this
+        comparison, or fetched now for this pair alone."""
+        from_code, to_code = normalize_currency(from_currency), normalize_currency(to_currency)
+        if not from_code or not to_code or from_code == to_code:
             return None
-        def cad_per(code: str) -> pd.Series:
-            if code == "CAD":
-                return pd.Series(1.0, index=pd.to_datetime(sorted({d for v in hist.values() for d, _ in v})))
-            return pd.Series({pd.Timestamp(d): v for d, v in hist.get(code, [])}).sort_index()
-        a, b = cad_per(from_code), cad_per(to_code)
-        rate = (a / b).dropna()
-        return rate if not rate.empty else None
+        state = getattr(self, "_fx", None)
+        if not state or state["key"] != (start_date, end_date) or not {from_code, to_code} <= state["covers"]:
+            state, _warnings = self._official_rates([from_code], to_code, start_date, end_date)
+        if not state["provider"]:
+            return None
+        points = {code: dict(state["series"].get(code, [])) for code in (from_code, to_code)}
+        if from_code == "CAD":
+            rate = {d: 1.0 / v for d, v in points[to_code].items()}
+        elif to_code == "CAD":
+            rate = points[from_code]
+        else:
+            rate = {d: v / points[to_code][d] for d, v in points[from_code].items() if d in points[to_code]}
+        if not rate:
+            return None
+        # Same wording as the browser's fxSources.
+        self.fx_sources[from_code] = f"{state['provider']} daily rates{' (derived via CAD)' if 'CAD' not in (from_code, to_code) else ''}"
+        return pd.Series({pd.Timestamp(d): r for d, r in rate.items()}, dtype=float).sort_index()
 
 
 def get_data_source(name: str, offline_folder: str | None = None, market=None) -> BaseDataSource:

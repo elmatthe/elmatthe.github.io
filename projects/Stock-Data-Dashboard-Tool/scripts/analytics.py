@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import math
 from itertools import combinations
 
@@ -123,24 +124,98 @@ def normalize_price_frames_to_currency(
     return converted, warnings, result_currencies
 
 
+def _positive_prices(prices: pd.DataFrame, ticker: str) -> pd.Series:
+    series = pd.to_numeric(prices[ticker], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    return series[series > 0].sort_index()
+
+
+def _period_returns(series: pd.Series, return_type: str) -> pd.Series:
+    if return_type.strip().lower().startswith("log"):
+        return np.log(series / series.shift(1))
+    return series / series.shift(1) - 1
+
+
 def compute_returns(prices: pd.DataFrame, return_type: str = "simple") -> pd.DataFrame:
-    """Simple or log returns, computed on EACH ticker's own price series (D1).
+    """Simple or log returns, computed on EACH ticker's own price series (D1), dated by
+    the end of each return's interval.
 
     Tickers on different exchange calendars are not forced onto one union of dates:
-    a holiday on one exchange no longer removes the other tickers' returns.
+    a holiday on one exchange no longer removes the other tickers' returns. Rows of
+    this table are NOT pairs: two tickers' returns on the same row can span different
+    intervals. Correlation and regression use compute_interval_returns instead.
     """
     columns = {}
     for ticker in prices.columns:
-        series = pd.to_numeric(prices[ticker], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
-        series = series[series > 0]
-        if return_type.strip().lower().startswith("log"):
-            r = np.log(series / series.shift(1))
-        else:
-            r = series / series.shift(1) - 1
-        columns[ticker] = r.dropna()
+        columns[ticker] = _period_returns(_positive_prices(prices, ticker), return_type).dropna()
     if not columns:
         return pd.DataFrame()
     return pd.concat(columns, axis=1).sort_index().dropna(how="all")
+
+
+def period_label(date, frequency: str = "daily") -> str:
+    """The period a price belongs to, as the browser tool labels it (analytics.js
+    periodLabel): the date for daily prices, the ISO week (2026-W14) for weekly prices
+    and the month (2026-04) for monthly prices."""
+    stamp = pd.Timestamp(date)
+    normalized = (frequency or "daily").strip().lower()
+    if normalized == "weekly":
+        iso = stamp.isocalendar()
+        return f"{iso[0]}-W{iso[1]:02d}"
+    if normalized == "monthly":
+        return stamp.strftime("%Y-%m")
+    return stamp.strftime("%Y-%m-%d")
+
+
+def compute_interval_returns(prices: pd.DataFrame, return_type: str = "simple", frequency: str = "daily") -> pd.DataFrame:
+    """Each ticker's returns keyed by their exact interval, "<start period>|<end period>".
+
+    Same rule as the browser tool (analytics.js alignLogReturns / pairReturns): two
+    tickers' returns are paired only when both span the same interval. A two-day return
+    across one exchange's holiday is never paired with another exchange's one-day return
+    that merely ends on the same date. Weekly and monthly returns pair by ISO week and
+    month, so a Thursday close (Friday holiday) pairs with another market's Friday close.
+    Rows are intervals in chronological order; a ticker without a return over an
+    interval has no value on that row. Use for correlation, beta and regression.
+    """
+    columns = {}
+    for ticker in prices.columns:
+        series = _positive_prices(prices, ticker)
+        values = _period_returns(series, return_type).to_numpy()[1:]
+        labels = [period_label(d, frequency) for d in series.index]
+        keys = [f"{start}|{end}" for start, end in zip(labels[:-1], labels[1:])]
+        returns = pd.Series(values, index=pd.Index(keys, dtype=object), dtype=float).dropna()
+        columns[ticker] = returns[~returns.index.duplicated(keep="last")]
+    if not columns:
+        return pd.DataFrame()
+    return pd.concat(columns, axis=1).sort_index().dropna(how="all")
+
+
+def interval_end_dates(index: pd.Index) -> pd.DatetimeIndex:
+    """The end of each "<start>|<end>" interval key as a date (for charts): the day for
+    daily keys, the Friday of an ISO week and the last day of a month."""
+    def end_of(key: str) -> pd.Timestamp:
+        end = str(key).split("|")[-1]
+        if "-W" in end:
+            year, week = end.split("-W")
+            return pd.Timestamp(dt.date.fromisocalendar(int(year), int(week), 5))
+        if len(end) == 7:
+            return pd.Period(end, freq="M").end_time.normalize()
+        return pd.Timestamp(end)
+    return pd.DatetimeIndex([end_of(k) for k in index])
+
+
+def paired_observation_counts(paired: pd.DataFrame) -> pd.DataFrame:
+    """Number of identical intervals each pair of tickers shares."""
+    present = paired.notna().astype(int)
+    return present.T.dot(present)
+
+
+def short_overlap_warnings(paired: pd.DataFrame) -> list[str]:
+    """One warning per pair sharing fewer intervals than a correlation or beta needs."""
+    counts = paired_observation_counts(paired)
+    return [f"{left} and {right} share only {int(counts.loc[left, right])} identical return interval(s); "
+            f"correlation and beta need at least {MIN_CORRELATION_OBSERVATIONS}, so they are left blank."
+            for left, right in combinations(paired.columns, 2) if counts.loc[left, right] < MIN_CORRELATION_OBSERVATIONS]
 
 
 def compute_max_drawdown(price_series: pd.Series) -> float:
@@ -158,15 +233,28 @@ def _annualized_return(total_return: float, observations: int, periods_per_year:
     return float((1 + total_return) ** (periods_per_year / observations) - 1)
 
 
+def risk_free_per_period(risk_free_rate: float, periods_per_year: int, return_type: str = "simple") -> float:
+    """The risk-free return per period on the same basis as the returns it is subtracted
+    from: rf / P for simple returns, ln(1 + rf) / P for log (continuously compounded)
+    returns, as the browser tool does. Subtracting rf / P from log returns understated
+    Sharpe and alpha (by 0.18 in Sharpe at a 25% rate and 15% volatility)."""
+    if not periods_per_year:
+        return 0.0
+    if str(return_type).strip().lower().startswith("log"):
+        return math.log1p(risk_free_rate) / periods_per_year
+    return risk_free_rate / periods_per_year
+
+
 def compute_dashboard_metrics(
     prices: pd.DataFrame,
     returns: pd.DataFrame,
     periods_per_year: int,
     risk_free_rate: float = 0.0,
+    return_type: str = "simple",
 ) -> pd.DataFrame:
     """Return per-ticker performance and risk metrics."""
     rows = []
-    risk_free_rate_per_period = risk_free_rate / periods_per_year if periods_per_year else 0.0
+    risk_free_rate_per_period = risk_free_per_period(risk_free_rate, periods_per_year, return_type)
     window_start = prices.index.min() if len(prices.index) else None
     window_end = prices.index.max() if len(prices.index) else None
     slack = pd.Timedelta(days={252: 7, 52: 10, 12: 35}.get(periods_per_year, 7))
@@ -215,14 +303,24 @@ MIN_RETURN_STDEV = 1e-9
 
 
 def compute_correlation_matrix(returns: pd.DataFrame) -> pd.DataFrame:
-    """Pairwise correlation over shared return dates; at least 3 shared returns (D8),
-    and none for a series without variance."""
-    corr = returns.corr(min_periods=MIN_CORRELATION_OBSERVATIONS)
-    for ticker in returns.columns:
-        values = returns[ticker].dropna()
-        if len(values) < 2 or values.std(ddof=1) <= MIN_RETURN_STDEV:
-            corr.loc[ticker, :] = float("nan")
-            corr.loc[:, ticker] = float("nan")
+    """Pearson correlation of each pair over the rows both tickers have values on.
+
+    Pass compute_interval_returns' table so rows are identical intervals (same rule as
+    the browser's correlationMatrix). A pair needs at least 3 shared returns (D8) and
+    variance in both of its paired series; otherwise its correlation is blank."""
+    tickers = list(returns.columns)
+    corr = pd.DataFrame(float("nan"), index=tickers, columns=tickers)
+    for left in tickers:
+        for right in tickers:
+            both = returns[left].notna() & returns[right].notna()
+            x = returns.loc[both, left].to_numpy(dtype=float)
+            y = returns.loc[both, right].to_numpy(dtype=float)
+            if len(x) < MIN_CORRELATION_OBSERVATIONS or not (x.std(ddof=1) > MIN_RETURN_STDEV and y.std(ddof=1) > MIN_RETURN_STDEV):
+                continue
+            dx, dy = x - x.mean(), y - y.mean()
+            denominator = math.sqrt(float((dx * dx).sum()) * float((dy * dy).sum()))
+            if denominator:
+                corr.loc[left, right] = float((dx * dy).sum()) / denominator
     return corr
 
 

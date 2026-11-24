@@ -181,3 +181,177 @@ def test_reused_ticker_history_excludes_the_older_security_at_every_frequency(mo
     assert weekly.prices.index.min() >= pd.Timestamp("2026-06-12")
     # Another listing is untouched.
     assert src.fetch_prices("AAPL", "2026-01-05", "2026-10-30", "Adjusted Close", "Daily").prices.index.min() == days[0]
+
+
+# --- Historical exchange rates: Bank of Canada first, ECB as the fallback (as fx.js) -------
+#
+# ECB fixture: euro reference rates on TARGET days from 2026-03-16 to 2026-04-17. TARGET is
+# closed on Good Friday (04-03) and Easter Monday (04-06); CAD is missing on 04-14, so no
+# CAD-per-unit rate exists that day. A row dated 05-29 (after every window below) is served
+# regardless of endPeriod, to prove a fixing after the window is never used.
+
+ECB_DAYS = [str(d.date()) for d in pd.bdate_range("2026-03-16", "2026-04-17") if str(d.date()) not in ("2026-04-03", "2026-04-06")]
+ECB_PER_EUR = {"CAD": {d: 1.50 + 0.001 * i for i, d in enumerate(ECB_DAYS) if d != "2026-04-14"},
+               "USD": {d: 1.08 + 0.0005 * i for i, d in enumerate(ECB_DAYS)},
+               "GBP": {d: 0.86 - 0.0002 * i for i, d in enumerate(ECB_DAYS)},
+               "CZK": {d: 25.0 + 0.01 * i for i, d in enumerate(ECB_DAYS)}}
+ECB_FUTURE = "2026-05-29"
+
+
+def ecb_csv(codes, start, end, future=True):
+    rows = ["KEY,FREQ,CURRENCY,CURRENCY_DENOM,EXR_TYPE,EXR_SUFFIX,TIME_PERIOD,OBS_VALUE"]
+    for code in codes:
+        for day, value in ECB_PER_EUR[code].items():
+            if start <= day <= end:
+                rows.append(f"EXR.D.{code}.EUR.SP00.A,D,{code},EUR,SP00,A,{day},{value!r}")
+        if code == "CAD":
+            rows.append(f"EXR.D.CAD.EUR.SP00.A,D,CAD,EUR,SP00,A,2026-04-14,NaN")
+        if future:
+            rows.append(f"EXR.D.{code}.EUR.SP00.A,D,{code},EUR,SP00,A,{ECB_FUTURE},99")
+    return "\n".join(rows) + "\n"
+
+
+def fx_http(boc=(503, "unavailable"), ecb_status=200, asked=None):
+    """Bank of Canada answers `boc`; the ECB answers from the fixture for the requested period."""
+    def http(url, headers):
+        u = urlparse(url)
+        q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        if asked is not None:
+            asked.append((u.netloc, u.path, q))
+        if u.netloc == "www.bankofcanada.ca":
+            return boc
+        if u.netloc == "data-api.ecb.europa.eu":
+            codes = u.path.split("/D.")[1].split(".EUR")[0].split("+")
+            return ecb_status, ecb_csv(codes, q["startPeriod"], q["endPeriod"]) if ecb_status == 200 else "error"
+        raise AssertionError(f"unexpected request {url}")
+    return http
+
+
+def fx_source(http):
+    return source(MarketData(None, http=http, sleep=lambda s: None, pacing_override_ms=0, gateway_url=""))
+
+
+def cad_per(code, day):
+    """Independent expectation: CAD per one unit = (CAD per EUR) / (unit per EUR)."""
+    cad = ECB_PER_EUR["CAD"].get(day)
+    if code == "EUR":
+        return cad
+    return None if cad is None else cad / ECB_PER_EUR[code][day]
+
+
+def test_ecb_fallback_when_the_bank_of_canada_fails():
+    asked = []
+    src = fx_source(fx_http(asked=asked))
+    assert src.prepare_fx(["USD", "GBP"], "CAD", "2026-04-01", "2026-04-17") == []
+    hosts = [a[0] for a in asked]
+    assert hosts == ["www.bankofcanada.ca", "data-api.ecb.europa.eu"], "Bank of Canada first, one ECB request for every currency"
+    ecb = asked[1]
+    assert ecb[1].endswith("/D.CAD+GBP+USD.EUR.SP00.A") and ecb[2]["startPeriod"] == "2026-03-18" and ecb[2]["endPeriod"] == "2026-04-17"
+    usd = src.fetch_fx_rate("USD", "CAD", "2026-04-01", "2026-04-17", "Daily")
+    expected = {d: cad_per("USD", d) for d in ECB_DAYS if "2026-03-18" <= d <= "2026-04-17" and cad_per("USD", d)}
+    assert [str(d.date()) for d in usd.index] == sorted(expected)
+    assert usd.tolist() == pytest.approx([expected[d] for d in sorted(expected)], rel=1e-12)
+    assert "2026-04-14" not in expected and ECB_FUTURE not in [str(d.date()) for d in usd.index]
+    gbp_usd = src.fetch_fx_rate("GBP", "USD", "2026-04-01", "2026-04-17", "Daily")
+    assert gbp_usd.loc["2026-04-09"] == pytest.approx(cad_per("GBP", "2026-04-09") / cad_per("USD", "2026-04-09"), rel=1e-12)
+    assert len(asked) == 2, "both pairs came from the one ECB answer"
+    assert src.fx_sources == {"USD": "European Central Bank daily rates", "GBP": "European Central Bank daily rates (derived via CAD)"}
+
+
+def test_bank_of_canada_stays_primary_and_ecb_serves_what_it_does_not_publish():
+    asked = []
+    boc_body = json.dumps({"observations": [{"d": "2026-04-09", "FXUSDCAD": {"v": "1.3800"}}]})
+    src = fx_source(fx_http(boc=(200, boc_body), asked=asked))
+    src.prepare_fx(["USD"], "CAD", "2026-04-09", "2026-04-09")
+    assert [a[0] for a in asked] == ["www.bankofcanada.ca"], "the ECB is not asked when the Bank of Canada answers"
+    assert src.fetch_fx_rate("USD", "CAD", "2026-04-09", "2026-04-09", "Daily").tolist() == [1.38]
+    assert src.fx_sources == {"USD": "Bank of Canada daily rates"}
+    # CZK is not a Bank of Canada series: the whole request (USD too) comes from the ECB, as in the browser.
+    asked.clear()
+    src.prepare_fx(["CZK", "USD"], "CAD", "2026-04-01", "2026-04-17")
+    assert [a[0] for a in asked] == ["data-api.ecb.europa.eu"]
+    assert src.fetch_fx_rate("CZK", "CAD", "2026-04-01", "2026-04-17", "Daily").loc["2026-04-09"] == pytest.approx(cad_per("CZK", "2026-04-09"), rel=1e-12)
+    assert src.fetch_fx_rate("USD", "CAD", "2026-04-01", "2026-04-17", "Daily").loc["2026-04-09"] == pytest.approx(cad_per("USD", "2026-04-09"), rel=1e-12)
+
+
+def test_invalid_bank_of_canada_answer_falls_back_and_total_failure_invents_nothing():
+    from analytics import normalize_price_frames_to_currency
+    bad = json.dumps({"observations": [{"d": "2026-04-09", "FXUSDCAD": {"v": "0"}}]})
+    src = fx_source(fx_http(boc=(200, bad)))
+    assert src.prepare_fx(["USD"], "CAD", "2026-04-01", "2026-04-17") == []
+    assert src.fx_sources == {} and src._fx["provider"] == "European Central Bank"
+    src = fx_source(fx_http(boc=(200, "not json"), ecb_status=500))
+    warnings = src.prepare_fx(["USD"], "CAD", "2026-04-01", "2026-04-17")
+    assert warnings == ["Official exchange rates are unavailable (Official exchange rates could not be retrieved (Bank of Canada: Bank of Canada "
+                        "response was not JSON; European Central Bank: ECB HTTP 500).); series in other currencies were left out."]
+    frame = pd.DataFrame({"Close": [10.0, 11.0]}, index=pd.to_datetime(["2026-04-08", "2026-04-09"]))
+    out, notes, currencies = normalize_price_frames_to_currency({"SPY": frame}, {"SPY": "USD"}, "CAD",
+                                                                lambda a, b: src.fetch_fx_rate(a, b, "2026-04-01", "2026-04-17", "Daily"))
+    assert out == {} and currencies == {} and any("left out" in n for n in notes), "never converted with an invented rate, never kept unconverted"
+    # A currency neither bank publishes is not requested at all.
+    asked = []
+    assert fx_source(fx_http(asked=asked)).prepare_fx(["ARS"], "CAD", "2026-04-01", "2026-04-17") == [] and asked == []
+
+
+def test_ecb_holidays_use_the_previous_fixing_within_seven_days_and_never_a_later_one():
+    from analytics import normalize_price_frames_to_currency
+    src = fx_source(fx_http())
+    days = pd.to_datetime(["2026-04-02", "2026-04-03", "2026-04-06", "2026-04-14", "2026-04-17"])
+    frame = pd.DataFrame({"Close": [100.0, 101, 102, 103, 104], "Adj Close": [100.0, 101, 102, 103, 104]}, index=days)
+    provider = lambda a, b: src.fetch_fx_rate(a, b, "2026-04-02", "2026-04-17", "Daily")  # noqa: E731
+    src.prepare_fx(["USD"], "CAD", "2026-04-02", "2026-04-17")
+    out, notes, _ = normalize_price_frames_to_currency({"SPY": frame}, {"SPY": "USD"}, "CAD", provider)
+    # Good Friday and Easter Monday (no ECB fixing) use Thursday's; 04-14 (no CAD rate) uses 04-13's.
+    expected = [100 * cad_per("USD", "2026-04-02"), 101 * cad_per("USD", "2026-04-02"), 102 * cad_per("USD", "2026-04-02"),
+                103 * cad_per("USD", "2026-04-13"), 104 * cad_per("USD", "2026-04-17")]
+    assert out["SPY"]["Close"].tolist() == pytest.approx(expected, rel=1e-12) and notes == []
+    # A price more than 7 days after the last fixing in the window is dropped, not converted with a later one.
+    late = pd.DataFrame({"Close": [100.0, 101.0, 102.0]}, index=pd.to_datetime(["2026-04-16", "2026-04-17", "2026-04-27"]))
+    src.prepare_fx(["USD"], "CAD", "2026-04-16", "2026-04-27")
+    out, notes, _ = normalize_price_frames_to_currency({"SPY": late}, {"SPY": "USD"}, "CAD",
+                                                       lambda a, b: src.fetch_fx_rate(a, b, "2026-04-16", "2026-04-27", "Daily"))
+    assert list(out["SPY"].index) == list(late.index[:2]), "04-27 is 10 days after the last fixing (04-17); the later 05-29 row is never used"
+    assert any("1 price(s) had no USD->CAD fixing within 7 days" in n for n in notes)
+
+
+_JS_RUNNER = Path(__file__).resolve().parents[4] / "_tools" / "tests" / "js_engines.mjs"
+
+
+@pytest.mark.skipif(__import__("shutil").which("node") is None or not _JS_RUNNER.exists(), reason="needs Node.js and the site's market-data code")
+@pytest.mark.parametrize("boc,codes,pairs", [
+    ((503, "unavailable"), ["USD", "GBP", "CAD"], [["USD", "CAD"], ["GBP", "USD"], ["CAD", "USD"], ["GBP", "CAD"]]),
+    ((200, json.dumps({"observations": [{"d": "2026-04-09", "FXUSDCAD": {"v": "-1"}}]})), ["EUR", "USD", "CAD"], [["EUR", "USD"], ["CAD", "EUR"]]),
+    ((200, json.dumps({"observations": []})), ["CZK", "USD", "CAD"], [["CZK", "USD"], ["USD", "CAD"]]),
+])
+def test_desktop_and_browser_take_the_same_historical_rates(boc, codes, pairs):
+    """The same Bank of Canada and ECB answers give the same provider and the same dated
+    rates on both platforms (the fixture serves only the requested period here, as the
+    real APIs do)."""
+    import subprocess
+    start, end = "2026-03-18", "2026-04-17"
+    ecb_codes = sorted({c for c in codes if c not in ("EUR",)} | {"CAD"})
+    case = {"responses": {"boc": {"status": boc[0], "body": boc[1]}, "ecb": {"status": 200, "body": ecb_csv(ecb_codes, start, end, future=False)}},
+            "codes": codes, "start": start, "end": end, "pairs": pairs}
+    run = subprocess.run(["node", str(_JS_RUNNER)], input=json.dumps({"tool": "fx-history", "cases": [case]}),
+                         capture_output=True, text=True, encoding="utf-8", timeout=120, check=False)
+    assert run.returncode == 0, run.stderr
+    web = json.loads(run.stdout)[0]
+    assert "error" not in web, web
+    assert web["provider"] == "European Central Bank"
+
+    def http(url, headers):
+        u = urlparse(url)
+        if u.netloc == "www.bankofcanada.ca":
+            return boc
+        return 200, ecb_csv(ecb_codes, start, end, future=False)
+
+    src = fx_source(http)
+    target = pairs[0][1]
+    # The desktop requests from 14 days before the window's start; pass the start that gives the browser's period.
+    desktop_start = (pd.Timestamp(start) + pd.Timedelta(days=14)).strftime("%Y-%m-%d")
+    assert src.prepare_fx([c for c in codes if c != target], target, desktop_start, end) == []
+    assert src._fx["provider"] == web["provider"]
+    for (frm, to), points in zip(pairs, web["pairs"]):
+        rate = src.fetch_fx_rate(frm, to, desktop_start, end, "Daily")
+        assert [str(d.date()) for d in rate.index] == [p["date"] for p in points], (frm, to)
+        assert rate.tolist() == pytest.approx([p["rate"] for p in points], rel=1e-12), (frm, to)

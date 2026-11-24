@@ -17,8 +17,11 @@ from analytics import (
     align_price_series,
     compute_correlation_matrix,
     compute_dashboard_metrics,
+    compute_interval_returns,
     compute_returns,
     find_diversification_flags,
+    risk_free_per_period,
+    short_overlap_warnings,
     normalize_price_frames_to_currency,
     run_all_pairwise_regressions,
     run_benchmark_regressions,
@@ -65,15 +68,17 @@ MULTI_CURRENCY_WARNING = (
 )
 
 
-def format_fx_normalization_note(target_currency: str, source_name: str) -> str:
+def format_fx_normalization_note(target_currency: str, source_name: str, fx_sources: dict[str, str] | None = None) -> str:
     if source_name == "Offline CSV":
         return (
             f"FX normalization ON - all series converted to {target_currency} using bundled "
             "Offline CSV FX rates (test-files/fx_rates.csv)."
         )
+    used = "; ".join(f"{cur}->{target_currency} from {src}" for cur, src in sorted((fx_sources or {}).items()))
     return (
-        f"FX normalization ON - series converted to {target_currency} with official Bank of Canada daily rates "
-        "(the latest fixing on or before each price date, at most 7 days old; series that cannot be converted are left out)."
+        f"FX normalization ON - series converted to {target_currency} with official daily rates "
+        f"({used + '; ' if used else ''}Bank of Canada first, European Central Bank if the Bank of Canada cannot answer; "
+        "the latest fixing on or before each price date, at most 7 days old; series that cannot be converted are left out)."
     )
 
 
@@ -554,11 +559,15 @@ class StockAnalyticsApp(tk.Tk):
                 def _fx_provider(native: str, target: str) -> object:
                     return source.fetch_fx_rate(native, target, settings["start"], settings["end"], settings["frequency"])
 
+                warnings.extend(source.prepare_fx(currencies.values(), target_currency, settings["start"], settings["end"]))
                 price_frames, fx_warnings, effective_currencies = normalize_price_frames_to_currency(
                     price_frames, currencies, target_currency, _fx_provider
                 )
                 warnings.extend(fx_warnings)
-                warnings.append(format_fx_normalization_note(target_currency, settings["source"]))
+                fx_sources = dict(getattr(source, "fx_sources", {}) or {})
+                warnings.append(format_fx_normalization_note(target_currency, settings["source"], fx_sources))
+                if fx_sources:
+                    settings["fx_sources"] = "; ".join(f"{cur}->{target_currency} from {src}" for cur, src in sorted(fx_sources.items()))
             else:
                 detected = {currency for currency in currencies.values() if currency}
                 if len(detected) > 1:
@@ -568,23 +577,26 @@ class StockAnalyticsApp(tk.Tk):
             prices = align_price_series(price_frames, price_column)
             prices.attrs["currencies"] = effective_currencies
             returns = compute_returns(prices, settings["return_type"])
+            # Correlation, beta and regression pair only returns over identical intervals.
+            paired = compute_interval_returns(prices, settings["return_type"], settings["frequency"])
             periods_per_year = get_periods_per_year(settings["frequency"])
-            metrics = compute_dashboard_metrics(prices, returns, periods_per_year, settings["risk_free_rate"])
-            corr = compute_correlation_matrix(returns)
-            risk_free_per_period = settings["risk_free_rate"] / periods_per_year
+            metrics = compute_dashboard_metrics(prices, returns, periods_per_year, settings["risk_free_rate"], settings["return_type"])
+            corr = compute_correlation_matrix(paired)
+            warnings.extend(short_overlap_warnings(paired))
+            rf_per_period = risk_free_per_period(settings["risk_free_rate"], periods_per_year, settings["return_type"])
 
             requested_benchmark = settings["benchmark"]
-            benchmark = requested_benchmark if requested_benchmark in returns.columns else returns.columns[0]
-            if requested_benchmark and requested_benchmark not in returns.columns:
+            benchmark = requested_benchmark if requested_benchmark in paired.columns else paired.columns[0]
+            if requested_benchmark and requested_benchmark not in paired.columns:
                 warnings.append(f"Selected benchmark {requested_benchmark} is not part of the current comparison set, so regression and rolling correlation used {benchmark} instead.")
             if settings["regression_mode"] == "Pairwise":
-                regressions = run_all_pairwise_regressions(returns, risk_free_per_period)
+                regressions = run_all_pairwise_regressions(paired, rf_per_period)
             else:
-                regressions = run_benchmark_regressions(returns, benchmark, risk_free_per_period)
+                regressions = run_benchmark_regressions(paired, benchmark, rf_per_period)
 
             timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
             plots_dir = get_plots_dir()
-            rolling_returns, rolling_periods_per_year, rolling_window, rolling_label = self._rolling_chart_inputs(
+            rolling_returns, rolling_paired, rolling_periods_per_year, rolling_window, rolling_label = self._rolling_chart_inputs(
                 prices,
                 returns,
                 settings["frequency"],
@@ -604,9 +616,9 @@ class StockAnalyticsApp(tk.Tk):
                     rolling_label,
                 ),
             }
-            if benchmark in rolling_returns.columns and len(rolling_returns.columns) > 1:
+            if benchmark in rolling_paired.columns and len(rolling_paired.columns) > 1:
                 plot_paths["Rolling Correlation"] = plot_rolling_correlation_vs_benchmark(
-                    rolling_returns,
+                    rolling_paired,
                     benchmark,
                     str(plots_dir / f"rolling_correlation_vs_benchmark_{timestamp}.png"),
                     rolling_window,
@@ -618,8 +630,8 @@ class StockAnalyticsApp(tk.Tk):
                 for index, regression in regressions.iterrows():
                     key = self._regression_key(regression)
                     scatter_path = plot_regression_scatter(
-                        returns[regression["X Ticker"]],
-                        returns[regression["Y Ticker"]],
+                        paired[regression["X Ticker"]],
+                        paired[regression["Y Ticker"]],
                         regression.to_dict(),
                         str(plots_dir / f"regression_scatter_{index}_{timestamp}.png"),
                     )
@@ -694,17 +706,20 @@ class StockAnalyticsApp(tk.Tk):
         returns: pd.DataFrame,
         frequency: str,
         return_type: str,
-    ) -> tuple[pd.DataFrame, int, int, str]:
+    ) -> tuple[pd.DataFrame, pd.DataFrame, int, int, str]:
+        """(returns for rolling volatility, interval-paired returns for rolling correlation,
+        periods per year, window, label)."""
         normalized = frequency.strip().lower()
         if normalized == "daily":
             monthly_prices = prices.resample("ME").last().dropna(how="all")
-            monthly_returns = compute_returns(monthly_prices, return_type)
-            return monthly_returns, 12, 12, "12-month window"
+            return (compute_returns(monthly_prices, return_type), compute_interval_returns(monthly_prices, return_type, "monthly"),
+                    12, 12, "12-month window")
+        paired = compute_interval_returns(prices, return_type, frequency)
         if normalized == "weekly":
-            return returns, 52, 26, "26-week window"
+            return returns, paired, 52, 26, "26-week window"
         if normalized == "monthly":
-            return returns, 12, 12, "12-month window"
-        return returns, get_periods_per_year(frequency), self._rolling_window(frequency), f"{self._rolling_window(frequency)} periods"
+            return returns, paired, 12, 12, "12-month window"
+        return returns, paired, get_periods_per_year(frequency), self._rolling_window(frequency), f"{self._rolling_window(frequency)} periods"
 
     def _copy_website_assets(self, plot_paths: dict[str, str]) -> dict[str, str]:
         name_map = {
@@ -797,7 +812,7 @@ class StockAnalyticsApp(tk.Tk):
         fields = [
             ("Y ticker", "Y Ticker"),
             ("X ticker", "X Ticker"),
-            ("Alpha", "alpha"),
+            ("Alpha (per period, not annualized)", "alpha"),
             ("Beta", "beta"),
             ("R-squared", "r_squared"),
             ("Observations", "observations"),

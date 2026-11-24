@@ -15,7 +15,7 @@ A separate browser version runs on the project page with nothing to install:
 ## Features
 - Multi-ticker comparison (stocks, ETFs, indexes, funds)
 - Price history from your ordered source list (Yahoo Finance with no key; Alpha Vantage, Marketstack or Alpaca with your own key), or Offline CSV
-- Currency normalization to USD/CAD/EUR/GBP with official Bank of Canada daily rates
+- Currency normalization to USD/CAD/EUR/GBP with official Bank of Canada daily rates (ECB fallback)
 - Dashboard metrics, correlation matrix and diversification summary
 - Regression analytics (each vs benchmark, or pairwise)
 - In-app chart viewer
@@ -143,9 +143,12 @@ Use **Normalize to currency** to convert every security into USD, CAD, EUR or GB
 any metrics or charts are computed, so cross-currency comparisons reflect true performance
 instead of FX drift. **Off (native listing currency)** is the default.
 
-- FX rates are official Bank of Canada daily averages, derived through CAD. Each price uses
-  the latest fixing on or before its date, at most 7 days old; nothing is back-filled (no
-  look-ahead). Prices are converted first, then returns are derived.
+- FX rates are official Bank of Canada daily averages, derived through CAD. When the Bank of
+  Canada cannot answer, or does not publish one of the currencies, the European Central Bank's
+  euro reference rates are used for all of them instead (the log names the source of each
+  currency's rates). Each price uses the latest fixing on or before its date, at most 7 days
+  old; nothing is back-filled (no look-ahead). Prices are converted first, then returns are
+  derived.
 - Securities already in the target currency are left unchanged.
 - A security that cannot be converted (unknown currency, no fixing) is left out of the
   normalized comparison with a clear message; it is never mixed in unconverted.
@@ -162,11 +165,16 @@ exports.
 - Free provider plans have small request allowances (see above); the window shows how many
   requests this computer sent. Your provider counts every use of the key.
 - Each ticker's returns are computed on its own price series, so exchange holidays elsewhere
-  do not remove its returns; correlations use dates where both have returns (at least 3).
+  do not remove its returns. Correlation, beta and regression pair only returns over the same
+  interval (the same previous and current date; the same weeks or months for weekly or monthly
+  prices), at least 3 of them: a return across one market's holiday is not paired with
+  another market's one-day return.
+- In Log returns mode, Sharpe ratio and alpha subtract the continuously compounded
+  risk-free rate, ln(1 + rate); alpha is per period, not annualized.
 - Weekly and monthly bars are dated by their last trading day; the period still trading is
   left out.
 - The browser version on the project page shares this tool's purpose and providers but not
-  its code: it uses log returns with exact-interval correlation and an offline demo.
+  its code: it always uses log returns and has an offline demo.
 - The app does not save comparison profiles; export results when you want to keep them.
 
 ## Project Structure

@@ -103,6 +103,7 @@ node montecarlo.test.js   # Monte Carlo web app, seeded runs, no network, export
 node cpi.test.js          # CPI web app: Canadian-only, mocked gateway, failures, 12-month pages, CSV, layout
 node freesource.test.js   # Yahoo Finance in the Rebalancer and Stock apps against the real gateway code (Yahoo mocked)
 node sources.test.js      # the ordered source list: drag/keyboard reordering, persistence, keys, fallback chain, stale data, phone width
+PYTHON=python node exports.test.js  # every export file of the four apps read back and recomputed (needs openpyxl and numpy)
 node live.test.js         # OPTIONAL: real Bank of Canada / ECB; Alpha Vantage only with ALPHAVANTAGE_KEY
 ```
 

@@ -13,12 +13,15 @@ Sources (same list, catalog and pacing as quotes):
 Every series is checked for the symbol, exchange and currency it claims, and dates are
 strict YYYY-MM-DD trading dates. Prices from before a listing's date belong to a different
 security that used the same ticker and are removed (cut_to_listing). Exchange-rate history
-comes from the Bank of Canada.
+comes from the Bank of Canada, with the ECB as the fallback (official_fx_history).
 """
 from __future__ import annotations
 
+import csv
 import datetime as dt
+import io
 import json
+import math
 import re
 from urllib.parse import quote as urlquote, urlencode
 
@@ -27,7 +30,7 @@ from .adapters import date_in, normalize_currency
 from .catalog import PROVIDERS, venue_matches
 from . import sources as src
 from .errors import DataError
-from .fx import BOC_BASE, BOC_CURRENCIES, BOC_PROVIDER
+from .fx import BOC_BASE, BOC_CURRENCIES, BOC_PROVIDER, ECB_BASE, ECB_CURRENCIES, ECB_PROVIDER
 from .gateway import GATEWAY_ID
 
 DAILY_WINDOW_DAYS = 135
@@ -217,8 +220,19 @@ def _alpaca(md, s, identity, symbol, start, end, cancelled) -> dict:
             "frequency": "daily", "provider": "Alpaca", "symbol": symbol, "hasAdjusted": True, "currencyVerified": True}
 
 
+def _fixing(value, what: str, day: str, provider: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = float("nan")
+    if not (math.isfinite(number) and number > 0):
+        raise DataError(f"{provider} {what} had an invalid value on {day}", kind="invalid", provider=provider)
+    return number
+
+
 def boc_history(md, codes: list[str], start: str, end: str) -> dict[str, list[tuple[str, float]]]:
-    """{CODE: [(date, CAD per unit)]} from Bank of Canada daily averages (keyless)."""
+    """{CODE: [(date, CAD per unit)]} from Bank of Canada daily averages (keyless).
+    Mirrors boc.js parseObservations: an invalid value fails the whole answer."""
     wanted = sorted({c for c in codes if c and c != "CAD"})
     if not wanted:
         return {}
@@ -229,18 +243,87 @@ def boc_history(md, codes: list[str], start: str, end: str) -> dict[str, list[tu
     status, text = md.http(url, {"Accept": "application/json"})
     if status != 200:
         raise DataError(f"Bank of Canada HTTP {status}", kind="unavailable", provider=BOC_PROVIDER)
-    payload = json.loads(text)
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        raise DataError("Bank of Canada response was not JSON", kind="invalid", provider=BOC_PROVIDER) from None
+    observations = payload.get("observations") if isinstance(payload, dict) else None
+    if not isinstance(observations, list):
+        raise DataError("Bank of Canada response had no observations", kind="invalid", provider=BOC_PROVIDER)
     out: dict[str, list[tuple[str, float]]] = {c: [] for c in wanted}
-    for row in payload.get("observations") or []:
-        day = str(row.get("d", ""))
-        if not _DAY.match(day):
+    for row in observations:
+        day = str(row.get("d", "")) if isinstance(row, dict) else ""
+        if not _DAY.match(day) or not start <= day <= end:  # never a fixing after the window
             continue
         for c in wanted:
-            cell = row.get(f"FX{c}CAD") or {}
-            try:
-                value = float(cell.get("v"))
-            except (TypeError, ValueError):
+            cell = row.get(f"FX{c}CAD")
+            if not isinstance(cell, dict) or cell.get("v") in (None, ""):
                 continue
-            if value > 0:
-                out[c].append((day, value))
+            out[c].append((day, _fixing(cell["v"], f"FX{c}CAD", day, BOC_PROVIDER)))
+    return {c: sorted(v) for c, v in out.items()}
+
+
+def ecb_history(md, codes: list[str], start: str, end: str) -> dict[str, list[tuple[str, float]]]:
+    """{CODE: [(date, CAD per unit)]} from ECB euro reference rates (keyless), converted as
+    ecb.js toCadPer does: CAD per EUR is the CAD series; any other currency is
+    (CAD per EUR) / (currency per EUR) on dates where both were published."""
+    wanted = sorted({c for c in codes if c and c != "CAD"})
+    if not wanted:
+        return {}
+    series = sorted({c for c in wanted if c != "EUR"} | {"CAD"})
+    missing = [c for c in series if c not in ECB_CURRENCIES]
+    if missing:
+        raise DataError(f"{', '.join(missing)} is not published by the ECB.", kind="not_found", definitive=True, provider=ECB_PROVIDER)
+    url = f"{ECB_BASE}/D.{'+'.join(series)}.EUR.SP00.A?{urlencode({'format': 'csvdata', 'startPeriod': start, 'endPeriod': end})}"
+    status, text = md.http(url, {"Accept": "text/csv"})
+    if status != 200:
+        raise DataError(f"ECB HTTP {status}", kind="unavailable", provider=ECB_PROVIDER)
+    reader = csv.DictReader(io.StringIO(text.lstrip("﻿")))
+    if not {"CURRENCY", "TIME_PERIOD", "OBS_VALUE"} <= set(reader.fieldnames or []):
+        raise DataError("ECB response was not the expected CSV", kind="invalid", provider=ECB_PROVIDER)
+    per_eur: dict[str, dict[str, float]] = {}
+    for r in reader:
+        if r.get("CURRENCY_DENOM") not in (None, "", "EUR"):
+            continue
+        day, raw = r.get("TIME_PERIOD") or "", r.get("OBS_VALUE") or ""
+        if not _DAY.match(day) or raw in ("", "NaN") or not start <= day <= end:
+            continue
+        per_eur.setdefault(r.get("CURRENCY") or "", {})[day] = _fixing(raw, r.get("CURRENCY") or "", day, ECB_PROVIDER)
+    cad = per_eur.get("CAD", {})
+    out: dict[str, list[tuple[str, float]]] = {}
+    for c in wanted:
+        if c == "EUR":
+            out[c] = sorted(cad.items())
+        else:
+            out[c] = sorted((d, cad[d] / v) for d, v in per_eur.get(c, {}).items() if d in cad)
     return out
+
+
+FX_HISTORY_SOURCES = [
+    (BOC_PROVIDER, lambda c: c in BOC_CURRENCIES, boc_history),
+    (ECB_PROVIDER, lambda c: c == "EUR" or c in ECB_CURRENCIES, ecb_history),
+]
+
+
+def official_fx_history(md, codes: list[str], start: str, end: str) -> dict:
+    """{"series": {CODE: [(date, CAD per unit)]}, "provider", "failures"} from the Bank of
+    Canada, or from the ECB when the Bank of Canada does not publish one of the currencies
+    or its answer fails. One source serves all currencies of a request, as in the browser's
+    fx.js history(); nothing is mixed between sources or invented. Raises DataError
+    ("unavailable") with every source's reason when neither can answer."""
+    wanted = sorted({str(c).upper() for c in codes if c} - {"CAD"})
+    if not wanted:
+        return {"series": {}, "provider": None, "failures": []}
+    failures: list[str] = []
+    for name, supports, fetch in FX_HISTORY_SOURCES:
+        unsupported = [c for c in wanted if not supports(c)]
+        if unsupported:
+            failures.append(f"{name}: does not publish {', '.join(unsupported)}")
+            continue
+        try:
+            return {"series": fetch(md, wanted, start, end), "provider": name, "failures": failures}
+        except DataError as error:
+            failures.append(f"{name}: {error.message}")
+        except (ValueError, KeyError, TypeError, AttributeError) as error:
+            failures.append(f"{name}: unexpected response ({type(error).__name__})")
+    raise DataError(f"Official exchange rates could not be retrieved ({'; '.join(failures)}).", kind="unavailable")

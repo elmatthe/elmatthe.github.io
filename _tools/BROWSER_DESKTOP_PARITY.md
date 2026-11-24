@@ -47,11 +47,12 @@ Quotes are never presented as real time.
 | Capability | Web | Desktop | Verdict |
 |---|---|---|---|
 | Return type | Log returns | Simple or log (setting) | Different by design; documented |
-| Correlation | Exact shared intervals, ≥ 3, variance guard | Shared dates, ≥ 3, variance guard | Equivalent rule |
+| Correlation, beta, regression | Exact shared intervals (same previous and current date; same ISO weeks or months), ≥ 3, variance guard | Same rule (`compute_interval_returns`, 0.6.0); pairs with fewer than 3 shared intervals are left blank and named in the log | Identical on a cross-market holiday fixture — `test_desktop_and_browser_give_the_same_correlation_and_beta` |
+| Risk-free rate in log-return mode | ln(1 + rf) / P subtracted from log returns | Same in Log returns mode; rf / P in Simple returns mode | Identical Sharpe and alpha — `test_log_mode_sharpe_and_alpha_use_a_log_risk_free_rate_like_the_browser` |
 | Split-like moves on unadjusted closes | Excluded with reason | No detector: uses the provider's adjusted close where one exists (Marketstack, Alpaca, Alpha Vantage weekly); Alpha Vantage daily windows are as traded | Different; desktop limitation documented |
 | Short-sample caveat (< 182 days), 1-day horizon | ≈ marks, no 1D annualization | — | Web only |
 | Calendar alignment | Per-series returns | Per-series returns (fixed in 0.5.0) | Equivalent |
-| FX normalization | BoC (ECB fallback) | BoC, ≤ 7-day-old fixing, no back-fill | Equivalent principle |
+| FX normalization | BoC (ECB fallback), one request for every currency, ≤ 7-day-old fixing, no back-fill | Same (ECB fallback added in 0.6.0); the source of each currency's rates is in the log and the Excel Settings sheet | Same provider and dated rates on identical answers — `test_desktop_and_browser_take_the_same_historical_rates` |
 | Offline / demo | CSV import, synthetic demo | Offline CSV folder | Comparable |
 | Exports | XLSX/CSV/JSON | Excel (Prices, Returns, Settings), CSV, PNG charts | Comparable |
 | Provenance in CSVs | Core rows unchanged, then a `#provenance` section: order at the request, source, failures, skips and reasons per ticker | Settings sheet of the Excel export and logs | Web CSVs carry more; desktop states the same in Excel |

@@ -1,6 +1,10 @@
 # Portfolio Rebalancer — Changelog
 
 ## Unreleased — 2026-11-23 (PR 46 application fixes)
+- Budget and sell proceeds are now never exceeded, even by less than a cent (web and desktop). A cent of
+  tolerance let a New Money plan buy $100.009 on a $100 budget (a holding $0.009 overweight), shown as $100.01;
+  Rebalance could spend $0.004 more than its sells. Any excess beyond floating-point rounding is now scaled
+  away; the "scaled down" warning still appears only when the excess is over a cent.
 - Negative shares or target percentages now withhold the plan in both the web and desktop apps ("shares and
   target must be numbers of 0 or more"). Before, a target of -10% produced a plan selling more shares than held
   (a 110% / -10% split sold 12 of 10 shares).

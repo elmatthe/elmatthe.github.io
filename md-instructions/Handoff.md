@@ -1,3 +1,26 @@
+# Handoff - PR 46 final financial parity fixes (2026-11-23)
+
+Snapshot: Claude Code on HOME-PC, branch `claude/loving-brown-48hctl`, starting checkpoint
+`d46b74e70828670c5036c507c61f1618fb394766`. Application-only; no gateway change. Resolve this
+commit's SHA with Git. Not merged, not deployed.
+
+- Stock desktop: correlation, beta, regression and rolling correlation pair returns only over
+  identical intervals, as the web (`compute_interval_returns`); historical FX falls back to the
+  ECB (shared `official_fx_history`, one source per comparison, attribution in log and Excel);
+  Log-returns Sharpe/alpha use ln(1 + rf). Web/desktop parity tests on cross-market holiday and
+  ECB fixtures.
+- Rebalancer (web and desktop): sub-cent budget / sell-proceeds excess is now scaled away.
+- New tracked suite `_tools/tests/browser/exports.test.js` (CI step added): every export file of
+  the four web apps read back and recomputed; no export defect found.
+- Unchanged: Monte Carlo sample counts differ by platform (seeded parity already tested); M1,
+  M2, M3, Q1, L1 open; L3a accepted; gateway 1.3.0 undeployed.
+
+Next action: final release preparation (M1/M3 gateway deployment protections). Do not merge,
+deploy or activate without the owner.
+
+---
+
+Earlier application-fixes handoff (superseded above):
 # Handoff - PR 46 application correctness fixes (2026-11-23)
 
 Snapshot: Claude Code on HOME-PC, branch `claude/loving-brown-48hctl`, starting checkpoint M4

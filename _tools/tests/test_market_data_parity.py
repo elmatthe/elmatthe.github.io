@@ -419,6 +419,25 @@ def test_rb01_zero_proceeds_identical():
     assert warnings == browser["plan"]["warnings"] and "cannot be funded" in warnings[0]
 
 
+@pytest.mark.parametrize("mode,values,budget", [
+    ("new_money", [550.009, 449.991], 100),                # A overweight by $0.009: buys were $100.009 on a $100 budget
+    ("rebalance", [1000.004, 949.996, 50.0], 0),           # buys exceeded the $50 of sell proceeds by $0.004
+])
+def test_sub_cent_excess_over_budget_or_proceeds_is_scaled_identically(mode, values, budget):
+    weights = [50, 50, 0][:len(values)]
+    rows = [{"rowIndex": i, "ticker": t, "shares": v, "price": 1.0, "currencyKey": "USD", "targetWeight": w, "accountType": ""}
+            for i, (t, v, w) in enumerate(zip("ABC", values, weights))]
+    case = {"op": "whole", "positions": rows, "fxToUsd": {"USD": 1.0}, "reportingKey": "USD", "mode": mode, "budget": budget}
+    (browser,) = run_js("rebalancer-extras", [case])
+    summary, results, warnings, _ = _desktop_plan(case)
+    cap = budget if mode == "new_money" else summary["totalSells"]
+    assert summary["totalBuys"] <= cap + 1e-9 and browser["plan"]["summary"]["totalBuys"] <= cap + 1e-9
+    assert math.isclose(summary["totalBuys"], cap, rel_tol=1e-12), "the whole budget or proceeds is still used"
+    assert warnings == browser["plan"]["warnings"] == [], "a sub-cent adjustment is not reported as a scale-down"
+    for d, b in zip(results, browser["plan"]["results"]):
+        assert d["action"] == b["action"] and math.isclose(d["tradeValue"], b["tradeValue"], rel_tol=1e-12, abs_tol=1e-12)
+
+
 def test_valuation_gate_identical():
     def row(t, shares, target, price, **kw):
         return {"rowId": t, "ticker": t, "shares": shares, "targetWeight": target, "price": price, "currency": "CAD" if price else None,

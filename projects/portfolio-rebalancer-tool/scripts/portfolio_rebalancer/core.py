@@ -124,30 +124,34 @@ def calculate_rebalance_plan(
     total_buys = _plain_sum(r["tradeValue"] for r in results if r["action"] == "Buy")
     total_sells = _plain_sum(abs(r["tradeValue"]) for r in results if r["action"] == "Sell")
 
-    # Invariant 1: new-money budget cap
-    if mode == "new_money" and total_buys > budget + 0.01 and total_buys > 0:
+    # Invariant 1: new-money budget cap. Any excess beyond floating-point rounding is
+    # scaled away, even under a cent (a holding overweight by $0.009 used to leave
+    # $100.009 of buys on a $100 budget); the warning is kept for excesses over a cent.
+    if mode == "new_money" and total_buys > 0 and _exceeds(total_buys, budget):
         scale = budget / total_buys
         _scale_buys(results, scale)
         scaled = _plain_sum(r["tradeValue"] for r in results if r["action"] == "Buy")
-        warnings.append(
-            f"Buy recommendations scaled down by {(1 - scale) * 100:.1f}% to stay "
-            f"within the new-money budget of {money(budget)} "
-            f"(raw need was {money(total_buys)}; scaled to {money(scaled)})."
-        )
+        if total_buys > budget + 0.01:
+            warnings.append(
+                f"Buy recommendations scaled down by {(1 - scale) * 100:.1f}% to stay "
+                f"within the new-money budget of {money(budget)} "
+                f"(raw need was {money(total_buys)}; scaled to {money(scaled)})."
+            )
         total_buys = scaled
 
     # Invariant 2: rebalance self-funding. With no sell proceeds at all (every
     # overweight holding is inside the hold band) nothing can be bought (RB-01).
-    if mode == "rebalance" and total_buys > total_sells + 0.01 and total_buys > 0:
+    if mode == "rebalance" and total_buys > 0 and _exceeds(total_buys, total_sells):
         if total_sells > 0:
             scale = total_sells / total_buys
             _scale_buys(results, scale)
             scaled = _plain_sum(r["tradeValue"] for r in results if r["action"] == "Buy")
-            warnings.append(
-                f"Buy recommendations scaled down by {(1 - scale) * 100:.1f}% to stay "
-                f"within sell proceeds of {money(total_sells)} "
-                f"(raw need was {money(total_buys)}; scaled to {money(scaled)})."
-            )
+            if total_buys > total_sells + 0.01:
+                warnings.append(
+                    f"Buy recommendations scaled down by {(1 - scale) * 100:.1f}% to stay "
+                    f"within sell proceeds of {money(total_sells)} "
+                    f"(raw need was {money(total_buys)}; scaled to {money(scaled)})."
+                )
             total_buys = scaled
         else:
             _hold_buys(results)
@@ -202,6 +206,11 @@ def _hold_row(p: dict, tw_norm: float, target_val: float) -> dict:
         "action": "Hold",
         "postTradeShares": p["shares"],
     }
+
+
+def _exceeds(amount: float, cap: float) -> bool:
+    """True when `amount` is above `cap` by more than floating-point rounding of the sums."""
+    return amount > cap + 1e-9 * max(1.0, abs(cap))
 
 
 def _scale_buys(results: list[dict], scale: float) -> None:

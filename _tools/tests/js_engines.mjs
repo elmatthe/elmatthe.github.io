@@ -74,6 +74,27 @@ if (request.tool === "monte-carlo") {
       out.push({ error: error.message });
     }
   }
+} else if (request.tool === "fx-history") {
+  // cases: [{ responses: { boc: {status, body}, ecb: {status, body} }, codes, start, end, pairs: [[from, to]] }]
+  // The browser's official exchange-rate history (fx.js, Bank of Canada then ECB) on fixture
+  // answers; no network. ECB answers are cut to the requested period, as the API does.
+  const { createFxService } = await import(pathToFileURL(path.join(site, "assets/js/market-data/fx.js")));
+  for (const c of request.cases) {
+    try {
+      const asked = [];
+      const fetchImpl = async url => {
+        const u = new URL(url);
+        asked.push(u.host);
+        const r = u.host === "www.bankofcanada.ca" ? c.responses.boc : c.responses.ecb;
+        return new Response(r.body, { status: r.status });
+      };
+      const fx = createFxService({ fetchImpl });
+      const h = await fx.history(c.codes, c.start, c.end);
+      out.push({ provider: h.provider, pairs: c.pairs.map(([from, to]) => fx.crossHistory(from, to, h.series)), asked });
+    } catch (error) {
+      out.push({ error: error.message });
+    }
+  }
 } else if (request.tool === "market-data") {
   // Shared market-data behaviour, for the JS/Python parity tests (no network).
   const I = await import(pathToFileURL(path.join(site, "assets/js/market-data/instruments.js")));
