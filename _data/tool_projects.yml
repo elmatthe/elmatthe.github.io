@@ -21,9 +21,10 @@ cpi:
   version: 0.4.0
   web_app: Runs in your browser
   # The CPI data gateway (Cloudflare Worker, _services/cpi-data-gateway) that lets the
-  # web app read the US series with each visitor's own FRED key. Empty until the
-  # owner deploys it; the web app then works in Canadian-only mode and says so.
-  data_gateway: ""
+  # web app read the US series with each visitor's own FRED key. Deployed 2026-11-24
+  # (Workers Free, version a9d5162e-26df-486a-a9a4-baf9c95b2776). Set to "" to switch the
+  # US columns off: the web app then works in Canadian-only mode and says so.
+  data_gateway: "https://cpi-data-gateway.elmatthe.workers.dev"
   platforms: Windows (desktop Excel)
   python: "3.11–3.14"
   page: /projects/cpi-webscraper/

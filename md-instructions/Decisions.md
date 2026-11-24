@@ -168,3 +168,23 @@ earlier could clear an incident the owner never reviewed. Single use alone did n
   can stay `unverified` until the next data request after a recovered write.
 - Not done (D3 and scope): no new cooldown or provider-wait enforcement on approval; M1, M2,
   M3, Q1, L1 unchanged; L3a accepted as documented.
+
+## 2026-11-24 — M1 coordinator activation and the M3 1.1.0 → 1.3.0 transition
+
+- M1: the coordinator checks its own deployment's `KEYLESS_SOURCE` / `OWNER_ATTESTATION`
+  (`sourceState(this.env)`) at `fetchChart` entry, before any storage is read, and again
+  immediately before admission, in the same synchronous block as the fetch. A caller still on
+  the previous settings (a stale isolate during a deployment) gets `source_disabled` and nothing
+  is sent or written. `status()` is unchanged: production health asks the coordinator only when
+  the Worker's own source is on, and data is refused regardless; changing it would have
+  removed the M4 tests' way of observing a source-off start. Tests now model the owner's
+  procedure (source-off deployment evaluates the approval, then the source-on deployment).
+- M3: the transition uses only tracked configurations and no new subsystem. The source-off
+  settings are the top-level `wrangler.toml` settings in both versions (`--env=""`), rather than
+  `--var` overrides, whose values Wrangler hides. 1.1.0 is switched off with its own code
+  (commit `9491eff`), so a failed 1.3.0 deployment leaves a source-off version live. The drain
+  is 1,800 s, 1.1.0's longest automatic stop (its stops are isolate-local and unobservable; its
+  requests last at most 23 s; it honours no longer source-named wait). 1.3.0 is deployed with
+  the source off first, then switched on.
+- CPI: the FRED gateway is deployed unchanged and configured; the browser tests now assert the
+  configured production state (no request on load, key field enabled and empty).

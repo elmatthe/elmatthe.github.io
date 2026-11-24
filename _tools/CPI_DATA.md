@@ -16,7 +16,7 @@ steps in its `README.md`). Tests: `_tools/tests/unit/cpi-engine.test.mjs`,
 
 | Decision | Implementation |
 |---|---|
-| 1A Controlled free-tier serverless gateway for FRED; each visitor's own key; GitHub Pages stays the host | `_services/cpi-data-gateway` (Cloudflare Workers Free). **Not deployed**: `data_gateway` in `_data/tool_projects.yml` is empty until the owner deploys it. |
+| 1A Controlled free-tier serverless gateway for FRED; each visitor's own key; GitHub Pages stays the host | `_services/cpi-data-gateway` (Cloudflare Workers Free). **Deployed 2026-11-24** at `https://cpi-data-gateway.elmatthe.workers.dev`, set as `data_gateway` in `_data/tool_projects.yml` (empty switches the US columns off). |
 | 3A Twelve-month pages in four groups, no page-wide horizontal scrolling | Canada / US Inflation / Rates / Other tabs; newest page first; stacked month cards in narrow containers. |
 | 4A CSV with the exact 19 CPI_Downloader columns; workbook writing stays desktop-only | `engine.toCsv`, byte-identical to the desktop's `write_to_csv` (parity test). |
 

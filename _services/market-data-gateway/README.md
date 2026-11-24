@@ -315,11 +315,12 @@ result of any approval the current deployment carries.
   quarantined even after storage writes recover.
 - Spacing is measured at the coordinator's decision; on the wire two starts can be a few
   milliseconds closer. Deadlines rely on Cloudflare's clock.
-- While a deployment of 1.3.0 replaces 1.1.0, old isolates still contact Yahoo by their own rules
-  until they finish. The guarantees above hold once the old version has gone.
-- The activation settings are checked by the Worker, not the coordinator. For as long as two
-  versions overlap after the source is switched off, an isolate on the old settings can still reach
-  the coordinator, within all its limits.
+- 1.1.0 isolates contact Yahoo by their own rules until they finish, which is why the first
+  deployment of 1.3.0 follows the source-off transition in "Deploy" (M3).
+- The activation settings are checked by the Worker and, since M1, by the coordinator against its
+  own deployment's settings: at entry, before any storage is read, and again immediately before
+  admission. An isolate still on the old settings after the source is switched off gets
+  `source_disabled`. A request already admitted before the switch can still complete.
 - A lost cancellation message costs at most one request for nobody, within all the limits.
 - Identical requests at different times each use budget if the cache misses; on a `workers.dev`
   address the Cache API may be per isolate.
@@ -485,28 +486,70 @@ npx wrangler@4 login
 `login` opens Cloudflare in your browser; approve it there (no password or token is
 typed into a terminal or chat).
 
-**Before the first deployment of 1.3.0:**
+### First deployment of 1.3.0: the transition from 1.1.0 (M3)
 
-1. Read `/v1/health` on the live Worker. If `upstream.state` is not `ok`, wait until it is: the
-   old version's stops live in its isolates and are not carried over.
-2. Read "Roll back" below. After this deployment `wrangler rollback` cannot return to any version
-   from before it.
-3. Delete any `UPSTREAM_REACTIVATION_ID` variable from the live Worker (Settings → Variables and
-   Secrets). This version ignores it (M4), but an older version would honour it after a rollback.
+1.1.0 contacts Yahoo directly from every isolate and keeps its stops in isolate memory; 1.3.0 sends
+everything through the coordinator. Their retrieval paths must never be active together, and the
+first 1.3.0 deployment cannot be undone by `wrangler rollback`. So the old source is switched off
+first, its work drains, 1.3.0 is deployed with the source off, and only then switched on. The
+source-off settings are the **top-level settings** of `wrangler.toml` (`--env=""`: both activation
+values empty); in both versions they answer every data request with `source_disabled` (desktop
+requests without an `Origin`: `origin_not_allowed`) and contact nothing.
 
-```bash
-npx wrangler@4 deploy --env production
-```
+1. **Record the starting point.** `curl -sS "$GATEWAY/v1/health"` (note `version` and
+   `upstream`); `npx wrangler@4 deployments list` (the live version id: while 1.1.0 is still live,
+   `wrangler rollback <id>` returns to it); `npx wrangler@4 secret list` and
+   `npx wrangler@4 versions view <id>`: **remove `UPSTREAM_REACTIVATION_ID`** if it appears as a
+   secret (`npx wrangler@4 secret delete UPSTREAM_REACTIVATION_ID`) or variable. 1.3.0 ignores it
+   (M4); an older version would honour it.
+2. **Switch the 1.1.0 source off, keeping the 1.1.0 code.** Deploy the deployed 1.1.0 tree (commit
+   `9491eff`) with its own top-level settings, from a scratch folder (commands from the repository
+   root):
 
-Wrangler 4.157.0 validated this configuration. The first deployment creates the class from
-`[exports.UpstreamCoordinator]` in `wrangler.toml`: there is no migration tag, no data to move and
-nothing to set up. Use `deploy`, not `versions upload` or a gradual rollout, which Cloudflare does
-not support with `exports`.
+   ```bash
+   mkdir -p files/run-temp/gateway-1.1.0 && git archive 9491eff _services/market-data-gateway/src _services/market-data-gateway/wrangler.toml | tar -x -C files/run-temp/gateway-1.1.0
+   ```
 
-If Cloudflare refuses the class on your plan, the deployment fails as a whole and the live Worker
-keeps running unchanged. **Do not upgrade the account**; report it. After deploying, `/v1/health`
-must show `version` 1.3.0, `status: "ok"`, `upstream.state: "ok"`. Anything else, especially
-`unverified`: switch the source off (below) and report it.
+   ```bash
+   cd files/run-temp/gateway-1.1.0/_services/market-data-gateway && npx wrangler@4 deploy --env=""
+   ```
+
+   Verify: at least 10 `/v1/health` reads over 60 s or more all show `version` 1.1.0 and
+   `"enabled": false`, and a data request answers `source_disabled`. **This is the fallback** if a
+   later step fails: it stays live, with the source off, until 1.3.0 is deployed.
+3. **Drain.** Wait at least **1,800 s** after step 2 before step 5. 1.1.0's longest automatic stop
+   is 1,800 s (`upstream_blocked`), its requests end within 23 s (15 s queue + 8 s timeout), it
+   honours no longer wait named by Yahoo, and it has no manual halt; its stops live only in
+   isolates and are not carried over. If step 1 or a health read showed a stop with a longer
+   `retryAfterSeconds`, or Yahoo is known to have directed a longer wait, wait for that instead.
+4. **Deploy 1.3.0 with the source off** (this creates the class: the irreversible step). From this
+   folder:
+
+   ```bash
+   npx wrangler@4 deploy --env=""
+   ```
+
+   Verify: `version` 1.3.0, `"enabled": false`, data requests `source_disabled`. Isolates of the
+   step 2 version are off already, so nothing can reach Yahoo during this replacement. If Cloudflare
+   refuses the class on your plan, the deployment fails as a whole and step 2's version keeps
+   running. **Do not upgrade the account**; report it.
+5. **Switch the source on**, once step 3's wait has passed:
+
+   ```bash
+   npx wrangler@4 deploy --env production
+   ```
+
+   Verify: several `/v1/health` reads show `version` 1.3.0, `status: "ok"`, `"enabled": true` and
+   `upstream.state: "ok"`; then the capped live smoke test (under "Verify"). Anything else,
+   especially `unverified`: repeat step 4's command (the tested source-off version) and report it.
+   Isolates still running step 4's version are off; the coordinator now checks its own deployment's
+   settings too (M1), so switching off later stops retrieval even for callers on the old settings.
+
+Coordinator state is preserved by all of these: a deployment, with the source on or off, never
+touches its storage. Never `wrangler delete` this Worker, never change `[exports]` or set its
+`state = "deleted"` (see "Roll back"). Wrangler 4.157.0 validated both configurations. The class
+comes from `[exports.UpstreamCoordinator]`: no migration tag, no data to move. Use `deploy`, not
+`versions upload` or a gradual rollout, which Cloudflare does not support with `exports`.
 
 Wrangler prints the address, `https://market-data-gateway.<your-subdomain>.workers.dev`.
 If it says the `ratelimits` binding is unavailable on your plan, delete the two
@@ -574,9 +617,10 @@ broker. A `listing_mismatch` for a correct listing means the exchange code in
 - **Switch the data source off (fastest, keeps the Worker):** in the dashboard (Workers &
   Pages → market-data-gateway → Settings → Variables and Secrets) delete
   `OWNER_ATTESTATION` (or set it to empty) and save, or deploy the top-level settings with
-  `npx wrangler@4 deploy` (both values empty). Every data request then answers
+  `npx wrangler@4 deploy --env=""` (both values empty). Every data request then answers
   `source_disabled`; the tools say Yahoo Finance is switched off and use the user's other
-  sources.
+  sources. The coordinator enforces its own deployment's settings (M1), so callers still on the
+  previous settings are refused too.
 - **Previous version:** use only an R4-compatible source-off version that preserves and
   enforces unresolved markers, stops and consumed identifiers. Code rollback does not roll
   back SQLite state. R3 ignores the new marker column and is not a safe serving rollback.

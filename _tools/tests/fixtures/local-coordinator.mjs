@@ -88,10 +88,15 @@ export function memoryStorage() {
   return storage;
 }
 
+// The coordinator's own settings in a deployment with the source on. Since M1 the coordinator
+// enforces them itself: a test of a source-off deployment passes its own `env`.
+export const COORDINATOR_ON = Object.freeze({ KEYLESS_SOURCE: "yahoo-chart", OWNER_ATTESTATION: "owner-confirms-yahoo-permission" });
+
 // A stand-in for env.UPSTREAM_COORDINATOR. Answers cross a serialization boundary as they do
 // over RPC. `restart()` is a new instance of the object on the same storage, as after an
-// eviction or a deployment: everything in memory is gone.
-export function localCoordinator({ fetchImpl, now, sleep, log = () => {}, limits = {}, storage = memoryStorage(), env = {} }) {
+// eviction or a deployment: everything in memory is gone. The instance starts on its first call;
+// `start()` starts it at once, as worker.js does when the object is created.
+export function localCoordinator({ fetchImpl, now, sleep, log = () => {}, limits = {}, storage = memoryStorage(), env = { ...COORDINATOR_ON } }) {
   const build = () => new UpstreamCoordinatorCore({ storage, env, fetchImpl, now, sleep, log, limits });
   let core = build();
   const names = [];
@@ -110,6 +115,7 @@ export function localCoordinator({ fetchImpl, now, sleep, log = () => {}, limits
       return stub;
     },
     restart() { core = build(); },
+    start() { try { core.initialize(); } catch (_) { /* unverified, as in worker.js */ } },
     names,
     arrivals,
     storage,

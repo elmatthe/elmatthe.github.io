@@ -572,6 +572,11 @@ export class UpstreamCoordinatorCore {
   // { kind, symbol, range, client } -> { text, retrievedAt, shared } or { code, ... }.
   // `client` identifies this caller for `cancel`.
   async fetchChart({ kind, symbol, range = null, client }) {
+    // M1: this deployment's own activation decides, whatever the caller's. While a deployment
+    // replaces another, an isolate of the previous version (still on) can call; an object whose
+    // deployment has the source off sends nothing. Checked before any storage is touched, and
+    // again immediately before admission (`run`).
+    if (!sourceState(this.env).enabled) return this.sourceDisabled();
     try {
       this.ready();
     } catch (_) {
@@ -607,6 +612,11 @@ export class UpstreamCoordinatorCore {
       work.clients.delete(client);
       this.clients.delete(client);
     }
+  }
+
+  sourceDisabled() {
+    this.log({ event: "coordinator_source_disabled" });
+    return { code: "source_disabled" };
   }
 
   // Queued work can be discarded. An admitted abort says nothing about the provider's
@@ -703,6 +713,7 @@ export class UpstreamCoordinatorCore {
       if (first && room && spacingLeft <= 0) {
         // Admission: from here to the fetch() call inside `start` there is no `await`, so
         // nothing else can run between the checks above and the request starting.
+        if (!sourceState(this.env).enabled) return this.sourceDisabled(); // M1
         const refused = this.admit(t, work);
         if (refused) return refused === "throttled" ? this.throttled(work) : { code: refused };
         this.leaveQueue(work);

@@ -262,7 +262,7 @@ for (const seconds of [3600, 172800]) test(`H1/M4: full workerd disposal preserv
   try { approval = (await incidentOf(world)).approval; } finally { await world.stop(); }
   world = await startWorld({ persist, yahoo, coordinatorEnv: { ...SOURCE_OFF, UPSTREAM_INCIDENT_APPROVAL: approval } });
   try {
-    await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
+    await expectError(await world.ask("isolate-c", "MSFT"), "source_disabled", 503); // M1: the enabled isolate gets nothing
     assert.equal(yahoo.calls.length, 1);
     assert.equal((await world.row()).unresolved.length, 1);
     assert.deepEqual(await sql(world, "SELECT generation FROM incident_approvals"), [], "the failed transaction did not consume the approval");
@@ -402,7 +402,7 @@ test("H1/M4: existing R3 and R7 state migrates conservatively: its stop, history
   assert.equal(world.yahoo.calls.length, 1);
 }));
 
-test("M4: a row an older version wrote after M4 (a rollback) is bound to a new incident; an approval prepared before cannot match", { timeout: 60000 }, () => withWorld({ coordinatorEnv: SOURCE_OFF }, async world => {
+test("M4: a row an older version wrote after M4 (a rollback) is bound to a new incident; an approval prepared before cannot match", { timeout: 60000 }, () => withWorld({}, async world => {
   world.yahoo.answer = () => refusal(172800);
   await expectError(await world.ask("isolate-b", "AAPL"), "upstream_rate_limited", 429);
   world.yahoo.answer = null;
@@ -978,7 +978,7 @@ test("6. M4: an approval whose start failed is never retried by health or data r
     assert.deepEqual(await sql(world, "SELECT generation FROM incident_approvals"), [], "the start's approval failed");
     await sql(world, "DROP TRIGGER m4_reject_approval");
     assert.equal((await world.health()).upstream.state, "halted");
-    await expectError(await world.ask("isolate-b", "MSFT"), "upstream_rate_limited", 429);
+    await expectError(await world.ask("isolate-b", "MSFT"), "source_disabled", 503); // M1
     assert.deepEqual(await sql(world, "SELECT generation FROM incident_approvals"), [], "ordinary traffic did not retry it");
     assert.equal((await incidentOf(world)).halt_code, "upstream_rate_limited");
     assert.equal(yahoo.calls.length, 1);
@@ -1154,6 +1154,33 @@ test("10. a source that is switched off contacts nothing and does not need the c
   assert.equal(h.keyless.enabled, false);
   assert.equal(world.yahoo.calls.length, 0);
 }));
+
+// M1: isolates b and c keep the source-on settings, as isolates of the previous version do while a
+// source-off deployment replaces it; isolate-a hosts the coordinator with the new settings.
+test("M1: a source-off deployment's coordinator refuses enabled (stale) isolates in real workerd; its state survives to the next source-on deployment", { timeout: 180000 }, async () => {
+  const persist = persistDir("m1-transition");
+  const yahoo = syntheticYahoo();
+  let world = await startWorld({ persist, yahoo });
+  try {
+    assert.equal((await world.ask("isolate-b", "AAPL")).status, 200);
+  } finally { await world.stop(); }
+  for (const off of [SOURCE_OFF, { OWNER_ATTESTATION: "" }]) {
+    world = await startWorld({ persist, yahoo, coordinatorEnv: off });
+    try {
+      for (const name of ["isolate-b", "isolate-c"]) await expectError(await world.ask(name, "MSFT"), "source_disabled", 503);
+      await expectError(await world.ask("isolate-a", "MSFT"), "source_disabled", 503); // its own Worker refuses first
+      assert.equal(yahoo.calls.length, 1, `nothing reaches the source: ${JSON.stringify(off)}`);
+      assert.ok(world.logs.some(l => l.event === "coordinator_source_disabled"), "the coordinator itself refused");
+      assert.equal((await world.row()).starts.length, 1, "a refused request uses no budget and writes nothing");
+    } finally { await world.stop(); }
+  }
+  world = await startWorld({ persist, yahoo });
+  try {
+    assert.equal((await world.ask("isolate-c", "MSFT")).status, 200);
+    assert.equal(yahoo.calls.length, 2);
+    assert.equal((await world.row()).starts.length, 2, "the first deployment's start is still on disk");
+  } finally { await world.stop(); }
+});
 
 test("10. Workers Free: each admission writes one row, so the daily row allowance cannot be reached by the budget", { timeout: 60000 }, () => withWorld({}, async world => {
   assert.equal(await world.test("rows-written"), 1);

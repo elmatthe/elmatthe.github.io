@@ -56,9 +56,9 @@ const headerTexts = page => page.$$eval("#cpiPanel thead th", ths => ths.map(t =
   {
     const { context, page, calls, net } = await open(browser);
     check(calls.statcan.length === 0 && calls.gateway.length === 0 && calls.blocked.length === 0, "page load sends no data request");
-    check(/Gateway not configured/.test(await page.locator("#cpiFredBadge").innerText()), "production build: the data gateway is not configured, and the page says so");
-    check(await page.locator("#cpiKey").isDisabled(), "the FRED key field is disabled while no gateway is configured");
-    check(/Canadian columns need no key/.test(await page.locator("#cpiStatus").innerText()), "status explains Canadian-only operation");
+    check(/Needs your FRED key/.test(await page.locator("#cpiFredBadge").innerText()) && /cpi-data-gateway\.elmatthe\.workers\.dev/.test(await page.locator("#cpiFredText").innerText()), "production build: the deployed data gateway is configured, and the page asks for the visitor's own key");
+    check(await page.locator("#cpiKey").isEnabled() && await page.locator("#cpiKey").inputValue() === "", "the FRED key field is enabled and empty: no key ships with the site");
+    check(/add your FRED key for the US columns if you have one/.test(await page.locator("#cpiStatus").innerText()), "status explains the optional key");
     check(await page.locator("#cpiYear2").isHidden() && await page.locator("#cpiMonth2").isHidden() && /^Year \(YYYY\)$/.test(await page.locator("#cpiYearL").innerText()), "single month: only Year and Month are shown");
     await page.check('input[name="cpiMode"][value="range"]');
     check(await page.locator("#cpiYear2").isVisible() && /^Start Year \(YYYY\)$/.test(await page.locator("#cpiYearL").innerText()) && await page.locator('label[for="cpiMonth2"]').innerText() === "End Month (1–12)", "date range: Start and End inputs with the desktop labels");
@@ -91,11 +91,11 @@ const headerTexts = page => page.$$eval("#cpiPanel thead th", ths => ths.map(t =
     const months = monthsFrom(2023, 1);
     check(new RegExp(`Fetched ${months} months`).test(await page.locator("#cpiStatus").innerText()), `range: ${months} months fetched`);
     check(/Canadian only/.test(await page.locator("#cpiTiles").innerText()) && /5 of 18/.test(await page.locator("#cpiTiles").innerText()), "tiles: Canadian only, 5 of 18 series");
-    check(/FRED: not fetched\. This site has no data gateway configured yet/.test(await page.locator("#cpiSourceStatus").innerText()), "source status explains the blank US columns");
+    check(/FRED: not fetched, no key entered/.test(await page.locator("#cpiSourceStatus").innerText()), "source status explains the blank US columns");
     check(/Canadian-only \/ partially populated/.test(await page.locator("#cpiQuality").innerText()), "the dataset is labelled Canadian-only / partially populated");
     await page.click("#cpiTab-us_inflation");
     const us = await tableRows(page);
-    check(us.every(r => r.slice(1).every(v => v === "No gateway yet")), "US Inflation: every cell blank with its reason (no zeros)");
+    check(us.every(r => r.slice(1).every(v => v === "No FRED key")), "US Inflation: every cell blank with its reason (no zeros)");
     const csv = await csvOf(page, "canadian.csv");
     const lines = csv.text.split("\r\n");
     check(lines[0] === HEADERS, "CSV: the nineteen exact A:S headers, in order");

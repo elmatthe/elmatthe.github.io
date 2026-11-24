@@ -941,11 +941,18 @@ test("B3: a wait beyond the permitted maximum stops the source until the owner r
     RA(await get(quote("MSFT"), { ip: "c" }), MAX_COOLDOWN_SECONDS);
     assert.equal(calls.length, 1);
     // The owner's approval of exactly this incident, read from storage, clears it at the next
-    // start of the coordinator (a new deployment), with the source off in the coordinator's env.
+    // start of the coordinator (a new deployment), with the source off in the coordinator's env;
+    // then the source-on deployment (M1: a source-off coordinator sends nothing).
     const { incident } = coordinator.storage.peek();
     coordinator.env.UPSTREAM_INCIDENT_APPROVAL = `g${incident.generation}-${incident.nonce}`;
+    coordinator.env.OWNER_ATTESTATION = "";
     coordinator.restart();
-    assert.equal((await get(quote("MSFT"), { ip: "d" })).status, 200, value);
+    coordinator.start();
+    assert.equal((await get(quote("MSFT"), { ip: "d" })).body.error.code, "source_disabled");
+    assert.equal(coordinator.storage.peek().haltCode, null, value);
+    coordinator.env.OWNER_ATTESTATION = OWNER_ATTESTATION_VALUE;
+    coordinator.restart();
+    assert.equal((await get(quote("MSFT"), { ip: "e" })).status, 200, value);
     assert.equal(calls.length, 2);
   }
   // Exactly the maximum is still an ordinary cooldown that ends by itself.
