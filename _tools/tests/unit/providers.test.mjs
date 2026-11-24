@@ -7,7 +7,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMarketData, compareQuotes } from "../../../assets/js/market-data/index.js";
-import { routeInstrument, planOf, PROVIDERS, providersFor } from "../../../assets/js/market-data/catalog.js";
+import { planOf, PROVIDERS, providersFor } from "../../../assets/js/market-data/catalog.js";
+import { planSources, normalizePriority } from "../../../assets/js/market-data/sources.js";
 import { ADAPTERS } from "../../../assets/js/market-data/providers/quote-adapters.js";
 import { createInstrumentResolver } from "../../../assets/js/market-data/instruments.js";
 import { SAMPLE_PORTFOLIO } from "../../../assets/js/portfolio-rebalancer/sample.js";
@@ -105,19 +106,28 @@ test("Alpha Vantage: curated instruments cost one request (no search); YNVD.TO i
   assert.ok(!calls.some(c => /YNVD/.test(String(c.url))), "no request for YNVD at all");
 });
 
-test("routing of the 14-row sample with each key set, and the request estimate before any fetch", () => {
+test("routing of the 14-row sample by the source order, and the request estimate before any fetch", () => {
   const ids = SAMPLE_PORTFOLIO.rows.map(r => resolver.resolve(r.ticker));
   const plans = { alphavantage: planOf("alphavantage"), marketstack: planOf("marketstack"), finnhub: planOf("finnhub") };
-  const first = (identity, configured) => routeInstrument(identity, { configured, plans }).candidates[0]?.id || null;
-  const byTicker = configured => Object.fromEntries(ids.map(i => [i.displayTicker, first(i, configured)]));
-  assert.deepEqual(byTicker(["alphavantage", "finnhub"]), {
+  // Finnhub before Alpha Vantage (and Yahoo Finance unavailable): US listings to Finnhub,
+  // the others to Alpha Vantage, which Finnhub's free plan does not cover.
+  const priority = { order: ["yahoo", "finnhub", "alphavantage", "marketstack"], enabled: { yahoo: true, finnhub: true, alphavantage: true, marketstack: false } };
+  const state = { yahoo: { available: false, code: "not_configured", reason: "not available on this site yet" } };
+  const first = (identity, pr) => planSources(identity, "quote", { priority: pr, state, plans }).candidates[0]?.id || null;
+  const byTicker = pr => Object.fromEntries(ids.map(i => [i.displayTicker, first(i, pr)]));
+  assert.deepEqual(byTicker(priority), {
     "VEQT.TO": "alphavantage", "CNQ.TO": "alphavantage", "XQQ.TO": "alphavantage", "HEWB.TO": "alphavantage", AAPL: "finnhub", "VFV.TO": "alphavantage",
     SPCX: "finnhub", CBRS: "finnhub", "YNVD.NE": null, VST: "finnhub", "7203.T": null, "SAP.DE": "alphavantage", "VOD.L": "alphavantage", "600519.SS": "alphavantage",
   });
-  const withMs = byTicker(["marketstack"]);
-  assert.equal(withMs["YNVD.NE"], null, "YNVD is not in Marketstack's ticker list");
-  assert.equal(withMs["7203.T"], "marketstack");
+  // The same keys in the other order: Alpha Vantage covers US listings too, so it is used for them.
+  const avFirst = byTicker({ ...priority, order: ["yahoo", "alphavantage", "finnhub", "marketstack"] });
+  assert.equal(avFirst.AAPL, "alphavantage");
+  const msOnly = byTicker({ order: ["yahoo", "alphavantage", "marketstack", "finnhub"], enabled: { yahoo: true, alphavantage: false, marketstack: true, finnhub: false } });
+  assert.equal(msOnly["YNVD.NE"], null, "YNVD is not in Marketstack's ticker list");
+  assert.equal(msOnly["7203.T"], "marketstack");
   const { md } = make(() => F.response(500, "{}"), { keys: { alphavantage: KEYS.alphavantage, finnhub: KEYS.finnhub } });
+  md.sources.move("finnhub", 1);
+  assert.deepEqual(md.sources.order(), ["yahoo", "finnhub", "alphavantage", "marketstack"]);
   // All fourteen holdings are active: one estimate covers them, before any fetch.
   const est = md.estimate(ids);
   assert.equal(est.perProvider.alphavantage.requests, 8, "five TSX + Xetra, London, Shanghai, all curated: one GLOBAL_QUOTE each, no search");
@@ -126,28 +136,30 @@ test("routing of the 14-row sample with each key set, and the request estimate b
   assert.equal(est.perProvider.alphavantage.remaining, 25);
   const avOnly = make(() => F.response(500, "{}"), { keys: { alphavantage: KEYS.alphavantage } }).md.estimate(ids);
   assert.equal(avOnly.perProvider.alphavantage.requests, 12, "Alpha Vantage only: 12 requests, within 25");
-  const msOnly = make(() => F.response(500, "{}"), { keys: { marketstack: KEYS.marketstack } });
-  msOnly.md.setRouting({ mode: "marketstack" });
-  const ms = msOnly.md.estimate(ids);
+  const ms = make(() => F.response(500, "{}"), { keys: { marketstack: KEYS.marketstack } }).md.estimate(ids);
   assert.equal(ms.perProvider.marketstack.requests, 13, "Marketstack: one per symbol, YNVD excluded");
   assert.equal(ms.perProvider.marketstack.remaining, 100);
+  assert.deepEqual(normalizePriority(null, {}).order, ["yahoo", "alphavantage", "marketstack", "finnhub"]);
 });
 
-test("fallback is opt-in and says which source failed first", async () => {
+test("fallback follows the list and says which source failed first; a source switched off is never asked", async () => {
   const handler = url => {
     if (url.hostname === HOSTS.finnhub) return F.response(429, JSON.stringify({ error: "API limit reached." }));
     if (url.hostname === HOSTS.alphavantage) return F.response(200, F.avGlobalQuote("AAPL", 230, "2026-11-02"));
     return F.response(404, "{}");
   };
-  const { md } = make(handler, { keys: { alphavantage: KEYS.alphavantage, finnhub: KEYS.finnhub } });
-  await assert.rejects(md.priceInstrument(resolver.resolve("AAPL")), e => e.kind === "rate_limited" && e.provider === "Finnhub");
-  md.setRouting({ fallback: true });
+  const { md, calls } = make(handler, { keys: { alphavantage: KEYS.alphavantage, finnhub: KEYS.finnhub } });
+  md.sources.move("finnhub", 1);
   const q = await md.priceInstrument(resolver.resolve("AAPL"), { useCache: false });
   assert.equal(q.provider, "Alpha Vantage");
   assert.equal(q.fallbackFrom[0].provider, "Finnhub");
-  // A single chosen provider never silently uses another one.
-  md.setRouting({ mode: "finnhub", fallback: true });
-  await assert.rejects(md.priceInstrument(resolver.resolve("AAPL"), { useCache: false }), e => e.provider === "Finnhub");
+  assert.equal(q.fallbackFrom[0].kind, "rate_limited");
+  assert.ok(q.skippedSources.some(x => x.id === "yahoo" && /not available on this site yet/.test(x.reason)), "the unavailable first source is listed as skipped");
+  // Only Finnhub switched on: it is the only source asked, and its failure is reported as such.
+  md.sources.setEnabled("alphavantage", false);
+  const before = calls.filter(c => c.url.hostname === HOSTS.alphavantage).length;
+  await assert.rejects(md.priceInstrument(resolver.resolve("AAPL"), { useCache: false }), e => e.kind === "rate_limited" && /Finnhub: rate-limited/.test(e.message) && e.attempts.length === 1);
+  assert.equal(calls.filter(c => c.url.hostname === HOSTS.alphavantage).length, before, "a source switched off is never asked");
 });
 
 test("keys: each goes only to its own provider host and appears in no result, error or other storage value", async () => {

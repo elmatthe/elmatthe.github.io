@@ -174,6 +174,63 @@ def test_progress_and_cancel(monkeypatch):
         ds.build_rows('2024-01', '2024-02', 'placeholder', cancel=lambda: len(calls) >= 3, today=date(2026, 11, 3))
 
 
+def test_build_rows_validates_against_the_given_today(monkeypatch):
+    """Regression: validate_sources used the wall clock, not build_rows(today=...)."""
+    class Later(date):
+        @classmethod
+        def today(cls):
+            return cls(2027, 3, 1)
+    monkeypatch.setattr(ds, 'date', Later)
+    monkeypatch.setattr(ds, 'fetch_statcan_vector_range', lambda *a, **k: {})
+    monkeypatch.setattr(ds, 'fetch_fred', lambda *a, **k: {})
+    # On 2026-11-03 nothing for 2026-11 is published yet: a release lag, not a failure.
+    rows = ds.build_rows('2026-11', '2026-11', 'placeholder', today=date(2026, 11, 3))
+    assert [r['date'] for r in rows] == [date(2026, 11, 1)]
+    assert all(rows[0][k] is None for k in SUPPORTED_IDS[1:])
+    # The same empty month on 2027-03-01 is an established interval: refused.
+    with pytest.raises(ds.SourceError):
+        ds.build_rows('2026-11', '2026-11', 'placeholder', today=date(2027, 3, 1))
+
+
+def test_daily_end_of_month_by_hand(monkeypatch):
+    """Hand-computed month-end values: weekends, a holiday, a missing last day, leap day."""
+    observations = [  # deliberately unordered
+        {'date': '2024-03-29', 'value': '.'},        # Good Friday: no close
+        {'date': '2023-12-29', 'value': '4769.83'},  # Friday; 30/31 are a weekend (no rows)
+        {'date': '2024-02-29', 'value': '5096.27'},  # leap day is the last trading day
+        {'date': '2024-03-28', 'value': '5254.35'},
+        {'date': '2023-12-28', 'value': '4783.35'},
+        {'date': '2024-02-28', 'value': '5069.76'},
+        {'date': '2024-03-27', 'value': '5248.49'},
+    ]
+    get = fred(monkeypatch, observations)
+    assert ds.fetch_fred_daily_eom('SP500', '2023-12', '2024-03', 'placeholder') == {
+        '2023-12': 4769.83, '2024-02': 5096.27, '2024-03': 5254.35}  # 2024-01: no rows, so no value
+    params = get.call_args.kwargs['params']
+    assert (params['observation_start'], params['observation_end']) == ('2023-12-01', '2024-03-31')
+    for converted in ('frequency', 'aggregation_method', 'units'):
+        assert converted not in params, 'daily values are reduced locally, never converted by FRED'
+    # A 7-day series (DFF) whose last calendar day is missing: the 30th, not the 29th.
+    fred(monkeypatch, [{'date': '2023-12-29', 'value': '5.32'}, {'date': '2023-12-30', 'value': '5.31'},
+                       {'date': '2023-12-31', 'value': '.'}])
+    assert ds.fetch_fred_daily_eom('DFF', '2023-12', '2023-12', 'placeholder') == {'2023-12': 5.31}
+
+
+def test_monthly_values_as_published_and_gaps_blank(monkeypatch):
+    """FEDFUNDS/GS10/GS2 are FRED's own monthly averages: used as published, a '.' stays blank."""
+    get = fred(monkeypatch, [{'date': '2024-01-01', 'value': '4.32'}, {'date': '2024-02-01', 'value': '.'},
+                             {'date': '2024-03-01', 'value': '4.59'}])
+    assert ds.fetch_fred_monthly('GS2', '2024-01', '2024-03', 'placeholder') == {'2024-01': 4.32, '2024-03': 4.59}
+    params = get.call_args.kwargs['params']
+    assert params['series_id'] == 'GS2' and not {'frequency', 'aggregation_method', 'units'} & set(params)
+    # Statistics Canada '..' (null) is dropped, never 0 or the previous month.
+    def request(url, params, *args):
+        return [{'status': 'SUCCESS', 'object': {'responseStatusCode': 0, 'vectorId': 41692327, 'vectorDataPoint': [
+            {'refPer': '2023-11-01', 'value': 164.8}, {'refPer': '2023-12-01', 'value': None}, {'refPer': '2024-01-01', 'value': 165.0}]}}]
+    monkeypatch.setattr(ds, 'request_json', request)
+    assert ds.fetch_statcan_vector_range('41692327', '2023-11', '2024-01') == {'2023-11': 164.8, '2024-01': 165.0}
+
+
 def test_yahoo_backfill_is_disabled_before_any_request(monkeypatch):
     config = load_config(ROOT/'scripts/config-default.toml')
     monkeypatch.setattr(app, 'load_config', lambda: Config(config.sheet_name, '', config.columns, True))

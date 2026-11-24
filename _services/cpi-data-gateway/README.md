@@ -5,10 +5,13 @@ A very small Cloudflare Worker that lets the CPI Web Scraper page on
 CPI_Downloader dataset from FRED, **with each visitor's own FRED API key**. GitHub Pages
 still hosts the website; this Worker is the only server-side piece.
 
-**Status: written and tested, not deployed.** Deploying needs the site owner's own
-Cloudflare account (steps below). Until a gateway URL is configured, the CPI page works in
-Canadian-only mode and says so; nothing on the site claims that live FRED retrieval
-works.
+**Status: deployed 2026-11-24** to <https://cpi-data-gateway.elmatthe.workers.dev> (Workers
+Free, version `a9d5162e-26df-486a-a9a4-baf9c95b2776`, both bindings accepted) and set as
+`data_gateway` in `_data/tool_projects.yml`. Verified live without a real key: health, the
+site's preflight (204, exact origin), a foreign origin refused, a request without a key refused,
+and a made-up well-formed key relayed to FRED and answered `key_rejected` (HTTP 401). A request
+with a valid key is the owner's check (step 6 below). With `data_gateway: ""` the CPI page works
+in Canadian-only mode and says so.
 
 ## Why a gateway is needed
 

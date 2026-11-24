@@ -80,7 +80,8 @@ test("key A -> removed: nothing cached with A is served or labelled as live", as
   await md.quote("AAPL");
   const sent = calls.length;
   const result = md.setApiKey("");
-  assert.deepEqual(result, { persistence: "", saved: false });
+  assert.deepEqual({ persistence: result.persistence, saved: result.saved }, { persistence: "", saved: false });
+  assert.match(result.note, /Alpha Vantage is switched off because its key was removed; it keeps position 2/);
   assert.equal(md.liveAvailable(), false);
   await assert.rejects(md.quote("AAPL"), e => e.kind === "not_configured");
   await assert.rejects(md.history("AAPL", YEAR), e => e.kind === "not_configured");
@@ -211,7 +212,9 @@ test("unavailable storage: the key and caches live in memory for this page; noth
   const { fetchImpl, calls } = server();
   const md = createMarketData({ local: null, session: null, fetchImpl, now: () => NOW, sleep: noSleep, minSpacingMs: 0 });
   assert.equal(md.liveAvailable(), false);
-  assert.deepEqual(md.setApiKey(KEY_A), { persistence: "memory", saved: false });
+  const saved = md.setApiKey(KEY_A);
+  assert.deepEqual({ persistence: saved.persistence, saved: saved.saved }, { persistence: "memory", saved: false });
+  assert.match(saved.note, /Alpha Vantage is switched on at position 2 of 4, after Yahoo Finance/);
   assert.deepEqual(md.settings, { hasKey: true, persistence: "memory" });
   await md.quote("AAPL");
   const sent = calls.length;
@@ -257,11 +260,14 @@ test("remember / session-only storage, switching between them, and removal", () 
   const session = F.memory();
   const md = make({ local, session });
   const SLOT = "md.key.v2.alphavantage";
-  assert.deepEqual(md.setApiKey(KEY_A, { remember: false }), { persistence: "session", saved: true });
+  const first = md.setApiKey(KEY_A, { remember: false });
+  assert.deepEqual([first.persistence, first.saved], ["session", true]);
+  assert.match(first.note, /switched on at position 2/, "a new key switches the provider on");
   assert.equal(local.getItem(SLOT), null, "session-only keys are not written to local storage");
   assert.equal(session.getItem(SLOT), KEY_A);
   assert.equal(loadSettings(local, session).persistence, "session");
-  assert.deepEqual(md.setApiKey(KEY_A, { remember: true }), { persistence: "local", saved: true });
+  const moved = md.setApiKey(KEY_A, { remember: true });
+  assert.deepEqual([moved.persistence, moved.saved, moved.note], ["local", true, null], "the same key moved to local storage: no change to the list");
   assert.equal(session.getItem(SLOT), null, "only one copy is kept");
   assert.equal(loadSettings(local, session).alphaVantageKey, KEY_A);
   // A new tab (empty session storage) still sees a remembered key...

@@ -15,7 +15,31 @@
 // Indexes, FX pairs and futures are recognised and reported as unsupported for
 // holdings. Nothing here guesses a different market when a symbol is not found.
 
+import { DataError } from "./http.js";
+
 export const INSTRUMENT_SCHEMA = "md.instrument.v1";
+
+// A ticker can be reused: prices dated before a listing's curated first trading date
+// (`listedFrom`) belong to a different security that used the same symbol earlier. Every
+// provider series passes through here each time it is read, so those prices can never
+// reach a calculation, a chart or an export, whether they came from a provider or from a
+// copy saved in this browser. Returns the same history object when no date is on file;
+// otherwise a new one with `listing: { listedFrom, removed, note }`. A series with only
+// earlier prices is refused, so the next source in the list can be asked.
+// (_tools/shared_py/market_data/history.py cut_to_listing is the desktop's copy of this
+// rule; _tools/tests/test_market_data_parity.py checks that the two agree.)
+export function cutToListing(history, identity, { provider = null, rangeStart = null } = {}) {
+  const listedFrom = identity?.listedFrom;
+  if (!listedFrom) return history;
+  const ticker = identity.displayTicker;
+  const first = /^\d{4}-\d{2}-\d{2}$/.test(listedFrom) ? Date.parse(`${listedFrom}T00:00:00Z`) : NaN;
+  if (!Number.isFinite(first)) throw new DataError(`The instrument reference has an unreadable listing date for ${ticker}; its price history was not used.`, { kind: "invalid", definitive: true, provider });
+  const observations = history.observations.filter(o => o.date.getTime() >= first);
+  const removed = history.observations.length - observations.length;
+  if (!observations.length && removed) throw new DataError(`${ticker} has been listed only since ${listedFrom}; ${provider || "the source"} returned only earlier prices, which belong to a different security, so they were not used.`, { kind: "not_found", definitive: true, provider });
+  const startsEarlier = removed > 0 || (rangeStart instanceof Date && rangeStart.getTime() < first);
+  return { ...history, observations, listing: { listedFrom, removed, note: startsEarlier ? `${ticker}: listed only since ${listedFrom}; earlier history under this symbol belongs to a different security and is not used.` : null } };
+}
 
 // Exchange prefixes some sites use ("TSX:RY"). TSE: is Google Finance's Toronto prefix.
 const PREFIXES = { "TSX:": ".TO", "TSE:": ".TO", "TSXV:": ".V", "CVE:": ".V", "NEO:": ".NE", "LSE:": ".L", "LON:": ".L", "JPX:": ".T", "TYO:": ".T", "ETR:": ".DE", "SHA:": ".SS", "SHE:": ".SZ", "HKG:": ".HK" };

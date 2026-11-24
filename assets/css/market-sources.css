@@ -1,0 +1,71 @@
+/* Source-priority list shared by the Portfolio Rebalancer and Stock Comparison pages
+   (assets/js/market-data/sources-ui.js). Colours come from each page's own tokens. */
+
+.ms-sources {
+  --ms-border: var(--pj-border, #294063);
+  --ms-surface: var(--pj-surface-2, #1b2e4b);
+  --ms-text: var(--pj-text, #d9e3f4);
+  --ms-heading: var(--pj-heading, #eef4ff);
+  --ms-muted: var(--pj-muted, #9db2d2);
+  --ms-ok: var(--pj-ok, #5ef0ab);
+  --ms-warn: var(--pj-warn, #f2c14e);
+  --ms-accent: var(--pj-accent-strong, #4f8bd6);
+  --ms-focus: var(--pj-focus, #ffb45c);
+  margin: .4rem 0 .6rem;
+}
+.sdd-app .ms-sources {
+  --ms-border: var(--sdd-border);
+  --ms-surface: var(--sdd-surface-2);
+  --ms-text: var(--sdd-text);
+  --ms-heading: var(--sdd-heading);
+  --ms-muted: var(--sdd-muted);
+  --ms-ok: var(--sdd-ok);
+  --ms-warn: var(--sdd-warn);
+  --ms-accent: var(--sdd-accent-border);
+  --ms-focus: var(--sdd-focus);
+}
+.ms-list { list-style: none; margin: 0; padding: 0; display: grid; gap: .45rem; }
+.ms-item {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: .35rem .7rem; align-items: start;
+  border: 1px solid var(--ms-border); border-left: 5px solid var(--ms-border); border-radius: 10px;
+  background: var(--ms-surface); color: var(--ms-text); padding: .5rem .6rem; min-width: 0;
+}
+.ms-item[data-status="on"] { border-left-color: var(--ms-ok); }
+.ms-item[data-status="unavailable"] { border-left-color: var(--ms-warn); }
+.ms-item.ms-dragging { opacity: .55; }
+.ms-item.ms-drop-before { box-shadow: 0 -3px 0 var(--ms-accent); }
+.ms-item.ms-drop-after { box-shadow: 0 3px 0 var(--ms-accent); }
+.ms-handle {
+  display: inline-flex; align-items: center; gap: .35rem; min-height: 2.75rem; min-width: 2.75rem; padding: 0 .55rem;
+  border: 1px solid var(--ms-border); border-radius: 8px; background: transparent; color: var(--ms-heading);
+  font: inherit; font-weight: 700; cursor: grab;
+}
+.ms-handle:active { cursor: grabbing; }
+.ms-handle:focus-visible, .ms-move:focus-visible, .ms-toggle input:focus-visible { outline: 3px solid var(--ms-focus); outline-offset: 2px; }
+.ms-pos { font-size: 1.05rem; min-width: 1.1rem; text-align: center; }
+.ms-grip { color: var(--ms-muted); font-size: 1.1rem; line-height: 1; }
+.ms-body { min-width: 0; }
+.ms-head { margin: .1rem 0 .15rem; display: flex; flex-wrap: wrap; gap: .25rem .6rem; align-items: baseline; }
+.ms-name { color: var(--ms-heading); }
+.ms-state { font-size: .85rem; color: var(--ms-muted); overflow-wrap: anywhere; }
+.ms-item[data-status="on"] .ms-state { color: var(--ms-ok); }
+.ms-item[data-status="unavailable"] .ms-state { color: var(--ms-warn); }
+.ms-ops { list-style: none; margin: .1rem 0; padding: 0; display: flex; flex-wrap: wrap; gap: .25rem; }
+.ms-ops li { border: 1px solid var(--ms-border); border-radius: 999px; padding: 0 .55rem; font-size: .8rem; color: var(--ms-text); }
+.ms-why { margin: .2rem 0 0; font-size: .82rem; color: var(--ms-muted); overflow-wrap: anywhere; }
+.ms-controls { display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; justify-content: flex-end; }
+.ms-toggle { display: inline-flex; align-items: center; gap: .35rem; min-height: 2.75rem; padding: 0 .3rem; font-size: .9rem; cursor: pointer; }
+.ms-toggle input { width: 1.15rem; height: 1.15rem; accent-color: var(--ms-accent); }
+.ms-toggle input:disabled + span { color: var(--ms-muted); }
+.ms-move {
+  min-height: 2.75rem; min-width: 2.75rem; border: 1px solid var(--ms-border); border-radius: 8px;
+  background: transparent; color: var(--ms-heading); font: inherit; font-size: 1.05rem; cursor: pointer;
+}
+.ms-move:disabled { opacity: .35; cursor: default; }
+.ms-help, .ms-notes { margin: .35rem 0 0; font-size: .82rem; color: var(--ms-muted); }
+.ms-live { margin: .25rem 0 0; font-size: .85rem; color: var(--ms-text); min-height: 1em; }
+.ms-notes:empty, .ms-live:empty { display: none; }
+@media (max-width: 34rem) {
+  .ms-item { grid-template-columns: auto minmax(0, 1fr); }
+  .ms-controls { grid-column: 1 / -1; justify-content: flex-start; }
+}

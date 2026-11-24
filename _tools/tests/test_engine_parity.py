@@ -32,7 +32,7 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is
 
 def run_js(tool: str, cases: list, **extra) -> list:
     payload = json.dumps({"tool": tool, "cases": cases, **extra})
-    result = subprocess.run(["node", str(RUNNER)], input=payload, capture_output=True, text=True, timeout=120, check=False)
+    result = subprocess.run(["node", str(RUNNER)], input=payload, capture_output=True, text=True, encoding="utf-8", timeout=120, check=False)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 
@@ -288,7 +288,7 @@ def test_rebalancer_refactor_matches_legacy_browser_engine():
     git = shutil.which("git")
     if git is None:
         pytest.skip("git is required")
-    shown = subprocess.run([git, "show", f"{LEGACY_REF}:projects/portfolio-rebalancer.md"], cwd=ROOT, capture_output=True, text=True, check=False)
+    shown = subprocess.run([git, "show", f"{LEGACY_REF}:projects/portfolio-rebalancer.md"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8", check=False)
     if shown.returncode != 0:
         pytest.skip(f"baseline {LEGACY_REF} unavailable in this checkout")
     cases = list(rb_scenarios())

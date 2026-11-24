@@ -1,5 +1,40 @@
 # Stock Comparison & Analytics Tool - Changelog
 
+## v0.6.0 — 2026-11-04 (candidate; not released)
+- Financial parity with the browser tool (2026-11-23): correlation, beta, regression, their
+  scatter plots and the rolling correlation now pair returns only over identical intervals
+  (`compute_interval_returns`), so a two-day return across one exchange's holiday is no longer
+  paired with another exchange's one-day return ending the same day; weekly and monthly returns
+  pair by ISO week and month. Pairs sharing fewer than 3 intervals are left blank and named in
+  the log. Historical exchange rates fall back to the European Central Bank when the Bank of
+  Canada cannot answer or does not publish a currency (one source per comparison, as in the
+  browser); the log and the Excel Settings sheet name each currency's rate source. In Log
+  returns mode, Sharpe and alpha subtract ln(1 + risk-free rate) per period instead of the
+  simple rate (Sharpe was understated by up to 0.18 at a 25% rate); the regression summary
+  says alpha is per period.
+- After independent review: Windows now gets a time-zone database (`tzdata`), without which
+  every exchange's date silently fell back to UTC there. Prices from before a listing date are
+  removed where every history source is read, before resampling. The source order in the
+  export is the one at the start of the run. A pause Yahoo Finance asks for longer than two
+  hours is honoured (up to 24 hours at a time), not cut short.
+- Financial verification: Bank of Canada rates are now requested from 14 days before the
+  window (as in the browser tool), so a first price on a day without a fixing (Canada Day,
+  for example) is converted with the latest earlier fixing instead of being dropped. Offline
+  CSV prices in `ZAc` (rand cents) and `ILA` (agorot) are now converted to ZAR and ILS, as
+  v0.4.1 intended; before, only pence were. Metrics, correlation and regression are checked
+  against hand arithmetic and numpy/scipy, and against the browser engine on one fixture.
+- Data source "Market data (your source list)" replaces the single provider choice: Yahoo
+  Finance through the site's data gateway (no key; first by default), then Alpha Vantage,
+  Marketstack and Alpaca with your own keys, in the order you set under "Sources…" (Move
+  up / Move down, Alt+Up / Alt+Down, drag; on/off). Finnhub gives latest prices only and is
+  shown but never asked for history.
+- Each ticker uses the first source that can give its history; a source whose series would
+  be coarser than the analysis frequency (Alpha Vantage's weekly closes for a Daily
+  analysis) is skipped with the reason. Logs and the Settings sheet of the Excel export
+  record the source order and each series' source, with the sources tried or skipped.
+- Yahoo Finance requests go one at a time, are reused for 12 hours (history), and pause
+  after any "slow down" answer. Offline CSV mode is unchanged.
+
 ## v0.4.1 - 2026-11-02
 - Fixed London (pence) listings: yfinance reports them as `GBp`, which was upper-cased to `GBP`
   without dividing by 100, so price levels, charts, exports and FX-normalized levels were 100x

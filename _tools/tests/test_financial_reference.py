@@ -26,7 +26,7 @@ from portfolio_rebalancer.core import calculate_rebalance_plan  # noqa: E402
 
 def run_js(tool: str, cases: list) -> list:
     result = subprocess.run(["node", str(RUNNER)], input=json.dumps({"tool": tool, "cases": cases}),
-                            capture_output=True, text=True, timeout=120, check=False)
+                            capture_output=True, text=True, encoding="utf-8", timeout=120, check=False)
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 

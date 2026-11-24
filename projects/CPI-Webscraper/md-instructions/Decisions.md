@@ -1,5 +1,11 @@
 # CPI-Webscraper — Decisions
 
+## 007 — Preservation contract for a public (uncalculated) workbook; chart caches kept empty — 2026-11-23 — Claude Code
+
+The opt-in real-Excel regression failed after the public copy was introduced (R3). Investigation on disposable copies of the canonical workbook (`7df41a…`, recovered from Git history) and the public copy, with real Excel: on the canonical workbook the writer preserves every formula, effective format, name, chart definition and structure, and leaves model results untouched (only the 6,377 array markers of #006 and five `TODAY()` cells differ). The public copy, by design, has no cached results and `fullCalcOnLoad`, so Excel calculates it as it opens; byte-level cached-value equality cannot hold there. The test now asserts the real contract (formulas by anchor text, effective formatting through the column style, structure, names, chart definitions without caches, raw values outside the written months, and model results when the source is already calculated).
+
+That investigation found one genuine defect: removing the chart cache elements made Excel discard chart 1's legend-entry customizations on its first save, write or not. The public scrub now keeps each cache element with only its format code and point count; after Excel saves, its chart definitions equal the canonical's. #004's calculation suppression is unchanged: reopening the written workbook recalculated it to exactly the full-recalculation result.
+
 ## 006 — Compare actual array results across Excel serialization — 2026-09-15 — Release audit
 
 The final canonical workbook is the user's explicitly approved save, SHA256 `7df41a06452c854b3a4f5536b7b648b64d936513a999a3c2eaa12cddc250f8c1`. Retain BC1358 exactly; the final instruction supersedes the earlier requirement that it be blank. Canonical raw data is FRED-only, while Yahoo remains opt-in at runtime. User-approved chart/date controls and formatting are part of the preservation baseline.

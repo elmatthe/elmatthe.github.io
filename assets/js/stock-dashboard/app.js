@@ -1,20 +1,28 @@
 // Stock Comparison & Analytics dashboard controller.
 //
 // Four sections: Comparison, Snapshot, Export, Settings. All analysis happens in
-// this browser. Price data comes from one of three clearly labelled sources:
-//   * Live: the visitor's own free Alpha Vantage key (optional; the key stays here);
+// this browser. Price data comes from one of three clearly labelled choices:
+//   * Market data: the visitor's ordered source list (../market-data/sources.js,
+//     shared with the Rebalancer): Yahoo Finance through this site's data gateway (no
+//     key; first by default) and Alpha Vantage with the visitor's own key. For each
+//     ticker the first source that can give price history is used; a source without
+//     history (Marketstack, Finnhub on this website) is never asked; one comparison
+//     never mixes daily and weekly series;
 //   * CSV: price files the visitor opens (read locally, never uploaded);
 //   * Offline demo: synthetic prices generated in the browser.
+// Every series carries the source it actually came from, the sources tried or skipped
+// before it, in the page and in exports.
 // Currency normalization uses official central-bank rates (Bank of Canada, ECB
 // fallback). See ../market-data/ for providers, validation and caching.
 
-import { createMarketData, DataError, selectBasis, describeAge, FRESHNESS_LABEL, fxSupported, KEY_STORAGE_TEXT } from "../market-data/index.js";
+import { createMarketData, DataError, selectBasis, describeAge, FRESHNESS_LABEL, fxSupported, KEY_STORAGE_TEXT, KEYLESS_ID, KEYLESS_PROVIDER, KEYLESS_VIA, resolveMarketGateway, sourceName, describeSkipped } from "../market-data/index.js";
+import { createSourceList } from "../market-data/sources-ui.js";
 import { normalizeSymbol, normalizeSymbolList, MAX_TICKERS, MIN_COMPARE_TICKERS, SymbolError } from "../market-data/symbols.js";
 import { buildFxAligner, normalizeSeries } from "../market-data/fx-align.js";
 import { parsePriceCsv } from "../market-data/price-import.js";
 import * as A from "./analytics.js";
 import { DEMO_SECURITIES, demoSeries, demoFxRates } from "./demo.js";
-import { buildWorkbookSheets, basisSummary, currencySummary, LIVE_DATA_NOTE } from "./export.js";
+import { buildWorkbookSheets, buildCsvRows, basisSummary, currencySummary, BASIS_LABEL, LIVE_DATA_NOTE, FREE_DATA_NOTE, FREE_SOURCE_LABEL, AV_SOURCE_LABEL } from "./export.js";
 import { buildXlsx, toCsv, downloadBlob, timestampSlug } from "../shared/export-files.js";
 
 const app = document.getElementById("sdd-app");
@@ -22,7 +30,7 @@ if (app) init();
 
 function init() {
   const $ = id => document.getElementById(id);
-  const md = createMarketData();
+  const md = createMarketData({ gatewayUrl: resolveMarketGateway(app.dataset.marketGateway, window.location) });
   const state = {
     comparison: null,       // latest completed comparison (export snapshot)
     compareController: null,
@@ -112,7 +120,6 @@ function init() {
   const hideNotice = node => { node.hidden = true; node.replaceChildren(); };
   const describeError = error => (error instanceof DataError || error instanceof SymbolError || error?.kind)
     ? error.message : "Unexpected error. Please try again.";
-  const BASIS_LABEL = { adjusted_close: "Adjusted close (dividends included)", close: "Close (price only)", synthetic: "Synthetic" };
 
   /* ================= theme ================= */
   const THEME_KEY = "sdd.theme";
@@ -158,35 +165,75 @@ function init() {
   const initialTab = tabs.find(t => `#${t.id.replace("sddTab-", "")}` === window.location.hash);
   if (initialTab) selectTab(initialTab, { updateHash: false });
   /* ================= data status widget ================= */
+  // The source a comparison would use first, and why others would not be used.
+  function historySources() {
+    return md.sources.list().filter(x => x.enabled && x.ops.includes("history"));
+  }
   function renderDataStatus() {
     const pill = $("sddPipelineState");
     const detail = $("sddPipelineDetail");
-    if (md.liveAvailable()) {
-      const usage = md.usage();
-      pill.textContent = usage.dailyLimit ? "Limit reached" : "Your key";
-      pill.className = `sdd-pill ${usage.dailyLimit ? "warn" : "ok"}`;
-      // This browser's own count, never presented as the provider's quota usage.
-      detail.textContent = usage.dailyLimit
-        ? `Alpha Vantage reported this key's daily limit at ${new Date(usage.dailyLimit.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}. No more Alpha Vantage requests are sent from this browser until 00:00 UTC (${new Date(usage.resetsAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} your time), unless you check again in Settings.`
-        : `Alpha Vantage · requests sent from this browser today (UTC): ${usage.count}. The free plan allows 25 per day; Alpha Vantage counts every use of the key.`;
+    const usable = historySources().filter(x => x.available);
+    const first = usable[0];
+    if (first) {
+      const limited = md.liveAvailable() && md.usage().dailyLimit;
+      pill.textContent = first.name;
+      pill.className = "sdd-pill ok";
+      detail.textContent = `Tried first: ${first.name}${first.id === KEYLESS_ID ? " (no key needed; prices may be delayed)" : " (your key)"}.${usable.length > 1 ? ` Then: ${usable.slice(1).map(x => x.name).join(", ")}.` : ""}${limited ? " Alpha Vantage reported its daily limit today and is skipped until 00:00 UTC." : ""} Change the order in Settings.`;
     } else {
-      pill.textContent = "Off";
+      pill.textContent = "Unavailable";
       pill.className = "sdd-pill idle";
-      detail.textContent = "Add your free Alpha Vantage key in Settings, or use your CSV files or the offline demo.";
+      detail.textContent = `${freeSourceText()} No other source in your list can give price history right now. Add your free Alpha Vantage key in Settings, or use your CSV files or the offline demo.`;
     }
+    renderFreeSource();
     const cached = md.cacheSize();
     $("sddCacheState").textContent = `Cache: ${cached} saved response${cached === 1 ? "" : "s"}`;
     $("sddCacheCount").textContent = `${cached} saved response${cached === 1 ? "" : "s"}`;
     const where = md.settings.persistence;
     $("sddKeyState").textContent = md.liveAvailable()
       ? `Your key is ${KEY_STORAGE_TEXT[where] || "saved in this browser"}. Requests sent from this browser today (UTC): ${md.usage().count}.${md.usage().dailyLimit ? ` Alpha Vantage reported the daily limit${md.usage().dailyLimit.notice ? `: “${md.usage().dailyLimit.notice}”` : "."}` : ""}`
-      : "No key saved. Live data is off.";
+      : "No Alpha Vantage key saved.";
     if (md.liveAvailable()) $("sddKeyRemember").checked = where === "local";
     $("sddKeyRemove").disabled = !md.liveAvailable();
     if (typeof tickerList !== "undefined" && tickerList) renderEstimate();
   }
+  function freeSourceText() {
+    const yahoo = md.sources.list().find(x => x.id === KEYLESS_ID);
+    const st = md.keyless.status();
+    const pause = md.keyless.pauseState();
+    if (st.state === "enabled" && pause.paused) return `Yahoo Finance: ${pause.reason}; the next source in your list is used until then.`;
+    if (st.state === "enabled") return yahoo?.enabled ? `Yahoo Finance: available (position ${yahoo.position} in your list).` : "Yahoo Finance: available, but switched off in your list.";
+    return {
+      checking: "Yahoo Finance: checking…",
+      disabled: "Yahoo Finance: not available right now (switched off on this site at the moment).",
+      unreachable: "Yahoo Finance: not available right now (this site's data gateway could not be reached).",
+      not_configured: "Yahoo Finance: not available on this site yet.",
+    }[st.state] || "Yahoo Finance: not available right now.";
+  }
+  // Yahoo Finance's state and the source order, always visible (with the reason when off).
+  function renderFreeSource() {
+    const st = md.keyless.status();
+    const pause = md.keyless.pauseState();
+    app.dataset.freeSource = st.state === "enabled" && pause.paused ? "paused" : st.state;
+    const order = md.sources.list();
+    const usable = order.filter(x => x.enabled && x.ops.includes("history") && x.available);
+    $("sddFreeState").textContent = usable.length ? `(${usable.map(x => x.name).join(" → ")})` : "(no source available)";
+    $("sddSourceOrder").textContent = `Tried in this order: ${order.map(x => `${x.position}. ${x.name}${!x.enabled ? " (off)" : !x.ops.includes("history") ? " (latest prices only, not used here)" : !x.available ? ` (${x.state.reason})` : ""}`).join(" · ")}. Change it in Settings.`;
+    $("sddFreeSourceState").textContent = freeSourceText();
+    $("sddFreeRecheck").hidden = !["unreachable", "disabled"].includes(st.state);
+    sourceList?.render();
+  }
   const openSettings = () => { selectTab($("sddTab-settings")); app.scrollIntoView({ behavior: "smooth", block: "start" }); };
   $("sddOpenSettings").addEventListener("click", openSettings);
+  let sourceList = null;
+  sourceList = createSourceList($("sddSources"), md, {
+    op: "history",
+    idPrefix: "sddSrc",
+    describeKey: id => (id === "alphavantage" ? "Add your Alpha Vantage key below; it is then switched on here." : `${sourceName(id)} keys are added in the Portfolio Rebalancer.`),
+    onChange: change => {
+      setStatus($("sddCompareStatus"), `${change.message} The new order applies to the next comparison.`, null);
+      renderDataStatus();
+    },
+  });
 
   /* ================= Compare: ticker rows ================= */
   const tickerList = $("sddTickerList");
@@ -212,6 +259,12 @@ function init() {
       row.append(b);
     });
     return row;
+  }
+  // Tickers typed for a live source survive a change of the source's availability.
+  function keepTypedTickers() {
+    if (sourceValue() !== "market") return;
+    const typed = [...tickerList.querySelectorAll("input")].map(i => i.value.trim()).filter(Boolean);
+    if (typed.length) state.liveTickers = typed;
   }
   function setTickers(values) {
     tickerList.replaceChildren(...values.map(tickerRow));
@@ -268,29 +321,36 @@ function init() {
       setStatus($("sddCompareStatus"), tickers.length ? `${tickers.length} ticker${tickers.length === 1 ? "" : "s"} loaded from your file${state.importedFiles.length === 1 ? "" : "s"}. Remove any you don't want, then run.` : "Open one or more CSV price files.", null);
     } else {
       setTickers(state.liveTickers.length >= MIN_COMPARE_TICKERS ? state.liveTickers : ["AAPL", "MSFT", "SPY"]);
-      setStatus($("sddCompareStatus"), md.liveAvailable() ? "Ready. Enter 2–10 tickers and run the comparison." : "Live data needs your own free Alpha Vantage key (Settings). Or choose CSV files or the offline demo.", md.liveAvailable() ? null : "warn");
+      const usable = historySources().filter(x => x.available);
+      setStatus($("sddCompareStatus"), usable.length ? `Ready. Prices come from ${usable[0].name} first${usable.length > 1 ? `, then ${usable.slice(1).map(x => x.name).join(", ")}` : ""}. Enter 2–10 tickers and run the comparison.` : `${freeSourceText()} No other source in your list can give price history. Add an Alpha Vantage key in Settings, or choose CSV files or the offline demo.`, usable.length ? null : "warn");
     }
     syncTickerButtons();
     renderEstimate();
   }
-  // Request estimate shown before a live run (the free plan allows 25 per day).
+  // Request estimate shown before a market-data run: per ticker, the first source in the
+  // list that would be asked (later sources are asked only if it cannot answer).
   function renderEstimate() {
     const box = $("sddEstimate");
-    if (sourceValue() !== "live" || !md.liveAvailable()) { box.textContent = ""; return; }
+    if (sourceValue() !== "market") { box.textContent = ""; return; }
     const symbols = [...new Set([...tickerList.querySelectorAll("input")].map(i => i.value.trim().toUpperCase()).filter(Boolean))];
     let range;
     try { range = A.resolveHorizon($("sddHorizon").value, new Date()); } catch (_) { box.textContent = ""; return; }
+    if (!symbols.length) { box.textContent = ""; return; }
+    const first = historySources().find(x => x.available);
+    if (!first) { box.textContent = ""; return; }
+    if (first.id === KEYLESS_ID) {
+      box.textContent = `This run sends at most ${symbols.length} Yahoo Finance request${symbols.length === 1 ? "" : "s"} (one per ticker, one at a time; copies saved in this browser cost none). No key or personal allowance is involved; the gateway limits requests per visitor.${md.liveAvailable() && historySources().some(x => x.id === "alphavantage" && x.available) ? " Alpha Vantage is asked only for tickers Yahoo Finance cannot give." : ""}`;
+      return;
+    }
     const cost = md.historyCost(symbols, range);
     const usage = md.usage();
-    box.textContent = symbols.length
-      ? `This run needs ${cost.min === cost.max ? `about ${cost.min}` : `${cost.min}–${cost.max}`} Alpha Vantage request${cost.max === 1 ? "" : "s"}${cost.cached ? ` (${cost.cached} ticker${cost.cached === 1 ? "" : "s"} saved in this browser cost none)` : ""}. This browser sent ${usage.count} today (UTC); the free plan allows 25 per day.${usage.dailyLimit ? " Alpha Vantage reported the daily limit today." : ""}`
-      : "";
+    box.textContent = `This run needs ${cost.min === cost.max ? `about ${cost.min}` : `${cost.min}–${cost.max}`} Alpha Vantage request${cost.max === 1 ? "" : "s"}${cost.cached ? ` (${cost.cached} ticker${cost.cached === 1 ? "" : "s"} saved in this browser cost none)` : ""}. This browser sent ${usage.count} today (UTC); the free plan allows 25 per day.${usage.dailyLimit ? " Alpha Vantage reported the daily limit today." : ""}`;
   }
   tickerList.addEventListener("input", renderEstimate);
   $("sddHorizon").addEventListener("change", renderEstimate);
   let previousSource = sourceValue();
   compareForm.querySelectorAll('input[name="source"]').forEach(radio => radio.addEventListener("change", () => {
-    if (previousSource === "live") state.liveTickers = [...tickerList.querySelectorAll("input")].map(i => i.value.trim()).filter(Boolean);
+    if (previousSource === "market") state.liveTickers = [...tickerList.querySelectorAll("input")].map(i => i.value.trim()).filter(Boolean);
     previousSource = sourceValue();
     syncSource();
   }));
@@ -357,9 +417,9 @@ function init() {
       (inputs[errors.find(e => e.index >= 0)?.index] || inputs[0])?.focus();
       return;
     }
-    if (source === "live" && !md.liveAvailable()) {
-      setStatus(status, "Live data needs your own free Alpha Vantage key.", "error");
-      showNotice(notice, { tone: "info", title: "Live data is not set up in this browser.", items: ["Add your free Alpha Vantage key in Settings (it stays in this browser), open your own CSV price files, or use the offline demo."], actions: [{ label: "Open Settings", onClick: openSettings, secondary: false }, { label: "Use offline demo", onClick: useOfflineDemo }] });
+    if (source === "market" && !historySources().some(x => x.available)) {
+      setStatus(status, "No source in your list can give price history right now.", "error");
+      showNotice(notice, { tone: "info", title: "No market-data source is available.", items: [freeSourceText(), ...md.sources.list().filter(x => x.id !== KEYLESS_ID).map(x => `${x.name}: ${!x.ops.includes("history") ? "latest prices only, not used for comparisons" : x.status === "needs_key" ? "no key saved" : !x.enabled ? "switched off in your list" : x.state.reason || "not available"}`), "Add your free Alpha Vantage key in Settings, open your own CSV price files, or use the offline demo."], actions: [{ label: "Open Settings", onClick: openSettings, secondary: false }, { label: "Use offline demo", onClick: useOfflineDemo }] });
       return;
     }
     const riskInput = $("sddRiskFree");
@@ -383,7 +443,12 @@ function init() {
     $("sddCancelCompare").disabled = false;
     chips.replaceChildren();
     progress.value = 0;
-    setStatus(status, demo ? "Generating synthetic demo prices…" : source === "csv" ? "Reading your imported prices…" : "Requesting prices with your Alpha Vantage key…", null);
+    setStatus(status, demo ? "Generating synthetic demo prices…" : source === "csv" ? "Reading your imported prices…" : "Requesting prices from your sources, one ticker at a time…", null);
+    // Every series of one run has the same frequency: the one the first usable history
+    // source gives for this window. A source that would give another is skipped.
+    const runFrequency = source === "market" ? md.expectedHistoryFrequency(range) : null;
+    // The order as it stands now: a later reorder must not rewrite this run's record.
+    const requestOrder = source === "market" ? md.sources.describeOrder() : null;
 
     const seriesByTicker = {};
     const provenance = [];
@@ -413,24 +478,33 @@ function init() {
             prov = { source: "Your CSV file", via: history.fileName, retrievedAt: null, cached: false };
           } else {
             chip(symbol, "busy", "fetching");
-            ({ history, provenance: prov } = await md.history(symbol, range, { signal: controller.signal }));
-            prov = { source: prov.provider, via: prov.via, retrievedAt: prov.retrievedAt, cached: prov.cached, stale: prov.stale, ageMs: prov.ageMs };
+            ({ history, provenance: prov } = await md.historyBySources(symbol, range, { signal: controller.signal, frequency: runFrequency }));
+            const free = prov.sourceId === KEYLESS_ID;
+            prov = {
+              source: free ? FREE_SOURCE_LABEL : AV_SOURCE_LABEL, sourceId: prov.sourceId, via: prov.via, retrievedAt: prov.retrievedAt, cached: prov.cached,
+              cacheWhere: prov.cacheWhere || (prov.cached ? "browser" : null), stale: Boolean(prov.stale), ageMs: prov.ageMs, sourceTier: free ? "free" : "key",
+              providerSymbol: prov.symbol || null,
+              triedFirst: (prov.attempts || []).map(a => `${a.provider}: ${a.message}`),
+              skipped: describeSkipped(prov.skipped || []),
+              sourceOrder: prov.sourceOrder || requestOrder,
+            };
           }
           const chosen = selectBasis(history, basis);
           seriesByTicker[symbol] = {
             ticker: symbol, currency: history.currency, observations: chosen.observations, priceBasis: chosen.priceBasis,
-            frequency: history.frequency || "daily", basisWarning: chosen.warning,
+            frequency: history.frequency || "daily", basisWarning: chosen.warning, listingNote: history.listing?.note || null,
             identity: { name: history.name, instrumentType: history.instrumentType, exchange: history.exchange, unitScale: history.unitScale, rawCurrency: history.rawCurrency },
             adjustmentNote: chosen.priceBasis === "adjusted_close" ? history.adjustment?.adjClose : history.adjustment?.close,
             currencyVerified: history.currencyVerified !== false,
           };
           provenance.push({ ticker: symbol, ...prov, basis: BASIS_LABEL[chosen.priceBasis], frequency: history.frequency });
-          chip(symbol, prov.stale ? "error" : "ok", prov.stale ? "saved copy (refresh failed)" : prov.cached ? "cached" : source === "csv" ? "from file" : "fetched");
+          chip(symbol, prov.stale ? "error" : "ok", `${prov.stale ? "saved copy (refresh failed)" : prov.cached ? (prov.cacheWhere === "gateway" ? "gateway copy" : "cached") : source === "csv" ? "from file" : "fetched"}${prov.sourceId ? ` · ${sourceName(prov.sourceId)}` : ""}`);
         } catch (error) {
           if (aborted()) break;
           if (error.kind === "key_changed") throw error; // one comparison never mixes two keys
-          failures.push({ symbol, message: describeError(error), error });
-          chip(symbol, "error", error.kind === "not_found" ? "no data" : error.kind === "rate_limited" ? "limit reached" : "failed");
+          const why = describeError(error);
+          failures.push({ symbol, message: why.includes(symbol) ? why : `${symbol}: ${why}`, error });
+          chip(symbol, "error", error.kind === "not_found" ? "no data" : error.kind === "rate_limited" ? "limited or paused" : error.kind === "not_covered" ? "not covered" : "failed");
         } finally {
           done += 1;
           progress.value = Math.round(done / symbols.length * (target ? 80 : 95));
@@ -448,6 +522,7 @@ function init() {
         const prepared = A.prepareHistory(series, horizon, range, now);
         warnings.push(...prepared.warnings);
         if (series.basisWarning) warnings.push(series.basisWarning);
+        if (series.listingNote) warnings.push(series.listingNote);
         if (series.identity?.unitScale && series.identity.unitScale !== 1) warnings.push(`${symbol}: prices quoted in ${series.identity.rawCurrency} (minor units) were converted to ${series.currency}.`);
         if (!series.currencyVerified) warnings.push(`${symbol}: the provider did not confirm the listing currency; it is treated as unknown.`);
         if (prepared.observations.length >= 2) histories[symbol] = prepared;
@@ -515,15 +590,38 @@ function init() {
         return;
       }
       const result = A.runComparison(Object.fromEntries(usable.map(s => [s, histories[s]])), { riskFreeAnnual: riskFree });
+      // Series from different sources are calculated differently (for example Alpha
+      // Vantage daily closes are as traded, Yahoo Finance closes are split-adjusted):
+      // said plainly, never mixed silently.
+      const usedProv = provenance.filter(p => usable.includes(p.ticker));
+      const usedSources = [...new Set(usedProv.map(p => p.source))];
+      if (source === "market" && usedSources.length > 1) warnings.push(`This comparison combines sources: ${usedSources.map(src => `${src} for ${usedProv.filter(p => p.source === src).map(p => p.ticker).join(", ")}`).join("; ")}. Their prices are calculated differently, so compare like with like where it matters.`);
+      for (const p of usedProv) if (p.triedFirst?.length) warnings.push(`${p.ticker}: ${p.source} was used because ${p.triedFirst.join("; ")}.`);
       const allWarnings = [...new Set([...result.warnings, ...warnings])];
+      // One record per ticker requested, used or not, for every export.
+      const sourceAudit = symbols.map(symbol => {
+        const p = provenance.find(x => x.ticker === symbol);
+        const used = usable.includes(symbol);
+        const failed = failures.find(f => f.symbol === symbol);
+        return {
+          ticker: symbol, status: used ? "used" : "not used", source: p ? (p.via ? `${p.source} (${p.via})` : p.source) : "",
+          sourceOrder: p?.sourceOrder || failed?.error?.sourceOrder || requestOrder,
+          triedFirst: p?.triedFirst || (failed?.error?.attempts || []).map(a => `${a.provider}: ${a.message}`),
+          skipped: p?.skipped || describeSkipped(failed?.error?.skipped || []),
+          retrievedAt: p?.retrievedAt || "", cached: p ? (p.stale ? "saved copy (refresh failed)" : p.cached ? (p.cacheWhere === "gateway" ? "yes (data gateway copy)" : "yes") : "no") : "",
+          reason: used ? "" : failed?.message || "not used in this comparison",
+        };
+      });
       state.comparison = {
         tickers: usable, horizon, riskFree, normalizedTo, excludedForCurrency, fxSources, basis, frequency: result.frequency, periodsPerYear: result.periodsPerYear,
-        mixedCurrencies: result.mixedCurrencies, mixedBases: result.mixedBases, liveNote: source === "live" && !demo ? LIVE_DATA_NOTE : null,
+        mixedCurrencies: result.mixedCurrencies, mixedBases: result.mixedBases,
+        liveNote: source === "market" ? [usedProv.some(p => p.sourceId === KEYLESS_ID) ? FREE_DATA_NOTE : null, usedProv.some(p => p.sourceId === "alphavantage") ? LIVE_DATA_NOTE : null].filter(Boolean).join(" ") || null : null,
+        sourceOrder: requestOrder, sourceAudit,
         requestedStart: A.isoDate(range.start), requestedEnd: A.isoDate(range.end),
-        completedAt: new Date().toISOString(), source: demo ? "Synthetic demo" : source === "csv" ? "Your CSV file" : "Alpha Vantage (your key)",
+        completedAt: new Date().toISOString(), source: demo ? "Synthetic demo" : source === "csv" ? "Your CSV file" : usedSources.length === 1 ? usedSources[0] : `Several sources (${usedSources.join(", ")})`,
         series: usable.map(s => histories[s]), metrics: result.metrics, matrix: result.matrix, counts: result.counts,
         returns: result.returns, warnings: allWarnings, failures: failures.map(f => f.message),
-        provenance: provenance.filter(p => usable.includes(p.ticker)), regression: null,
+        provenance: usedProv, regression: null,
       };
       progress.value = 100;
       renderComparison();
@@ -624,7 +722,7 @@ function init() {
     const sources = $("sddCompareSources");
     sources.replaceChildren();
     c.provenance.forEach(p => sources.append(el("li", `${p.ticker} · ${p.source}${p.via ? ` (${p.via})` : ""} · ${p.basis || ""}${p.frequency ? `, ${p.frequency}` : ""}` +
-      `${p.retrievedAt ? ` · retrieved ${localTime(p.retrievedAt)}` : ""}${p.stale ? ` · saved copy from ${describeAge(p.ageMs)} ago (refresh failed)` : p.cached ? ` · from this browser's cache (${describeAge(p.ageMs)})` : ""}`)));
+      `${p.providerSymbol ? ` · symbol ${p.providerSymbol}` : ""}${p.retrievedAt ? ` · retrieved ${localTime(p.retrievedAt)}` : ""}${p.stale ? ` · saved copy from ${describeAge(p.ageMs)} ago (refresh failed)` : p.cached ? ` · from ${p.cacheWhere === "gateway" ? "the gateway's" : "this browser's"} cache (${describeAge(p.ageMs)})` : ""}`)));
     c.series.forEach(s => { if (s.adjustmentNote) sources.append(el("li", `${s.ticker}: ${s.adjustmentNote}`, "muted")); });
   }
 
@@ -808,17 +906,21 @@ function init() {
         series = { ticker: symbol, currency: h.currency, observations: chosen.observations, priceBasis: chosen.priceBasis, frequency: h.frequency, identity: { displayName: null, assetType: null, exchange: null }, market: {} };
         source = { source: "Your CSV file", via: h.fileName, retrievedAt: null, cached: false };
       } else {
-        if (!md.liveAvailable()) throw new DataError("Live data needs your own free Alpha Vantage key (Settings). Snapshot also works for tickers in your imported CSV files and for the demo tickers.", { kind: "not_configured" });
-        const q = await md.quote(symbol, { signal: controller.signal });
-        setStatus(status, `Loading ${symbol} history…`, null);
-        const { history, provenance } = await md.history(symbol, range, { signal: controller.signal });
+        // Latest price and history both from the first source in the list that has both.
+        const snap = await md.snapshotBySources(symbol, range, { signal: controller.signal });
+        const history = snap.history;
         const chosen = selectBasis(history, "adjusted");
+        const free = snap.sourceId === KEYLESS_ID;
         series = {
           ticker: symbol, currency: history.currency, observations: chosen.observations, priceBasis: chosen.priceBasis, frequency: history.frequency,
-          identity: { displayName: history.name, assetType: history.instrumentType, exchange: history.exchange },
-          market: { price: q.quote.price, sessionDate: q.quote.sessionDate, previousClose: q.quote.previousClose, dayHigh: q.quote.dayHigh, dayLow: q.quote.dayLow, volume: q.quote.volume, freshness: q.freshness, quoteCached: q.provenance.cached },
+          identity: { displayName: snap.quote.name || history.name, assetType: snap.quote.instrumentType || history.instrumentType, exchange: snap.quote.exchange || history.exchange },
+          market: { price: snap.quote.price, sessionDate: snap.quote.sessionDate, previousClose: snap.quote.previousClose, dayHigh: snap.quote.dayHigh, dayLow: snap.quote.dayLow, volume: snap.quote.volume, freshness: snap.freshness, quoteCached: snap.quoteProvenance.cached, priceTime: snap.quote.priceTime },
         };
-        source = { source: provenance.provider, via: provenance.via, retrievedAt: provenance.retrievedAt, cached: provenance.cached && q.provenance.cached, stale: provenance.stale || q.provenance.stale };
+        source = {
+          source: free ? FREE_SOURCE_LABEL : AV_SOURCE_LABEL, via: free ? KEYLESS_VIA : snap.provenance.via, retrievedAt: snap.quoteProvenance.retrievedAt,
+          cached: snap.quoteProvenance.cached && snap.provenance.cached, stale: Boolean(snap.provenance.stale || snap.quoteProvenance.stale), delayed: free,
+          triedFirst: snap.attempts.map(a => `${a.provider}: ${a.message}`), skipped: describeSkipped(snap.skipped), listingNote: history.listing?.note || null,
+        };
       }
       state.snapshot = { series, provenance: source };
       renderSnapshot();
@@ -831,7 +933,7 @@ function init() {
       setStatus(status, describeError(error), "error");
       const configure = error.kind === "not_configured" || error.kind === "auth";
       showNotice(notice, {
-        title: error.definitive ? "No data for this ticker." : configure ? "Live data is not set up." : "Prices could not be retrieved.",
+        title: error.definitive ? "No data for this ticker." : configure ? "No market-data source is available." : "Prices could not be retrieved.",
         items: [describeError(error)],
         actions: configure ? [{ label: "Open Settings", onClick: openSettings, secondary: false }] : error.definitive ? [] : [{ label: "Retry", onClick: () => loadSnapshot(symbol), secondary: false }],
       });
@@ -859,7 +961,7 @@ function init() {
     const last = series.observations[series.observations.length - 1];
     fillDl($("sddSnapshotMarket"), [
       ["Latest price", isNum(m.price) ? money(m.price, series.currency) : last ? `${money(last.price, series.currency)} (last ${series.frequency === "weekly" ? "weekly" : ""} close)` : "Unavailable"],
-      ["Price date", m.sessionDate || (last ? A.isoDate(last.date) : "Unavailable")],
+      ["Price date", m.sessionDate ? `${m.sessionDate}${m.priceTime ? ` (price time ${localTime(m.priceTime)}; may be delayed)` : ""}` : (last ? A.isoDate(last.date) : "Unavailable")],
       ["Freshness", m.freshness ? `${FRESHNESS_LABEL[m.freshness.status]}${m.quoteCached ? " · cached" : ""}` : "—"],
       ["Day range", isNum(m.dayLow) && isNum(m.dayHigh) ? `${money(m.dayLow)} – ${money(m.dayHigh)}` : "Unavailable"],
       ["Previous close", isNum(m.previousClose) ? money(m.previousClose, series.currency) : "Unavailable"],
@@ -868,7 +970,7 @@ function init() {
       ["1Y volatility", metrics ? pct(metrics.annualizedVolatility) : "—"],
       ["1Y max drawdown", metrics ? pct(metrics.maxDrawdown) : "—"],
     ]);
-    $("sddSnapshotSource").textContent = `${provenance.source}${provenance.via ? ` (${provenance.via})` : ""}${provenance.retrievedAt ? ` · retrieved ${localTime(provenance.retrievedAt)}` : ""}${provenance.cached ? " (cached)" : ""}${provenance.stale ? " · saved copy; the latest refresh failed" : ""}.`;
+    $("sddSnapshotSource").textContent = `${provenance.source}${provenance.via ? ` (${provenance.via})` : ""}${provenance.retrievedAt ? ` · retrieved ${localTime(provenance.retrievedAt)}` : ""}${provenance.cached ? " (cached)" : ""}${provenance.stale ? " · saved copy; the latest refresh failed" : ""}${provenance.delayed ? " · may be delayed" : ""}.${provenance.triedFirst?.length ? ` Tried first: ${provenance.triedFirst.join("; ")}.` : ""}${provenance.skipped?.length ? ` Skipped: ${provenance.skipped.join("; ")}.` : ""}${provenance.listingNote ? ` ${provenance.listingNote}` : ""}`;
     const points = series.observations;
     makeChart("snapshot", "sddChartSnapshot", lineConfig(points.map(p => A.isoDate(p.date)), [{
       label: series.ticker, data: points.map(p => p.price), borderColor: PALETTE[0], backgroundColor: PALETTE[0], pointRadius: 0, borderWidth: 2, tension: 0.1,
@@ -898,18 +1000,8 @@ function init() {
   function csvExport(kind) {
     const c = state.comparison;
     if (!c) return;
-    let rows;
-    if (kind === "metrics") {
-      rows = [["Ticker", "Currency", "Price basis", "Frequency", "Total return", "Annualized return", "Annualized volatility", "Sharpe ratio", "Max drawdown", "Return observations", "Actual start", "Actual end", "Source", "Native currency"],
-        ...c.metrics.map(m => [m.ticker, m.currency || "unknown", BASIS_LABEL[m.priceBasis] || "", m.frequency, m.totalReturn, m.annualizedReturn, m.annualizedVolatility, m.sharpe, m.maxDrawdown, m.returnObservations, m.actualStart, m.actualEnd, c.source, m.nativeCurrency || "unknown"]),
-        [], ["Price basis", basisSummary(c)], ["Currency", currencySummary(c)], ...(c.liveNote ? [["Note", c.liveNote]] : [])];
-    } else if (kind === "correlation") {
-      rows = [["Ticker", ...c.tickers], ...c.tickers.map(l => [l, ...c.tickers.map(r => c.matrix[l][r])]), [], ["Shared returns", ...c.tickers], ...c.tickers.map(l => [l, ...c.tickers.map(r => c.counts[l][r])])];
-    } else {
-      rows = [["Date", "Ticker", "Price", "Price basis", "Currency", "Source", "Native currency"], ...c.series.flatMap(s => s.observations.map(o => [A.isoDate(o.date), s.ticker, o.price, BASIS_LABEL[s.priceBasis] || "", s.currency || "unknown", c.source, s.nativeCurrency || s.currency || "unknown"]))];
-    }
     const name = `stock-comparison-${kind}-${timestampSlug()}.csv`;
-    downloadBlob(new Blob([toCsv(rows)], { type: "text/csv;charset=utf-8" }), name);
+    downloadBlob(new Blob([toCsv(buildCsvRows(kind, c))], { type: "text/csv;charset=utf-8" }), name);
     exported(name);
   }
   $("sddExportMetrics").addEventListener("click", () => csvExport("metrics"));
@@ -937,22 +1029,22 @@ function init() {
     const input = $("sddKey");
     const out = $("sddKeyStatus");
     try {
-      const { persistence } = md.setApiKey(input.value, { remember: $("sddKeyRemember").checked });
+      const { persistence, note } = md.setApiKey(input.value, { remember: $("sddKeyRemember").checked });
       input.value = "";
       input.removeAttribute("aria-invalid");
-      setStatus(out, md.liveAvailable() ? `Key ${KEY_STORAGE_TEXT[persistence]}.` : "Key removed.", "ok");
+      setStatus(out, `${md.liveAvailable() ? `Key ${KEY_STORAGE_TEXT[persistence]}.` : "Key removed."}${note ? ` ${note}` : ""}`, "ok");
     } catch (error) {
       input.setAttribute("aria-invalid", "true");
       setStatus(out, error.message, "error");
     }
     renderDataStatus();
-    if (sourceValue() === "live") syncSource();
+    if (sourceValue() === "market") syncSource();
   });
   $("sddKeyRemove").addEventListener("click", () => {
-    md.setApiKey("");
-    setStatus($("sddKeyStatus"), "Key removed from this browser, with the responses fetched with it.", null);
+    const { note } = md.setApiKey("");
+    setStatus($("sddKeyStatus"), `Key removed from this browser, with the responses fetched with it.${note ? ` ${note}` : ""}`, null);
     renderDataStatus();
-    if (sourceValue() === "live") syncSource();
+    if (sourceValue() === "market") syncSource();
   });
   $("sddClearCache").addEventListener("click", () => {
     const removed = md.clearCache();
@@ -963,6 +1055,14 @@ function init() {
   renderDataStatus();
   syncSource();
   updateExportState();
+  // One health check of the site's data gateway (only when one is configured).
+  const onFreeChecked = () => {
+    keepTypedTickers(); // the check can finish after the visitor has typed tickers
+    renderDataStatus();
+    syncSource();
+  };
+  $("sddFreeRecheck").addEventListener("click", () => md.keyless.check({ force: true }).then(onFreeChecked));
+  md.keyless.check().then(onFreeChecked);
   if (!CHART_AVAILABLE) setStatus($("sddCompareStatus"), "The chart library did not load; reload the page. Tables and metrics still work.", "warn");
   app.dataset.ready = "true";
 }

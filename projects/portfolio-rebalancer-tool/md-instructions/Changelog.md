@@ -1,5 +1,40 @@
 # Portfolio Rebalancer — Changelog
 
+## Unreleased — 2026-11-23 (PR 46 application fixes)
+- Budget and sell proceeds are now never exceeded, even by less than a cent (web and desktop). A cent of
+  tolerance let a New Money plan buy $100.009 on a $100 budget (a holding $0.009 overweight), shown as $100.01;
+  Rebalance could spend $0.004 more than its sells. Any excess beyond floating-point rounding is now scaled
+  away; the "scaled down" warning still appears only when the excess is over a cent.
+- Negative shares or target percentages now withhold the plan in both the web and desktop apps ("shares and
+  target must be numbers of 0 or more"). Before, a target of -10% produced a plan selling more shares than held
+  (a 110% / -10% split sold 12 of 10 shares).
+- Desktop: clicking "Use these rates" without editing no longer relabels the loaded exchange rates as "entered
+  by you" (the dialog compared its 6-digit display with the full-precision rate), so notes and exports keep the
+  real source and the full-precision rate.
+- Tests: hand-calculated expectations for FX direction, whole-share rounding, New Money, sell-only, single
+  asset, cash-only and 0% target cases, run on both engines, plus 12 web/desktop parity cases and export
+  read-back.
+
+## v1.4.0 — 2026-11-04 (candidate; not released)
+- After independent review: Windows now gets a time-zone database (`tzdata`), without which
+  every exchange's date silently fell back to UTC there. Exports state the source order each
+  price was requested under, which a later reorder no longer rewrites. A pause Yahoo Finance
+  asks for longer than two hours is honoured (up to 24 hours at a time), not cut short.
+- Market data now follows one ordered list of sources, the same as on the website:
+  Yahoo Finance through the site's data gateway (no key; first by default) and the
+  providers you add with your own key. "Sources…" shows the list: move a source with Move
+  up / Move down, Alt+Up / Alt+Down or by dragging; switch sources on or off. The order is
+  saved in files/runtime/market-data-settings.json.
+- Each holding is priced by the first source in the list that covers it and gives a usable
+  price; the next is tried only if it cannot. A source is never asked while its key was
+  rejected, its daily or monthly limit is recorded, or Yahoo Finance is pausing. Each
+  holding, the plan notes and the exports say which source priced it and why earlier ones
+  were skipped or failed. A new key joins the list below Yahoo Finance, never at the top.
+- Yahoo Finance requests go one at a time, are reused for 10 minutes, and pause after any
+  "slow down" answer (the pause survives a restart). No browser or local server is needed.
+- Removed "Price source", "If the chosen source cannot price a holding…" and "Remove
+  international examples". The fourteen sample holdings are unchanged.
+
 ## v1.3.0 — 2026-11-03
 - Sample portfolio: fourteen ordinary holdings (targets total exactly 100%): the ten
   Questrade holdings with targets scaled to 90%, then 7203.T, SAP.DE, VOD.L and 600519.SS

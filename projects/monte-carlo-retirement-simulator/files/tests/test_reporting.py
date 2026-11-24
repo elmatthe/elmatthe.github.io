@@ -204,6 +204,92 @@ def test_workbook_risks_detects_content_openpyxl_would_drop(tmp_path):
     assert alternative.name == "rich (Monte Carlo report).xlsx" and not alternative.exists()
 
 
+@pytest.mark.parametrize("value,text", [
+    # Expected text is JavaScript's String(value), as the web CSV writes it (checked in Node).
+    (123456789012345680000.0, "123456789012345680000"),  # above 2**53: shortest digits, not ...683968
+    (41234567890123456.0, "41234567890123460"),
+    (9007199254740992.0, "9007199254740992"),
+    (1e-7, "1e-7"), (1.5e-7, "1.5e-7"), (0.000001, "0.000001"), (0.00001, "0.00001"), (-1.25e-5, "-0.0000125"),
+    (0.0001, "0.0001"), (2.5, "2.5"), (100.0, "100"), (0.1 + 0.2, "0.30000000000000004"),
+    (1e21, "1e+21"), (1.5e21, "1.5e+21"), (1e300, "1e+300"), (-0.0, "0"), (4294967295, "4294967295"),
+])
+def test_csv_numbers_are_written_as_javascript_writes_them(value, text):
+    from monte_carlo.export import js_number
+    assert js_number(value) == text
+
+
+# Hand-calculated run (injected draws, so every number is known): return 0%, volatility
+# 10% (r = 0.10 z), inflation 10%, 2 saving years, 5 retirement years, $100,000 today,
+# $5,000 contribution growing 10%, $40,000 spending less $10,000 pension in today's
+# dollars -> first-year withdrawal 30,000 x 1.1^2 = 36,300 (then 39,930; 43,923;
+# 48,315.30; 53,146.83). Paths: A ruins in retirement year 3, B and E in year 4, D (a
+# -150% first year, floored at 0, then 5,500) in year 1, C survives with 193,884.87.
+HAND_RAW = dict(currentPortfolio="100000", annualContribution="5000", contributionGrowth="10", yearsToRetirement="2",
+                yearsInRetirement="5", expectedReturn="0", volatility="10", inflation="10", annualSpending="40000",
+                pensionIncome="10000", simulations="5", spendingBasis="today")
+HAND_Z = [0, 0, 0, 0, 0] + [0, 0, 3, 0, 0, 0] + [10, 10, 0, 0, 0, 0, 0] + [-15, 0, 0] + [0, 0, 3, 0, 0, 0]
+# Year: P10..P90 nominal (linear interpolation over 5 paths: index 0.4, 1, 2, 3, 3.6).
+HAND_BANDS = {
+    2: [5500 + 0.4 * 105000, 110500, 110500, 110500, 110500 + 0.6 * 305000],  # 5.5k, 110.5k x3, 415.5k
+    3: [0.4 * 74200, 74200, 107350, 107350, 107350 + 0.6 * 271850],          # 0, 74.2k, 107.35k x2, 379.2k
+    7: [0, 0, 0, 0, 0.6 * 193884.87],
+}
+
+
+def _hand_run():
+    inputs = parse_raw_inputs(HAND_RAW, error_type=ValidationError, workbook_path=Path("unused.xlsx"))
+    draws = iter(HAND_Z)
+    return inputs, run_monte_carlo(inputs, normal=lambda: next(draws))
+
+
+def test_excel_report_values_match_a_hand_calculated_run(tmp_path):
+    openpyxl = pytest.importorskip("openpyxl")
+    pytest.importorskip("matplotlib")
+    inputs, result = _hand_run()
+    wb = openpyxl.load_workbook(write_excel_report(inputs, result, tmp_path / "hand.xlsx"))
+    summary = {row[0].value: row[1] for row in wb["MC_Summary"].iter_rows(min_row=3) if row[0].value}
+    value = lambda label: summary[label].value  # noqa: E731
+    assert value("Probability of success") == pytest.approx(0.20) and summary["Probability of success"].number_format == "0.0%"
+    assert value("Failed simulations") == "4 of 5"
+    assert value("Median ruin year (failed paths only)") == "Year 3.5 of retirement"  # ruin years 1, 3, 4, 4
+    assert value("Inflation rate") == pytest.approx(0.10) and value("Contribution growth rate") == pytest.approx(0.10)
+    assert value("Net withdrawal as entered") == 30000
+    assert value("Conversion to retirement-year dollars") == "x 1.210000 = (1 + inflation)^2"
+    assert value("First-year net withdrawal (retirement-year dollars)") == pytest.approx(36300, rel=1e-12)
+    assert value("Median portfolio at retirement (nominal)") == pytest.approx(110500, rel=1e-12)
+    assert value("Median portfolio at retirement (today's dollars)") == pytest.approx(110500 / 1.21, rel=1e-12)
+    assert value("Median final portfolio value (nominal)") == 0
+    assert value("90th percentile final value (nominal)") == pytest.approx(0.6 * 193884.87, rel=1e-12)
+    rate = value("Initial withdrawal rate (first-year net withdrawal / median at retirement)")
+    assert rate == pytest.approx(36300 / 110500, rel=1e-12) and summary[
+        "Initial withdrawal rate (first-year net withdrawal / median at retirement)"].number_format == "0.00%"
+    rows = list(wb["MC_Percentiles"].iter_rows(min_row=2, values_only=True))
+    assert [r[0] for r in rows] == list(range(8))
+    for year, expected in HAND_BANDS.items():
+        assert list(rows[year][1:6]) == pytest.approx(expected, rel=1e-12, abs=1e-9), year
+        assert list(rows[year][6:11]) == pytest.approx([v / 1.1 ** year for v in expected], rel=1e-12, abs=1e-9), year
+    assert [r[11] for r in rows].count("RETIREMENT BEGINS") == 1 and rows[2][11] == "RETIREMENT BEGINS"
+
+
+def test_csv_values_match_a_hand_calculated_run(tmp_path):
+    inputs, result = _hand_run()
+    out = tmp_path / "hand.csv"
+    write_csv_export(out, result, inputs)
+    rows = list(csv.reader(out.open(encoding="utf-8-sig")))
+    by_label = {r[0]: r[1:] for r in rows if r}
+    assert float(by_label["Probability of success (%)"][0]) == 20
+    assert by_label["Failed simulations"] == ["4", "of", "5"]
+    assert float(by_label["Initial withdrawal rate (%)"][0]) == pytest.approx(36300 / 110500 * 100, rel=1e-12)
+    assert by_label["Spending basis"] == ["Today's dollars"]
+    assert float(by_label["First-year net withdrawal (retirement-year dollars)"][0]) == pytest.approx(36300, rel=1e-12)
+    assert "annualSpending=40000" in by_label["Inputs"] and "pensionIncome=10000" in by_label["Inputs"]
+    table = rows[next(i for i, r in enumerate(rows) if r and r[0] == "Year") + 1:]
+    assert [int(r[0]) for r in table] == list(range(8))
+    for year, expected in HAND_BANDS.items():
+        assert [float(v) for v in table[year][1:6]] == pytest.approx(expected, rel=1e-12, abs=1e-9), year
+        assert [float(v) for v in table[year][6:11]] == pytest.approx([v / 1.1 ** year for v in expected], rel=1e-12, abs=1e-9), year
+
+
 def test_summary_rows_label_every_value():
     inputs = parse()
     rows = summary_rows(inputs, run_monte_carlo(inputs))

@@ -13,6 +13,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from analytics import interval_end_dates
+
 
 def _prepare_output(output_path: str) -> Path:
     path = Path(output_path)
@@ -182,15 +184,20 @@ def plot_rolling_correlation_vs_benchmark(
     if benchmark_ticker not in returns.columns:
         raise ValueError(f"Benchmark ticker not found: {benchmark_ticker}")
     path = _prepare_output(output_path)
-    correlations = pd.DataFrame(index=returns.index)
     min_periods = min(window, max(3, window // 2))
+    by_ticker = {}
     for ticker in returns.columns:
         if ticker == benchmark_ticker:
             continue
         pair = returns[[ticker, benchmark_ticker]].dropna()
         if pair.empty:
             continue
-        correlations.loc[pair.index, ticker] = pair[ticker].rolling(window=window, min_periods=min_periods).corr(pair[benchmark_ticker])
+        rolling = pair[ticker].rolling(window=window, min_periods=min_periods).corr(pair[benchmark_ticker])
+        # Interval-keyed returns (compute_interval_returns) are charted at each interval's end.
+        if not isinstance(rolling.index, pd.DatetimeIndex):
+            rolling.index = interval_end_dates(rolling.index)
+        by_ticker[ticker] = rolling
+    correlations = pd.concat(by_ticker, axis=1).sort_index() if by_ticker else pd.DataFrame()
     title_label = window_label or f"{window} periods"
     if correlations.dropna(how="all").empty:
         fig, ax = plt.subplots(figsize=(9, 5))

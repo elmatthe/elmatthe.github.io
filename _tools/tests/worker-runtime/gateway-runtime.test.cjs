@@ -1,0 +1,1211 @@
+// The market-data gateway in the real Workers runtime: workerd, real SQLite-backed Durable
+// Object storage, real RPC, real restarts from disk, and separate Worker isolates sharing one
+// coordinator. Yahoo is synthetic (../fixtures/yahoo-chart.mjs): every outbound request of the
+// Workers is answered here, so no provider, live gateway or Cloudflare account is contacted
+// (Wrangler itself may look for a newer version of itself). The only thing changed from production
+// is the coordinator's clock, which can be moved forward (test-entry.mjs); the tests of the
+// unmodified entry point use real time.
+//
+//   NODE_PATH=<folder with wrangler installed>/node_modules node --expose-gc _tools/tests/worker-runtime/gateway-runtime.test.cjs
+//
+// Miniflare and workerd come with the pinned Wrangler (see .github/workflows/ci.yml), so these
+// are the same runtime and bundler the deployment uses. They are test tools only.
+"use strict";
+const test = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { spawnSync } = require("node:child_process");
+const { pathToFileURL } = require("node:url");
+const { Miniflare, Log, LogLevel } = require("miniflare");
+
+const ROOT = path.resolve(__dirname, "../../..");
+const SERVICE = path.join(ROOT, "_services/market-data-gateway");
+const SRC = "_services/market-data-gateway/src";
+const SOURCE_MODULES = ["worker.js", "gateway.js", "coordinator.js", "activation.js", "venues.js", "yahoo-chart.js"].map(f => `${SRC}/${f}`);
+const TEST_ENTRY = "_tools/tests/worker-runtime/test-entry.mjs";
+const CLIENT = "_tools/tests/worker-runtime/client-worker.mjs";
+const ORIGIN = "https://elmatthe.github.io";
+const COMPATIBILITY = (() => {
+  const toml = fs.readFileSync(path.join(SERVICE, "wrangler.toml"), "utf8");
+  return { date: toml.match(/^compatibility_date = "([^"]+)"/m)[1], flags: JSON.parse(toml.match(/^compatibility_flags = (\[.*\])/m)[1]) };
+})();
+const ON = { KEYLESS_SOURCE: "yahoo-chart", OWNER_ATTESTATION: "owner-confirms-yahoo-permission", ALLOWED_ORIGINS: ORIGIN };
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+const DAY_MS = 86400000;
+
+// In the system's temporary folder, not in this checkout: on Windows, workerd cannot open a
+// SQLite file whose full path passes 260 characters, and a deep checkout path gets there (an
+// "internal error" from the runtime, with no other symptom).
+const TEMP = fs.mkdtempSync(path.join(os.tmpdir(), "mdgw-"));
+test.after(() => {
+  // Windows may hold workerd's files for a moment; what is left is in the temporary folder.
+  try { fs.rmSync(TEMP, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); } catch (_) { /* best effort */ }
+});
+
+const manifest = (mainModule, names) => ({
+  mainModule,
+  modulesRoot: ROOT,
+  modules: Object.fromEntries(names.map(name => [name, { type: "esm", contents: fs.readFileSync(path.join(ROOT, name), "utf8") }])),
+});
+const vars = values => Object.fromEntries(Object.entries(values).map(([name, value]) => [name, { type: "text", value }]));
+
+let yahooFixture = null;
+const loadYahoo = async () => (yahooFixture ||= await import(pathToFileURL(path.join(ROOT, "_tools/tests/fixtures/yahoo-chart.mjs")).href));
+
+// The synthetic data source. `hold` keeps requests until the test answers each one.
+function syntheticYahoo() {
+  const yahoo = {
+    calls: [],
+    held: [],
+    hold: false,
+    answer: null, // (symbol) => Response, instead of the normal synthetic data
+    strays: [], // anything a Worker isolate tried to send by itself
+    async handle(request) {
+      const symbol = decodeURIComponent(new URL(request.url).pathname.split("/").pop());
+      yahoo.calls.push({ symbol, at: Date.now(), url: request.url });
+      if (yahoo.hold) {
+        const override = await new Promise(resolve => yahoo.held.push({ symbol, resolve }));
+        if (override) return override;
+      }
+      if (yahoo.answer) {
+        const response = yahoo.answer(symbol);
+        if (response) return response;
+      }
+      const { yahooFetch } = await loadYahoo();
+      return yahooFetch({})(request.url);
+    },
+  };
+  return yahoo;
+}
+const refusal = (seconds, status = 429) => new Response("x", { status, headers: seconds === null ? {} : { "Retry-After": String(seconds) } });
+
+// A response from Miniflare must be read as soon as it arrives: once its inner object is garbage
+// collected, its unread body is cancelled and reading it fails with "Body has already been
+// consumed". So every answer is read here. With --expose-gc, as in CI, collection is frequent, so
+// a test that holds an unread response fails every time instead of now and then.
+if (typeof global.gc === "function") setInterval(global.gc, 100).unref();
+const readNow = async response => new Response(await response.text(), { status: response.status, headers: response.headers });
+
+// One coordinator and several isolates. `isolate-a` hosts the Durable Object, as in production
+// every isolate of the one Worker addresses it. `real` runs the unmodified src/worker.js.
+async function startWorld({ real = false, env = {}, coordinatorEnv = {}, persist = null, yahoo = syntheticYahoo(), storage = "sqlite", extra = [] } = {}) {
+  const hostWorker = {
+    config: {
+      name: "isolate-a",
+      compatibilityDate: COMPATIBILITY.date,
+      compatibilityFlags: COMPATIBILITY.flags,
+      manifest: real ? manifest(`${SRC}/worker.js`, SOURCE_MODULES) : manifest(TEST_ENTRY, [TEST_ENTRY, ...SOURCE_MODULES]),
+      env: { UPSTREAM_COORDINATOR: { type: "durable-object", worker: "isolate-a", exportName: "UpstreamCoordinator" }, ...vars({ ...ON, ...env, ...coordinatorEnv }) },
+      exports: { UpstreamCoordinator: { type: "durable-object", storage } },
+    },
+    // `yahoo.raw` (Node req, res) controls the socket itself, for transport faults.
+    dev: { outboundService: yahoo.raw ? { type: "node-handler", handler: yahoo.raw } : { type: "fetcher", handler: request => yahoo.handle(request) } },
+  };
+  const isolate = name => ({
+    config: {
+      name,
+      compatibilityDate: COMPATIBILITY.date,
+      compatibilityFlags: COMPATIBILITY.flags,
+      manifest: manifest(`${SRC}/worker.js`, SOURCE_MODULES),
+      env: { UPSTREAM_COORDINATOR: { type: "durable-object", worker: "isolate-a", exportName: "UpstreamCoordinator" }, ...vars({ ...ON, ...env }) },
+    },
+    dev: { outboundService: { type: "fetcher", handler: request => { yahoo.strays.push(request.url); return new Response("no", { status: 599 }); } } },
+  });
+  const isolateNames = ["isolate-a", "isolate-b", "isolate-c", ...extra.map(w => w.config.name)];
+  const bindingName = name => name.replace(/-/g, "_").toUpperCase();
+  const client = {
+    config: {
+      name: "client",
+      compatibilityDate: COMPATIBILITY.date,
+      manifest: manifest(CLIENT, [CLIENT]),
+      env: Object.fromEntries(isolateNames.map(name => [bindingName(name), { type: "worker", worker: name }])),
+    },
+  };
+  // What the Workers log (console.log), in order: the gateway's JSON events, parsed.
+  const logs = [];
+  const options = {
+    log: new Log(LogLevel.NONE),
+    handleStructuredLogs: ({ message }) => { try { logs.push(JSON.parse(message)); } catch (_) { /* not an event */ } },
+    cf: false, // otherwise Miniflare downloads Cloudflare's request metadata and caches it here
+    ...(persist ? { resourcePersistencePath: persist } : {}),
+    workers: [hostWorker, isolate("isolate-b"), isolate("isolate-c"), client, ...extra],
+  };
+  const mf = new Miniflare(options);
+  await mf.ready;
+  const callers = await mf.getWorker("client");
+  const host = await mf.getWorker("isolate-a");
+  let clientNumber = 0;
+  // Each caller has its own address, so the per-client limits stay out of the way.
+  const callerUrl = (route, name, target, extraQuery = "") => {
+    clientNumber += 1;
+    const query = new URLSearchParams({ isolate: bindingName(name), path: target, ip: `203.0.113.${clientNumber % 250}` });
+    return `https://client.test/${route}?${query}${extraQuery}`;
+  };
+  const world = {
+    mf,
+    yahoo,
+    logs,
+    ask: (name, symbol) => callers.fetch(callerUrl("ask", name, `/v1/quote?symbol=${encodeURIComponent(symbol)}`)).then(readNow),
+    askPath: (name, target) => callers.fetch(callerUrl("ask", name, target)).then(readNow),
+    async health(name = "isolate-b") {
+      return (await callers.fetch(callerUrl("ask", name, "/v1/health"))).json();
+    },
+    async test(pathAndQuery) {
+      const response = await host.fetch(`https://gateway.test/__test/${pathAndQuery}`);
+      assert.equal(response.status, 200, await response.clone().text());
+      return response.json();
+    },
+    advance: ms => world.test(`advance?ms=${ms}`),
+    async row() {
+      const [row] = await world.test(`sql?q=${encodeURIComponent("SELECT cooldown_until, cooldown_code, halt_code, failures, starts, unresolved FROM coordinator_state WHERE id = 1")}`);
+      return row ? { ...row, starts: JSON.parse(row.starts), unresolved: JSON.parse(row.unresolved) } : null;
+    },
+    leave: (symbol, after) => callers.fetch(callerUrl("leave", "isolate-b", `/v1/quote?symbol=${encodeURIComponent(symbol)}`, `&after=${after}`)).then(r => r.text()),
+    stop: () => mf.dispose(),
+  };
+  return world;
+}
+const withWorld = async (options, body) => {
+  const world = await startWorld(options);
+  try {
+    await body(world);
+    assert.deepEqual(world.yahoo.strays, [], "a Worker isolate must never contact the data source by itself");
+  } finally {
+    await world.stop();
+  }
+};
+const held = async (yahoo, count) => {
+  const giveUp = Date.now() + 8000;
+  while (yahoo.held.length < count && Date.now() < giveUp) await sleep(5);
+  assert.equal(yahoo.held.length, count, `expected ${count} upstream requests in flight`);
+};
+const expectError = async (response, code, status) => {
+  const body = await response.clone().json();
+  assert.equal(body.error?.code, code, JSON.stringify(body));
+  if (status) assert.equal(response.status, status);
+  return body.error;
+};
+const persistDir = name => {
+  const dir = path.join(TEMP, name);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+};
+
+/* ---------------- R4. real SQLite faults after durable admission ---------------- */
+const sql = (world, statement) => world.test(`sql?q=${encodeURIComponent(statement)}`);
+const rejectStopWrites = world => sql(world, "CREATE TRIGGER fail_outcome BEFORE UPDATE ON coordinator_state WHEN NEW.cooldown_until > OLD.cooldown_until OR NEW.halt_code IS NOT NULL BEGIN SELECT RAISE(FAIL, 'synthetic outcome write fault'); END");
+
+for (const seconds of [3600, 172800]) {
+  test(`H1: failed ${seconds}s outcome write and immediate object restart never permit another upstream request`, { timeout: 60000 }, () => withWorld({}, async world => {
+    await world.health();
+    await rejectStopWrites(world); // the earlier admission still succeeds
+    world.yahoo.answer = () => refusal(seconds);
+    const first = await world.ask("isolate-b", "AAPL");
+    const row = await world.row();
+    assert.equal(row.starts.length, 1);
+    assert.equal(row.unresolved.length, 1);
+    assert.equal(row.cooldown_until, 0);
+    assert.equal(row.halt_code, null);
+    await world.test("reset");
+    await sql(world, "DROP TRIGGER fail_outcome"); // SQLite is healthy; the outcome is still unknown
+    await world.advance(40 * DAY_MS);
+    world.yahoo.answer = null;
+    await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
+    await expectError(await world.ask("isolate-a", "SPY"), "busy", 503);
+    assert.equal(world.yahoo.calls.length, 1, "the unsafe second upstream call NEVER occurs");
+    await expectError(first, "busy", 503);
+    assert.equal(first.headers.get("retry-after"), "60");
+    const health = await world.health();
+    assert.equal(health.status, "degraded");
+    assert.equal(health.upstream.state, "unverified");
+    assert.equal((await world.row()).unresolved.length, 1, "health and elapsed budget do not discard uncertainty");
+  }));
+}
+
+// M4: what the owner reads in Data Studio, exactly as documented in the gateway README. Any query
+// starts the object first, so this is also how an approval is applied while the source is off.
+const INCIDENT_QUERY = "SELECT 'g' || incident_generation || '-' || incident_nonce AS approval, halt_code, unresolved, incident_scope, approval_result FROM coordinator_state WHERE id = 1";
+const incidentOf = async world => (await sql(world, INCIDENT_QUERY))[0];
+const SOURCE_OFF = { KEYLESS_SOURCE: "" }; // the coordinator's own settings in a source-off deployment
+
+for (const seconds of [3600, 172800]) test(`H1/M4: full workerd disposal preserves unresolved ${seconds}s SQLite outcome and only the owner's approval of that incident can resolve it`, { timeout: 120000 }, async () => {
+  const persist = persistDir(`unresolved-restart-${seconds}`);
+  const yahoo = syntheticYahoo();
+  const oldId = { UPSTREAM_REACTIVATION_ID: "observed-before-fault", UPSTREAM_INCIDENT_APPROVAL: `g1-${"a".repeat(26)}` };
+  let world = await startWorld({ persist, yahoo, coordinatorEnv: oldId });
+  try {
+    await world.health();
+    await rejectStopWrites(world);
+    yahoo.answer = () => refusal(seconds);
+    await expectError(await world.ask("isolate-b", "AAPL"), "busy", 503);
+    assert.equal((await world.row()).unresolved.length, 1);
+  } finally { await world.stop(); }
+  yahoo.answer = null;
+  world = await startWorld({ persist, yahoo, coordinatorEnv: oldId });
+  try {
+    await sql(world, "DROP TRIGGER fail_outcome");
+    await world.advance(40 * DAY_MS);
+    await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
+    assert.equal((await world.health()).upstream.state, "unverified");
+    assert.equal(yahoo.calls.length, 1, "runtime recreation and storage recovery cannot authorize a second request");
+    assert.equal((await world.row()).unresolved.length, 1);
+    assert.match((await incidentOf(world)).approval_result, /"mismatch"/, "a value set before the incident cannot name it");
+    assert.deepEqual(await sql(world, "SELECT id FROM reactivation_ids"), [], "the pre-M4 identifier is not used");
+    // Fail the state update after the transaction inserted the approval: neither effect may survive.
+    await sql(world, "CREATE TRIGGER fail_reactivation BEFORE UPDATE ON coordinator_state WHEN OLD.unresolved != '[]' AND NEW.unresolved = '[]' BEGIN SELECT RAISE(FAIL, 'synthetic transaction fault'); END");
+  } finally { await world.stop(); }
+  // The source-off deployment that carries the owner's approval of exactly this incident.
+  let approval;
+  world = await startWorld({ persist, yahoo, coordinatorEnv: SOURCE_OFF });
+  try { approval = (await incidentOf(world)).approval; } finally { await world.stop(); }
+  world = await startWorld({ persist, yahoo, coordinatorEnv: { ...SOURCE_OFF, UPSTREAM_INCIDENT_APPROVAL: approval } });
+  try {
+    await expectError(await world.ask("isolate-c", "MSFT"), "source_disabled", 503); // M1: the enabled isolate gets nothing
+    assert.equal(yahoo.calls.length, 1);
+    assert.equal((await world.row()).unresolved.length, 1);
+    assert.deepEqual(await sql(world, "SELECT generation FROM incident_approvals"), [], "the failed transaction did not consume the approval");
+    await sql(world, "DROP TRIGGER fail_reactivation");
+  } finally { await world.stop(); }
+  world = await startWorld({ persist, yahoo, coordinatorEnv: { ...SOURCE_OFF, UPSTREAM_INCIDENT_APPROVAL: approval } });
+  try {
+    const after = await incidentOf(world); // the Data Studio query starts the object: the approval applies
+    assert.equal(after.approval, null);
+    assert.equal(after.unresolved, "[]");
+    assert.deepEqual(await sql(world, "SELECT generation FROM incident_approvals"), [{ generation: 1 }]);
+    assert.equal(yahoo.calls.length, 1, "approving sends nothing");
+  } finally { await world.stop(); }
+  world = await startWorld({ persist, yahoo, coordinatorEnv: { UPSTREAM_INCIDENT_APPROVAL: approval } }); // source on again
+  try {
+    assert.equal((await world.ask("isolate-c", "MSFT")).status, 200);
+    assert.deepEqual((await world.row()).unresolved, []);
+    assert.equal(yahoo.calls.length, 2);
+    assert.match((await incidentOf(world)).approval_result, /"consumed"/);
+  } finally { await world.stop(); }
+});
+
+test("H1: the live instance retries a known failed refusal atomically before further admission", { timeout: 60000 }, () => withWorld({}, async world => {
+  await world.health();
+  await rejectStopWrites(world);
+  world.yahoo.answer = () => refusal(3600);
+  await expectError(await world.ask("isolate-b", "AAPL"), "busy", 503);
+  assert.equal((await world.row()).unresolved.length, 1);
+  assert.equal((await world.health()).upstream.state, "unverified");
+  await sql(world, "DROP TRIGGER fail_outcome");
+  world.yahoo.answer = null;
+  await expectError(await world.ask("isolate-c", "MSFT"), "upstream_rate_limited", 429);
+  const row = await world.row();
+  assert.deepEqual(row.unresolved, []);
+  assert.equal(row.failures, 0, "SQL errors are not Yahoo failures");
+  assert.ok(row.cooldown_until > row.starts[0] + 3500000);
+  await world.test("reset");
+  await expectError(await world.ask("isolate-a", "SPY"), "upstream_rate_limited", 429);
+  assert.equal(world.yahoo.calls.length, 1);
+}));
+
+test("H1: failed admission uses no budget or marker and sends nothing; recovered healthy writes resume", { timeout: 60000 }, () => withWorld({}, async world => {
+  assert.equal((await world.ask("isolate-b", "AAPL")).status, 200);
+  const before = await world.row();
+  await sql(world, "CREATE TRIGGER fail_admission BEFORE UPDATE ON coordinator_state WHEN NEW.starts != OLD.starts BEGIN SELECT RAISE(FAIL, 'synthetic admission fault'); END");
+  await world.advance(1100);
+  await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
+  assert.deepEqual(await world.row(), before);
+  assert.equal(world.yahoo.calls.length, 1);
+  await sql(world, "DROP TRIGGER fail_admission");
+  assert.equal((await world.ask("isolate-c", "MSFT")).status, 200);
+  assert.deepEqual((await world.row()).unresolved, []);
+}));
+
+for (const status of [200, 404, 400, 503]) {
+  test(`H1: HTTP ${status} finalization is mandatory even without protective state change`, { timeout: 60000 }, () => withWorld({}, async world => {
+    await world.health();
+    await sql(world, "CREATE TRIGGER fail_finalization BEFORE UPDATE ON coordinator_state WHEN NEW.starts = OLD.starts BEGIN SELECT RAISE(FAIL, 'synthetic finalization fault'); END");
+    world.yahoo.answer = status === 200 ? null : () => refusal(null, status);
+    const first = await world.ask("isolate-b", "AAPL");
+    await expectError(first, "busy", 503);
+    assert.equal((await world.row()).unresolved.length, 1);
+    await world.test("reset");
+    await sql(world, "DROP TRIGGER fail_finalization");
+    await world.advance(61000);
+    await expectError(await world.ask("isolate-b", "AAPL"), "busy", 503);
+    await expectError(await world.ask("isolate-c", "AAPL"), "busy", 503);
+    assert.equal(world.yahoo.calls.length, 1, "unverified success/refusal was not cached or silently finalized");
+  }));
+}
+
+for (const refusalFirst of [false, true]) {
+  test(`H1: concurrent success and refusal retain each other's SQLite marker (refusal first: ${refusalFirst})`, { timeout: 60000 }, () => withWorld({}, async world => {
+    world.yahoo.hold = true;
+    const answers = [world.ask("isolate-b", "AAPL"), world.ask("isolate-c", "MSFT")];
+    await held(world.yahoo, 2);
+    const row = await world.row();
+    assert.equal(row.unresolved.length, 2);
+    assert.notEqual(row.unresolved[0].id, row.unresolved[1].id);
+    const taken = world.yahoo.held.splice(0);
+    const first = refusalFirst ? 1 : 0;
+    taken.find(h => h.symbol === (refusalFirst ? "MSFT" : "AAPL")).resolve(refusalFirst ? refusal(3600) : undefined);
+    await answers[first];
+    assert.equal((await world.row()).unresolved.length, 1);
+    taken.find(h => h.symbol === (refusalFirst ? "AAPL" : "MSFT")).resolve(refusalFirst ? undefined : refusal(3600));
+    await answers[1 - first];
+    assert.deepEqual((await world.row()).unresolved, []);
+    await world.test("reset");
+    await expectError(await world.ask("isolate-a", "SPY"), "upstream_rate_limited", 429);
+    assert.equal(world.yahoo.calls.length, 2);
+  }));
+}
+
+test("H1: malformed and inconsistent SQLite unresolved markers fail closed", { timeout: 60000 }, () => withWorld({}, async world => {
+  assert.equal((await world.ask("isolate-b", "AAPL")).status, 200);
+  const t = (await world.row()).starts[0];
+  for (const value of ["not json", "null", "{}", "[null]", JSON.stringify([{ id: "duplicate", startedAt: t }, { id: "duplicate", startedAt: t }]), JSON.stringify([{ id: "missing-start", startedAt: t + 1 }])]) {
+    await sql(world, `UPDATE coordinator_state SET unresolved = '${value.replace(/'/g, "''")}'`);
+    await world.test("reset");
+    await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
+    assert.equal((await world.health()).upstream.state, "unverified");
+  }
+  assert.equal(world.yahoo.calls.length, 1);
+}));
+
+test("H1: real SQLite history without its state row fails closed", { timeout: 60000 }, () => withWorld({}, async world => {
+  await world.health();
+  await sql(world, "INSERT INTO reactivation_ids (id, first_seen_at) VALUES ('previous-owner', 1)"); // written by an earlier version
+  await sql(world, "DELETE FROM coordinator_state");
+  await world.test("reset");
+  await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
+  assert.equal((await world.health()).upstream.state, "unverified");
+  assert.equal(world.yahoo.calls.length, 0);
+  assert.deepEqual(await sql(world, "SELECT id FROM reactivation_ids"), [{ id: "previous-owner" }]);
+}));
+
+test("H1/M4: existing R3 and R7 state migrates conservatively: its stop, history and unknown outcomes become one new incident", { timeout: 60000 }, () => withWorld({ coordinatorEnv: { UPSTREAM_REACTIVATION_ID: "legacy-never-seen" } }, async world => {
+  assert.equal((await world.ask("isolate-b", "AAPL")).status, 200);
+  const before = await world.row();
+  await sql(world, "INSERT INTO reactivation_ids (id, first_seen_at) VALUES ('legacy-consumed-id', 1)");
+  await sql(world, "UPDATE coordinator_state SET halt_code = 'upstream_rate_limited'");
+  // Back to the R3 table: no unresolved column and none of the M4 columns.
+  for (const column of ["unresolved", "incident_generation", "incident_nonce", "incident_scope", "incident_opened_at", "approval_result", "m4_row"]) {
+    await sql(world, `ALTER TABLE coordinator_state DROP COLUMN ${column}`);
+  }
+  await sql(world, "DROP TABLE incident_approvals");
+  await world.test("reset");
+  await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
+  const migrated = await world.row();
+  assert.equal(migrated.unresolved.length, 1, "R3 starts do not prove all outcomes finished");
+  assert.deepEqual(migrated.starts, before.starts);
+  assert.equal(migrated.halt_code, "upstream_rate_limited");
+  const incident = await incidentOf(world);
+  assert.match(incident.approval, /^g1-[a-z2-7]{26}$/, "bound to a new incident with a fresh nonce");
+  assert.deepEqual(JSON.parse(incident.incident_scope), { halt: "upstream_rate_limited", markers: ["legacy-outcome"] });
+  assert.deepEqual(await sql(world, "SELECT id FROM reactivation_ids"), [{ id: "legacy-consumed-id" }], "history kept; the legacy identifier in env is not used");
+  assert.equal(world.yahoo.calls.length, 1);
+}));
+
+test("M4: a row an older version wrote after M4 (a rollback) is bound to a new incident; an approval prepared before cannot match", { timeout: 60000 }, () => withWorld({}, async world => {
+  world.yahoo.answer = () => refusal(172800);
+  await expectError(await world.ask("isolate-b", "AAPL"), "upstream_rate_limited", 429);
+  world.yahoo.answer = null;
+  const first = await incidentOf(world);
+  assert.match(first.approval, /^g1-/);
+  // R7 writes only its six columns: a new start and the halt again, leaving the M4 columns as they were.
+  const row = await world.row();
+  await sql(world, `UPDATE coordinator_state SET starts = '${JSON.stringify([...row.starts, row.starts[0] + 5000])}'`);
+  await world.test("reset");
+  const rebound = await incidentOf(world);
+  assert.match(rebound.approval, /^g2-/, "a foreign write gets a new generation and nonce");
+  assert.notEqual(rebound.approval.slice(3), first.approval.slice(3));
+  assert.equal(world.yahoo.calls.length, 1);
+}));
+
+test("M4: health and status reads write nothing, however often", { timeout: 60000 }, () => withWorld({}, async world => {
+  world.yahoo.answer = () => refusal(172800);
+  await expectError(await world.ask("isolate-b", "AAPL"), "upstream_rate_limited", 429);
+  world.yahoo.answer = null;
+  const snapshot = async () => JSON.stringify(await sql(world, "SELECT * FROM coordinator_state"));
+  const before = await snapshot();
+  for (let i = 0; i < 20; i++) assert.equal((await world.health(i % 2 ? "isolate-b" : "isolate-c")).upstream.state, "halted");
+  assert.equal(await snapshot(), before);
+  assert.equal(world.yahoo.calls.length, 1);
+}));
+
+test("H1: real workerd timeout leaves an unknown marker after eviction and elapsed budget", { timeout: 60000 }, () => withWorld({}, async world => {
+  world.yahoo.hold = true;
+  const timedOut = world.ask("isolate-b", "AAPL");
+  await held(world.yahoo, 1);
+  await expectError(await timedOut, "busy", 503);
+  assert.equal((await world.row()).unresolved.length, 1);
+  assert.equal((await world.health()).upstream.state, "unverified");
+  await world.test("reset");
+  await world.advance(40 * DAY_MS);
+  world.yahoo.held.splice(0).forEach(h => h.resolve());
+  world.yahoo.hold = false;
+  await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
+  assert.equal(world.yahoo.calls.length, 1);
+}));
+
+// R5 (independent R4 review H2): the source receives the request, and the connection closes
+// before any status line, so a 429 could have been lost with it. The outcome is unknown.
+test("H2: a connection closed before HTTP headers stays unresolved across a full persisted restart", { timeout: 120000 }, async () => {
+  const persist = persistDir("pre-header-close");
+  const yahoo = syntheticYahoo();
+  let closeBeforeHeaders = true;
+  yahoo.raw = async (req, res) => {
+    const symbol = decodeURIComponent(new URL(req.url, "http://synthetic.invalid").pathname.split("/").pop());
+    yahoo.calls.push({ symbol, at: Date.now(), url: req.url });
+    if (closeBeforeHeaders) { req.socket.destroy(); return; }
+    const { yahooFetch } = await loadYahoo();
+    const reply = await yahooFetch({})(`https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`);
+    res.writeHead(reply.status, Object.fromEntries(reply.headers));
+    res.end(await reply.text());
+  };
+  let world = await startWorld({ persist, yahoo });
+  try {
+    const first = await world.ask("isolate-b", "AAPL");
+    await expectError(first, "busy", 503);
+    assert.equal(first.headers.get("retry-after"), "60");
+    const row = await world.row();
+    assert.equal(row.unresolved.length, 1, "no observed status, so the marker stays");
+    assert.equal(row.failures, 1, "the breaker still counts the failure");
+    closeBeforeHeaders = false;
+    await world.advance(1500);
+    await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
+  } finally { await world.stop(); }
+  world = await startWorld({ persist, yahoo });
+  try {
+    await world.advance(40 * DAY_MS);
+    assert.equal((await world.health()).upstream.state, "unverified");
+    await expectError(await world.ask("isolate-c", "SPY"), "busy", 503);
+    await expectError(await world.ask("isolate-a", "NVDA"), "busy", 503);
+    assert.deepEqual(yahoo.calls.map(c => c.symbol), ["AAPL"], "restart, clock and health cannot authorize a second request");
+    assert.equal((await world.row()).unresolved.length, 1);
+    assert.deepEqual(yahoo.strays, []);
+  } finally { await world.stop(); }
+});
+
+/* ---------------- R6/M5. an HTTP 200 whose body does not finish ---------------- */
+// Owner decision: an HTTP 200 status is not proof that the upstream work completed. The
+// synthetic source answers over a real socket. `mode`: "complete" (the whole body, in two
+// parts), "interrupt" (HTTP 200 headers and half the body, then the connection is closed) or
+// "hang" (HTTP 200 headers and half the body, then nothing).
+const eventually = async (condition, label, ms = 8000) => {
+  const giveUp = Date.now() + ms;
+  while (Date.now() < giveUp) {
+    if (await condition()) return;
+    await sleep(20);
+  }
+  assert.ok(await condition(), `timed out waiting for: ${label}`);
+};
+function bodyFaultYahoo(mode) {
+  const yahoo = syntheticYahoo();
+  const open = new Set();
+  yahoo.mode = mode;
+  yahoo.headersSent = 0;
+  yahoo.raw = async (req, res) => {
+    const target = new URL(req.url, "https://query1.finance.yahoo.com");
+    yahoo.calls.push({ symbol: decodeURIComponent(target.pathname.split("/").pop()), at: Date.now(), url: req.url });
+    const { yahooFetch } = await loadYahoo();
+    const body = Buffer.from(await (await yahooFetch({})(`https://query1.finance.yahoo.com${target.pathname}${target.search}`)).arrayBuffer());
+    const half = Math.floor(body.length / 2);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    if (yahoo.mode === "complete") {
+      res.write(body.subarray(0, half));
+      res.end(body.subarray(half));
+      return;
+    }
+    open.add(res);
+    res.write(body.subarray(0, half));
+    yahoo.headersSent += 1;
+    if (yahoo.mode === "interrupt") setTimeout(() => req.socket.destroy(), 100);
+  };
+  yahoo.closeAll = () => { for (const res of open) res.destroy(); open.clear(); };
+  return yahoo;
+}
+
+test("M5: an HTTP 200 whose body is interrupted stays unresolved across a full persisted restart", { timeout: 120000 }, async () => {
+  const persist = persistDir("interrupted-200-body");
+  const yahoo = bodyFaultYahoo("interrupt");
+  let world = await startWorld({ persist, yahoo });
+  try {
+    const first = await world.ask("isolate-b", "AAPL");
+    assert.equal(yahoo.headersSent, 1, "HTTP 200 headers and part of the body were sent");
+    await expectError(first, "busy", 503);
+    assert.equal(first.headers.get("retry-after"), "60");
+    const row = await world.row();
+    assert.equal(row.unresolved.length, 1, "HTTP 200 without its whole body is not a known outcome");
+    assert.equal(row.failures, 1, "the breaker still counts the failure");
+    yahoo.mode = "complete";
+    await world.advance(1500);
+    await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
+  } finally { yahoo.closeAll(); await world.stop(); }
+  world = await startWorld({ persist, yahoo });
+  try {
+    await world.advance(40 * DAY_MS);
+    assert.equal((await world.health()).upstream.state, "unverified");
+    await expectError(await world.ask("isolate-c", "SPY"), "busy", 503);
+    await expectError(await world.ask("isolate-a", "NVDA"), "busy", 503);
+    assert.deepEqual(yahoo.calls.map(c => c.symbol), ["AAPL"], "restart, clock and health cannot authorize a second request");
+    assert.equal((await world.row()).unresolved.length, 1);
+    assert.deepEqual(yahoo.strays, []);
+  } finally { await world.stop(); }
+});
+
+test("M5: an HTTP 200 whose body never finishes times out and stays unresolved after a reset", { timeout: 60000 }, async () => {
+  const yahoo = bodyFaultYahoo("hang");
+  await withWorld({ yahoo }, async world => {
+    try {
+      await expectError(await world.ask("isolate-b", "AAPL"), "busy", 503);
+      assert.equal(yahoo.headersSent, 1, "HTTP 200 headers and part of the body were sent");
+      await eventually(() => world.logs.some(l => l.event === "upstream_error" && l.code === "upstream_timeout"), "the coordinator's upstream timeout");
+      const row = await world.row();
+      assert.equal(row.unresolved.length, 1);
+      assert.equal(row.failures, 1, "a timeout counts toward the breaker");
+      assert.equal((await world.health()).upstream.state, "unverified");
+      yahoo.mode = "complete";
+      await world.test("reset");
+      await world.advance(40 * DAY_MS);
+      await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
+      assert.equal(yahoo.calls.length, 1, "no further upstream request while the outcome is unknown");
+    } finally { yahoo.closeAll(); }
+  });
+});
+
+test("M5: a caller that leaves after HTTP 200 headers, before the body ends, leaves its outcome unresolved", { timeout: 60000 }, async () => {
+  const yahoo = bodyFaultYahoo("hang");
+  await withWorld({ yahoo }, async world => {
+    try {
+      assert.match(await Promise.race([world.leave("MSFT", 400), sleep(5000).then(() => "the caller was never released")]), /rejected AbortError|status 499/);
+      assert.equal(yahoo.headersSent, 1, "the caller left after HTTP 200 headers were sent");
+      await eventually(async () => (await world.row()).unresolved.length === 1, "the marker stays");
+      const row = await world.row();
+      assert.equal(row.failures, 0, "a cancellation is not a provider failure");
+      assert.equal(row.cooldown_until, 0);
+      assert.equal((await world.health()).upstream.state, "unverified");
+      yahoo.mode = "complete";
+      await world.test("reset");
+      await world.advance(40 * DAY_MS);
+      await expectError(await world.ask("isolate-c", "SPY"), "busy", 503);
+      assert.equal(yahoo.calls.length, 1);
+    } finally { yahoo.closeAll(); }
+  });
+});
+
+test("M5 control: a complete HTTP 200 over the same socket path finalizes, and the next request goes out", { timeout: 60000 }, async () => {
+  const yahoo = bodyFaultYahoo("complete");
+  await withWorld({ yahoo }, async world => {
+    assert.equal((await world.ask("isolate-b", "AAPL")).status, 200);
+    const row = await world.row();
+    assert.deepEqual(row.unresolved, []);
+    assert.equal(row.failures, 0);
+    await world.advance(1100);
+    assert.equal((await world.ask("isolate-c", "MSFT")).status, 200);
+    assert.equal((await world.health()).upstream.state, "ok");
+    assert.deepEqual(yahoo.calls.map(c => c.symbol), ["AAPL", "MSFT"]);
+  });
+});
+
+/* ---------------- R6/L3. a stop is logged as started only once SQLite has it ---------------- */
+test("L3: a stop whose SQLite write fails is logged as not persisted, and as started only once a later write succeeds", { timeout: 60000 }, () => withWorld({}, async world => {
+  const events = () => world.logs.map(l => l.event);
+  await world.health();
+  await rejectStopWrites(world);
+  world.yahoo.answer = () => refusal(3600);
+  await expectError(await world.ask("isolate-b", "AAPL"), "busy", 503);
+  await eventually(() => events().includes("cooldown_not_persisted"), "the failed stop write is reported");
+  assert.ok(events().indexOf("coordinator_write_failed") < events().indexOf("cooldown_not_persisted"));
+  assert.ok(!events().includes("cooldown_started"), `no durable stop is claimed: ${JSON.stringify(world.logs)}`);
+  assert.equal((await world.row()).cooldown_until, 0, "and indeed SQLite does not have it");
+  await sql(world, "DROP TRIGGER fail_outcome");
+  world.yahoo.answer = null;
+  await expectError(await world.ask("isolate-c", "MSFT"), "upstream_rate_limited", 429);
+  await eventually(() => events().includes("cooldown_started"), "the confirmed stop is reported");
+  const started = world.logs.filter(l => l.event === "cooldown_started");
+  assert.equal(started.length, 1);
+  assert.equal(started[0].code, "upstream_rate_limited");
+  assert.ok(started[0].seconds > 3500 && started[0].seconds <= 3600, JSON.stringify(started[0]));
+  assert.ok((await world.row()).cooldown_until > 0);
+  assert.equal(world.yahoo.calls.length, 1);
+}));
+
+/* ---------------- R7/L3. a statement that returned is not a commit ---------------- */
+// The R6 review's counterexample: a trigger on the outcome UPDATE inserts a row whose foreign
+// key is DEFERRABLE INITIALLY DEFERRED, so the statement returns and the implicit commit fails.
+const STOP_EVENTS = ["cooldown_started", "cooldown_not_persisted", "coordinator_write_failed", "incident_resolved"];
+for (const seconds of [3600, 172800]) {
+  test(`R7/L3: a ${seconds} s stop whose SQLite commit fails at a deferred foreign key is never logged as started, across a full restart`, { timeout: 120000 }, async () => {
+    const persist = persistDir(`deferred-commit-${seconds}`);
+    const yahoo = syntheticYahoo();
+    const seen = [];
+    let world = await startWorld({ persist, yahoo });
+    try {
+      await world.health();
+      await sql(world, "CREATE TABLE r7_parent (id INTEGER PRIMARY KEY)");
+      await sql(world, "CREATE TABLE r7_child (id INTEGER REFERENCES r7_parent(id) DEFERRABLE INITIALLY DEFERRED)");
+      yahoo.hold = true;
+      const pending = world.ask("isolate-b", "AAPL");
+      await held(yahoo, 1);
+      await sql(world, "CREATE TRIGGER r7_deferred_fault BEFORE UPDATE ON coordinator_state WHEN NEW.cooldown_until > OLD.cooldown_until OR NEW.halt_code IS NOT NULL BEGIN INSERT INTO r7_child VALUES (42); END");
+      yahoo.held.shift().resolve(refusal(seconds));
+      await expectError(await pending, "busy", 503);
+      assert.equal((await world.health()).upstream.state, "unverified");
+      const row = await world.row();
+      assert.equal(row.cooldown_until, 0, "the commit failed");
+      assert.equal(row.halt_code, null);
+      assert.equal(row.unresolved.length, 1, "the admission marker survives");
+      await sleep(300); // any late acknowledgement has had time to arrive
+      seen.push(...world.logs.filter(l => STOP_EVENTS.includes(l.event)));
+      console.log("R7-DEFERRED-COMMIT", JSON.stringify({ seconds, status: 503, cooldown: row.cooldown_until, markers: row.unresolved.length, events: seen }));
+      assert.ok(!seen.some(l => l.event === "cooldown_started"), `no uncommitted stop is claimed: ${JSON.stringify(seen)}`);
+      assert.equal(yahoo.calls.length, 1);
+      await sql(world, "DROP TRIGGER r7_deferred_fault"); // SQLite is healthy; the outcome is still unknown
+    } finally { await world.stop(); }
+    yahoo.hold = false;
+    world = await startWorld({ persist, yahoo });
+    try {
+      await world.advance(40 * DAY_MS);
+      await expectError(await world.ask("isolate-c", "MSFT"), "busy", 503);
+      assert.equal((await world.health()).upstream.state, "unverified");
+      assert.equal((await world.row()).unresolved.length, 1);
+      assert.equal(yahoo.calls.length, 1, "no second upstream request after a full restart");
+      assert.ok(!world.logs.some(l => l.event === "cooldown_started"));
+    } finally { await world.stop(); }
+    // The owner reconciles and approves the incident with the source off; the next stop, with the
+    // source on again, is committed and logged once.
+    let approval;
+    world = await startWorld({ persist, yahoo, coordinatorEnv: SOURCE_OFF });
+    try { approval = (await incidentOf(world)).approval; } finally { await world.stop(); }
+    world = await startWorld({ persist, yahoo, coordinatorEnv: { ...SOURCE_OFF, UPSTREAM_INCIDENT_APPROVAL: approval } });
+    try {
+      assert.equal((await incidentOf(world)).approval, null, "the approval applied at the object's start");
+      await eventually(() => world.logs.some(l => l.event === "incident_resolved"), "the committed approval is reported");
+    } finally { await world.stop(); }
+    world = await startWorld({ persist, yahoo });
+    try {
+      yahoo.answer = () => refusal(3600);
+      await expectError(await world.ask("isolate-c", "MSFT"), "upstream_rate_limited", 429);
+      assert.equal(yahoo.calls.length, 2);
+      await eventually(() => world.logs.some(l => l.event === "cooldown_started"), "the confirmed stop is reported");
+      await world.health();
+      await world.health("isolate-c");
+      await sleep(300);
+      const started = world.logs.filter(l => l.event === "cooldown_started");
+      assert.equal(started.length, 1, JSON.stringify(started));
+      assert.ok(started[0].seconds > 3500 && started[0].seconds <= 3600);
+      assert.ok((await world.row()).cooldown_until > 0, "and SQLite has it");
+    } finally { await world.stop(); }
+  });
+}
+
+for (const [order, firstWait, secondWait, expected] of [
+  ["ordinary cooldown first", 3600, 172800, [[3600, false], [null, true]]],
+  ["halt first", 172800, 3600, [[900, false], [null, true], [3600, false]]],
+]) {
+  test(`R7/L3: concurrent stops from two isolates (${order}) are logged once each, after commit, in the order recorded`, { timeout: 60000 }, () => withWorld({}, async world => {
+    world.yahoo.hold = true;
+    const answers = [world.ask("isolate-a", "AAPL"), world.ask("isolate-b", "MSFT")];
+    await held(world.yahoo, 2);
+    const taken = world.yahoo.held.splice(0);
+    taken.find(h => h.symbol === "AAPL").resolve(refusal(firstWait));
+    await answers[0];
+    taken.find(h => h.symbol === "MSFT").resolve(refusal(secondWait));
+    await answers[1];
+    await eventually(() => world.logs.filter(l => l.event === "cooldown_started").length >= expected.length, "both stops are reported");
+    await world.health();
+    await world.health("isolate-c");
+    await sleep(300);
+    const started = world.logs.filter(l => l.event === "cooldown_started");
+    assert.equal(started.length, expected.length, JSON.stringify(started));
+    started.forEach((entry, i) => {
+      const [seconds, halted] = expected[i];
+      assert.equal(entry.code, "upstream_rate_limited");
+      assert.equal(Boolean(entry.halted), halted, JSON.stringify(started));
+      if (seconds === null) assert.equal(entry.seconds, null);
+      else assert.ok(entry.seconds > seconds - 5 && entry.seconds <= seconds, JSON.stringify(started));
+    });
+    assert.ok(!world.logs.some(l => l.event === "cooldown_not_persisted"));
+    const row = await world.row();
+    assert.equal(row.halt_code, "upstream_rate_limited", "the halt stands");
+    assert.deepEqual(row.unresolved, []);
+    assert.equal(world.yahoo.calls.length, 2);
+  }));
+}
+
+/* ---------------- the unmodified entry point ---------------- */
+test("the unmodified Worker: answers come from synthetic Yahoo through the coordinator, in real SQLite", { timeout: 60000 }, () => withWorld({ real: true }, async world => {
+  const h = await world.health();
+  assert.equal(h.status, "ok");
+  assert.equal(h.version, "1.3.0");
+  assert.equal(h.keyless.enabled, true);
+  assert.deepEqual(h.upstream, { state: "ok", code: null, retryAfterSeconds: 0 });
+
+  const quote = await world.ask("isolate-b", "VEQT.TO");
+  assert.equal(quote.status, 200);
+  const body = await quote.json();
+  assert.equal(body.schema, "md-gateway.quote.v1");
+  assert.equal(body.currency, "CAD");
+  assert.equal(body.cache.status, "miss");
+  assert.ok(Number.isFinite(Date.parse(body.retrievedAt)));
+
+  const history = await world.askPath("isolate-c", "/v1/history?symbol=SAP.DE&range=1y&interval=1d");
+  assert.equal(history.status, 200);
+  assert.ok((await history.json()).observations.length > 100);
+  assert.equal(world.yahoo.calls.length, 2);
+  assert.match(world.yahoo.calls[0].url, /^https:\/\/query1\.finance\.yahoo\.com\/v8\/finance\/chart\/VEQT\.TO\?/);
+  // Real time: the second start waited for the first, across isolates.
+  assert.ok(world.yahoo.calls[1].at - world.yahoo.calls[0].at >= 900, `gap ${world.yahoo.calls[1].at - world.yahoo.calls[0].at} ms`);
+}));
+
+/* ---------------- 1. overdue admission ---------------- */
+test("1. a queue ticket that wakes at 20 s, after its 15 s deadline, is refused and never sent, and uses no budget", { timeout: 60000 }, () => withWorld({}, async world => {
+  world.yahoo.hold = true;
+  const first = world.ask("isolate-b", "AAPL");
+  await held(world.yahoo, 1);
+  const late = world.ask("isolate-c", "MSFT"); // waits for its 1 s spacing
+  await sleep(150);
+  await world.advance(20000); // its real timer now resumes 20 s after it arrived
+  const answer = await late;
+  await expectError(answer, "throttled", 429);
+  assert.deepEqual(world.yahoo.calls.map(c => c.symbol), ["AAPL"]);
+  assert.equal((await world.row()).starts.length, 1, "no budget used for the refused ticket");
+  world.yahoo.held.splice(0).forEach(h => h.resolve());
+  assert.equal((await first).status, 200);
+}));
+
+/* ---------------- 2, 3, 4. deadlines recorded in either order, by different isolates ---------------- */
+for (const [order, firstWait, secondWait] of [["3600 s recorded first", 3600, null], ["900 s recorded first", null, 3600]]) {
+  test(`2 and 4. two isolates record 3600 s and 900 s (${order}); a new isolate stays away at 901 s`, { timeout: 60000 }, () => withWorld({}, async world => {
+    world.yahoo.hold = true;
+    const answers = [world.ask("isolate-a", "AAPL"), world.ask("isolate-b", "MSFT")];
+    await held(world.yahoo, 2);
+    const taken = world.yahoo.held.splice(0);
+    taken.find(h => h.symbol === "AAPL").resolve(refusal(firstWait));
+    await answers[0];
+    taken.find(h => h.symbol === "MSFT").resolve(refusal(secondWait));
+    await answers[1];
+
+    await world.advance(901000);
+    const before = world.yahoo.calls.length;
+    const fresh = await world.ask("isolate-c", "SPY"); // has served nothing before this
+    const error = await expectError(fresh, "upstream_rate_limited", 429);
+    assert.ok(error.retryAfterSeconds > 2600 && error.retryAfterSeconds <= 2699, `retry after ${error.retryAfterSeconds}`);
+    assert.equal(world.yahoo.calls.length, before, "no upstream request at 901 s");
+    assert.equal((await world.health("isolate-c")).upstream.state, "cooling_down");
+
+    world.yahoo.hold = false;
+    await world.advance(2699000);
+    assert.equal((await world.ask("isolate-c", "SPY")).status, 200, "resumes after the longer deadline");
+  }));
+}
+
+for (const [order, firstWait, secondWait] of [["halt recorded first", 172800, null], ["ordinary cooldown recorded first", null, 172800]]) {
+  test(`3. an ordinary cooldown never overwrites a manual-reactivation halt (${order})`, { timeout: 60000 }, () => withWorld({}, async world => {
+    world.yahoo.hold = true;
+    const answers = [world.ask("isolate-a", "AAPL"), world.ask("isolate-b", "MSFT")];
+    await held(world.yahoo, 2);
+    const taken = world.yahoo.held.splice(0);
+    taken.find(h => h.symbol === "AAPL").resolve(refusal(firstWait));
+    await answers[0];
+    taken.find(h => h.symbol === "MSFT").resolve(refusal(secondWait));
+    await answers[1];
+    assert.equal((await world.row()).halt_code, "upstream_rate_limited");
+
+    for (const after of [901000, 30 * DAY_MS]) {
+      await world.advance(after);
+      const error = await expectError(await world.ask("isolate-c", "SPY"), "upstream_rate_limited", 429);
+      assert.equal(error.retryAfterSeconds, 86400);
+      assert.equal(error.manualReactivationRequired, true);
+    }
+    assert.equal(world.yahoo.calls.length, 2);
+    const h = await world.health("isolate-c");
+    assert.deepEqual(h.upstream, { state: "halted", code: "upstream_rate_limited", retryAfterSeconds: 86400, manualReactivationRequired: true });
+  }));
+}
+
+/* ---------------- 5, 6. restart from disk, reactivation ---------------- */
+test("5. the unmodified Worker recovers a deadline from disk after a restart of the runtime", { timeout: 90000 }, async () => {
+  const persist = persistDir("deadline");
+  const yahoo = syntheticYahoo();
+  yahoo.answer = () => refusal(3600);
+  const first = await startWorld({ real: true, persist, yahoo });
+  try {
+    await expectError(await first.ask("isolate-b", "AAPL"), "upstream_rate_limited", 429);
+  } finally {
+    await first.stop();
+  }
+
+  yahoo.answer = null;
+  const second = await startWorld({ real: true, persist, yahoo });
+  try {
+    const h = await second.health("isolate-c");
+    assert.equal(h.upstream.state, "cooling_down");
+    assert.ok(h.upstream.retryAfterSeconds > 3500 && h.upstream.retryAfterSeconds <= 3600, `retry after ${h.upstream.retryAfterSeconds}`);
+    await expectError(await second.ask("isolate-c", "MSFT"), "upstream_rate_limited", 429);
+    assert.equal(yahoo.calls.length, 1, "nothing sent after the restart");
+    assert.deepEqual(yahoo.strays, []);
+  } finally {
+    await second.stop();
+  }
+});
+
+test("5. spacing and budget survive the object being reset; a reset request is reported and not repeated", { timeout: 60000 }, () => withWorld({}, async world => {
+  const answer = await world.ask("isolate-b", "AAPL");
+  assert.equal(answer.status, 200);
+  await world.test("reset");
+  await world.ask("isolate-c", "MSFT"); // must wait out the second that started before the reset
+  const row = await world.row();
+  assert.equal(row.starts.length, 2, "the first start survived the reset");
+  assert.ok(row.starts[1] - row.starts[0] >= 1000, `gap ${row.starts[1] - row.starts[0]} ms, from the persisted record`);
+
+  // A reset while a request is in flight: its clients get an answer, and it is not repeated.
+  world.yahoo.hold = true;
+  await sleep(1000);
+  const interrupted = world.ask("isolate-c", "SPY");
+  await held(world.yahoo, 1);
+  await world.test("reset");
+  const refused = await interrupted;
+  await expectError(refused, "busy", 503);
+  assert.equal(refused.headers.get("retry-after"), "60");
+  assert.equal(world.yahoo.calls.filter(c => c.symbol === "SPY").length, 1, "not repeated");
+  world.yahoo.held.splice(0).forEach(h => h.resolve());
+}));
+
+test("6. M4 in the real runtime: only the current incident's approval, with the source off, ends it, once", { timeout: 180000 }, async () => {
+  const persist = persistDir("reactivation");
+  const yahoo = syntheticYahoo();
+  // `approval`: the UPSTREAM_INCIDENT_APPROVAL secret of this deployment; `off`: the source is
+  // switched off in it (the coordinator's own settings).
+  const session = async ({ approval = null, off = false } = {}, body) => {
+    const world = await startWorld({ persist, yahoo, coordinatorEnv: { ...(off ? SOURCE_OFF : {}), ...(approval ? { UPSTREAM_INCIDENT_APPROVAL: approval } : {}) } });
+    try { return await body(world); } finally { await world.stop(); }
+  };
+  const haltNow = async (world, symbol) => {
+    yahoo.answer = () => refusal(172800);
+    await expectError(await world.ask("isolate-b", symbol), "upstream_rate_limited", 429);
+    yahoo.answer = null;
+    assert.equal((await world.health()).upstream.state, "halted");
+    await world.advance(901000); // past the ordinary minimum, so only the halt is left
+  };
+  const stillHalted = async (world, symbol) => {
+    const before = yahoo.calls.length;
+    const error = await expectError(await world.ask("isolate-c", symbol), "upstream_rate_limited", 429);
+    assert.equal(error.manualReactivationRequired, true);
+    assert.equal(yahoo.calls.length, before);
+  };
+
+  const early = `g1-${"a".repeat(26)}`; // set before any incident exists
+  await session({ approval: early }, async world => { await haltNow(world, "AAPL"); });
+  await session({ approval: early, off: true }, async world => { assert.match((await incidentOf(world)).approval_result, /"mismatch"/); });
+  await session({ approval: early }, async world => { await stillHalted(world, "MSFT"); }); // a restart alone changes nothing
+  const first = await session({ off: true }, async world => (await incidentOf(world)).approval);
+  await session({ approval: first }, async world => { // the source is on: refused (D2)
+    await stillHalted(world, "MSFT");
+    assert.match((await incidentOf(world)).approval_result, /"source_on"/);
+  });
+  await session({ approval: first, off: true }, async world => {
+    const after = await incidentOf(world);
+    assert.equal(after.approval, null, "applied at the start of the source-off deployment");
+    assert.equal(after.halt_code, null);
+  });
+  await session({ approval: first }, async world => { // source on again; the value is left in place
+    assert.equal((await world.health()).upstream.state, "ok");
+    assert.equal((await world.ask("isolate-c", "MSFT")).status, 200);
+    await sleep(1000);
+    await haltNow(world, "SPY");
+    await stillHalted(world, "VST"); // the same value, still in place, does nothing
+  });
+  await session({ approval: first, off: true }, async world => { assert.match((await incidentOf(world)).approval_result, /"consumed"/); });
+  await session({ approval: first }, async world => { await stillHalted(world, "VST"); }); // nor after a restart
+  const second = await session({ off: true }, async world => (await incidentOf(world)).approval);
+  assert.match(second, /^g2-/);
+  await session({ approval: second, off: true }, async world => { assert.equal((await incidentOf(world)).approval, null); });
+  await session({}, async world => { assert.equal((await world.ask("isolate-c", "VST")).status, 200); });
+  assert.deepEqual(await session({}, world => sql(world, "SELECT generation FROM incident_approvals ORDER BY generation")), [{ generation: 1 }, { generation: 2 }]);
+  assert.equal(yahoo.calls.length, 4, "AAPL, MSFT, SPY, VST: nothing else ever reached the source");
+  assert.deepEqual(yahoo.strays, []);
+});
+
+test("6. M4: an approval whose SQLite commit fails at a deferred foreign key ends nothing, is not reported, and applies once at the next start", { timeout: 180000 }, async () => {
+  const persist = persistDir("approval-deferred-commit");
+  const yahoo = syntheticYahoo();
+  let world = await startWorld({ persist, yahoo });
+  let approval;
+  try {
+    yahoo.answer = () => refusal(172800);
+    await expectError(await world.ask("isolate-b", "AAPL"), "upstream_rate_limited", 429);
+    yahoo.answer = null;
+    await sql(world, "CREATE TABLE m4_parent (id INTEGER PRIMARY KEY)");
+    await sql(world, "CREATE TABLE m4_child (id INTEGER REFERENCES m4_parent(id) DEFERRABLE INITIALLY DEFERRED)");
+    await sql(world, "CREATE TRIGGER m4_deferred_fault AFTER INSERT ON incident_approvals BEGIN INSERT INTO m4_child VALUES (42); END");
+    approval = (await incidentOf(world)).approval;
+  } finally { await world.stop(); }
+  world = await startWorld({ persist, yahoo, coordinatorEnv: { ...SOURCE_OFF, UPSTREAM_INCIDENT_APPROVAL: approval } });
+  try {
+    // The object's start applies the approval, the statements return, the commit fails: the runtime
+    // resets the object. Whatever the first request gets, nothing may change on disk.
+    await world.mf.getWorker("isolate-a").then(host => host.fetch(`https://gateway.test/__test/sql?q=${encodeURIComponent("SELECT 1")}`)).then(r => r.text()).catch(() => {});
+    await sleep(300);
+    assert.ok(!world.logs.some(l => l.event === "incident_resolved"), JSON.stringify(world.logs));
+  } finally { await world.stop(); }
+  world = await startWorld({ persist, yahoo }); // no approval in this deployment: nothing is evaluated
+  try {
+    const state = await incidentOf(world);
+    assert.equal(state.approval, approval, "the incident, its nonce and its halt survive the failed commit");
+    assert.equal(state.halt_code, "upstream_rate_limited");
+    assert.deepEqual(await sql(world, "SELECT generation FROM incident_approvals"), [], "and the approval was not used up");
+    await sql(world, "DROP TRIGGER m4_deferred_fault");
+  } finally { await world.stop(); }
+  world = await startWorld({ persist, yahoo, coordinatorEnv: { ...SOURCE_OFF, UPSTREAM_INCIDENT_APPROVAL: approval } });
+  try {
+    assert.equal((await incidentOf(world)).approval, null, "the same approval applies once the commit can succeed");
+    await eventually(() => world.logs.filter(l => l.event === "incident_resolved").length === 1, "reported once committed");
+    assert.equal(yahoo.calls.length, 1);
+  } finally { await world.stop(); }
+});
+
+test("6. M4: an approval whose start failed is never retried by health or data requests on the same object, only by the next start", { timeout: 180000 }, async () => {
+  const persist = persistDir("approval-start-retry");
+  const yahoo = syntheticYahoo();
+  let approval;
+  await withWorld({ persist, yahoo }, async world => {
+    yahoo.answer = () => refusal(172800);
+    await expectError(await world.ask("isolate-b", "AAPL"), "upstream_rate_limited", 429);
+    yahoo.answer = null;
+    await world.advance(901000);
+    approval = (await incidentOf(world)).approval;
+    await sql(world, "CREATE TRIGGER m4_reject_approval BEFORE UPDATE OF halt_code ON coordinator_state WHEN NEW.halt_code IS NULL BEGIN SELECT RAISE(ABORT, 'synthetic statement fault'); END");
+  });
+  await withWorld({ persist, yahoo, coordinatorEnv: { ...SOURCE_OFF, UPSTREAM_INCIDENT_APPROVAL: approval } }, async world => {
+    assert.deepEqual(await sql(world, "SELECT generation FROM incident_approvals"), [], "the start's approval failed");
+    await sql(world, "DROP TRIGGER m4_reject_approval");
+    assert.equal((await world.health()).upstream.state, "halted");
+    await expectError(await world.ask("isolate-b", "MSFT"), "source_disabled", 503); // M1
+    assert.deepEqual(await sql(world, "SELECT generation FROM incident_approvals"), [], "ordinary traffic did not retry it");
+    assert.equal((await incidentOf(world)).halt_code, "upstream_rate_limited");
+    assert.equal(yahoo.calls.length, 1);
+  });
+  await withWorld({ persist, yahoo, coordinatorEnv: { ...SOURCE_OFF, UPSTREAM_INCIDENT_APPROVAL: approval } }, async world => {
+    assert.equal((await incidentOf(world)).approval, null, "the next start applies it");
+    assert.deepEqual(await sql(world, "SELECT generation FROM incident_approvals"), [{ generation: 1 }]);
+    assert.equal(yahoo.calls.length, 1);
+  });
+});
+
+test("6. M4: a halt erased by another writer while its incident is open stays in force, under a new incident", { timeout: 60000 }, () => withWorld({}, async world => {
+  world.yahoo.answer = () => refusal(172800);
+  await expectError(await world.ask("isolate-b", "AAPL"), "upstream_rate_limited", 429);
+  world.yahoo.answer = null;
+  await world.advance(901000);
+  const before = (await incidentOf(world)).approval;
+  await sql(world, "UPDATE coordinator_state SET halt_code = NULL WHERE id = 1"); // a manual edit or an older version
+  await world.test("reset");
+  const after = await incidentOf(world);
+  assert.equal(after.halt_code, "upstream_rate_limited", "re-imposed");
+  assert.match(after.approval, /^g2-/);
+  assert.notEqual(after.approval, before);
+  assert.equal((await world.health()).upstream.state, "halted");
+  await expectError(await world.ask("isolate-b", "MSFT"), "upstream_rate_limited", 429);
+  assert.equal(world.yahoo.calls.length, 1);
+}));
+
+/* ---------------- 7. storage that fails, for real ---------------- */
+test("7. state that is not well formed in real SQLite: nothing is sent", { timeout: 60000 }, () => withWorld({}, async world => {
+  assert.equal((await world.ask("isolate-b", "AAPL")).status, 200);
+  const sent = world.yahoo.calls.length;
+  for (const corruption of ["UPDATE coordinator_state SET starts = 'not json'", "UPDATE coordinator_state SET starts = '[]', cooldown_until = 'soon', cooldown_code = 'upstream_rate_limited'", "UPDATE coordinator_state SET cooldown_until = 0, cooldown_code = NULL, halt_code = 'made_up'"]) {
+    await world.test(`sql?q=${encodeURIComponent(corruption)}`);
+    await world.test("reset"); // the next instance reads it from disk
+    const answer = await world.ask("isolate-c", "MSFT");
+    await expectError(answer, "busy", 503);
+    assert.equal(answer.headers.get("retry-after"), "60");
+    const h = await world.health("isolate-c");
+    assert.equal(h.upstream.state, "unverified");
+    assert.equal(h.status, "degraded");
+  }
+  assert.equal(world.yahoo.calls.length, sent, "nothing was sent on state that could not be verified");
+}));
+
+test("7. a write that really fails: the admission is refused and nothing is sent", { timeout: 60000 }, () => withWorld({}, async world => {
+  assert.equal((await world.ask("isolate-b", "AAPL")).status, 200);
+  await world.test(`sql?q=${encodeURIComponent("DROP TABLE coordinator_state")}`); // a real SQLite error on the next write
+  await sleep(1000);
+  const sent = world.yahoo.calls.length;
+  const answer = await world.ask("isolate-c", "MSFT");
+  await expectError(answer, "busy", 503);
+  assert.equal(world.yahoo.calls.length, sent);
+  const h = await world.health("isolate-c");
+  assert.equal(h.status, "degraded", "health says so while writes fail");
+  assert.equal(h.upstream.state, "unverified");
+}));
+
+test("7. a stop is recorded on any refusal that names a wait, over a real fetch: a 302 with Retry-After", { timeout: 60000 }, () => withWorld({}, async world => {
+  world.yahoo.answer = () => refusal(3600, 302);
+  await expectError(await world.ask("isolate-b", "AAPL"), "upstream_invalid", 502);
+  world.yahoo.answer = null;
+  await sleep(1100);
+  const error = await expectError(await world.ask("isolate-c", "MSFT"), "upstream_unavailable", 502);
+  assert.ok(error.retryAfterSeconds > 3500 && error.retryAfterSeconds <= 3600, `retry after ${error.retryAfterSeconds}`);
+  assert.equal(world.yahoo.calls.length, 1, "nothing more is sent");
+}));
+
+/* ---------------- 8. concurrency ---------------- */
+test("8. concurrent requests from three isolates while a stop is recorded: one reaches the source, the rest are refused", { timeout: 60000 }, () => withWorld({}, async world => {
+  world.yahoo.hold = true;
+  const symbols = ["AAPL", "MSFT", "SPY", "VST", "SAP.DE", "VOD.L"];
+  const answers = symbols.map((symbol, i) => world.ask(["isolate-a", "isolate-b", "isolate-c"][i % 3], symbol));
+  await held(world.yahoo, 1);
+  await sleep(100); // all of them are queued in the coordinator by now
+  world.yahoo.held.shift().resolve(refusal(3600));
+  const all = await Promise.all(answers);
+  await sleep(1500); // past the moment any of them could have started
+  assert.equal(world.yahoo.calls.length, 1, `nothing else was sent: ${JSON.stringify(world.yahoo.calls.map(c => c.symbol))}`);
+  for (const answer of all) {
+    assert.equal(answer.status, 429);
+    const error = await expectError(answer, "upstream_rate_limited");
+    assert.ok(error.retryAfterSeconds > 3500, `retry after ${error.retryAfterSeconds}`);
+  }
+  assert.equal((await world.row()).starts.length, 1, "only the real start was counted");
+}));
+
+test("8. one second between actual starts and one request for identical requests, across isolates", { timeout: 60000 }, () => withWorld({}, async world => {
+  const answers = await Promise.all([world.ask("isolate-a", "AAPL"), world.ask("isolate-b", "MSFT"), world.ask("isolate-c", "SPY")]);
+  assert.ok(answers.every(a => a.status === 200));
+  const { starts } = await world.row();
+  assert.equal(starts.length, 3);
+  assert.ok(starts.slice(1).every((s, i) => s - starts[i] >= 1000), `starts ${starts}`);
+
+  world.yahoo.hold = true;
+  await sleep(1000);
+  const shared = [world.ask("isolate-a", "VOD.L"), world.ask("isolate-b", "VOD.L"), world.ask("isolate-c", "VOD.L")];
+  await held(world.yahoo, 1);
+  await sleep(100);
+  world.yahoo.held.splice(0).forEach(h => h.resolve());
+  const bodies = await Promise.all((await Promise.all(shared)).map(r => r.json()));
+  assert.equal(world.yahoo.calls.filter(c => c.symbol === "VOD.L").length, 1);
+  assert.ok(bodies.every(b => b.retrievedAt === bodies[0].retrievedAt));
+}));
+
+/* ---------------- 9. a caller that goes away ---------------- */
+test("9. a caller that goes away while queued: the coordinator drops it, it never starts, and no budget is used", { timeout: 60000 }, () => withWorld({}, async world => {
+  world.yahoo.hold = true;
+  const first = world.ask("isolate-c", "AAPL");
+  await held(world.yahoo, 1);
+  // Would start 1 s after AAPL if it stayed; its caller leaves first.
+  assert.match(await world.leave("MSFT", 200), /rejected AbortError|status 499/);
+  await sleep(1500);
+  assert.deepEqual(world.yahoo.calls.map(c => c.symbol), ["AAPL"], "the cancelled request reached no one");
+  assert.equal((await world.row()).starts.length, 1);
+  world.yahoo.held.splice(0).forEach(h => h.resolve());
+  assert.equal((await first).status, 200);
+  world.yahoo.hold = false;
+  assert.equal((await world.ask("isolate-c", "SPY")).status, 200, "the queue goes on");
+}));
+
+test("9. a caller that goes away in flight leaves a durable unknown outcome and quarantines the source", { timeout: 60000 }, () => withWorld({}, async world => {
+  world.yahoo.hold = true;
+  assert.match(await Promise.race([world.leave("MSFT", 400), sleep(5000).then(() => "the caller was never released")]), /rejected AbortError|status 499/);
+  assert.equal(world.yahoo.calls.length, 1);
+  await sleep(100);
+  const row = await world.row();
+  assert.equal(row.failures, 0);
+  assert.equal(row.cooldown_until, 0);
+  assert.equal(row.unresolved.length, 1, "a client abort cannot recall a request already sent");
+  assert.equal((await world.health()).upstream.state, "unverified");
+  world.yahoo.held.splice(0).forEach(h => h.resolve());
+  await world.test("reset");
+  await world.advance(40 * DAY_MS);
+  await expectError(await world.ask("isolate-c", "SPY"), "busy", 503);
+  assert.equal(world.yahoo.calls.length, 1);
+}));
+
+/* ---------------- 10. configuration and platform failures ---------------- */
+test("10. a Worker without the binding, or with the wrong one, sends nothing and says so", { timeout: 60000 }, async () => {
+  const yahoo = syntheticYahoo();
+  const worker = (name, binding) => ({
+    config: { name, compatibilityDate: COMPATIBILITY.date, compatibilityFlags: COMPATIBILITY.flags, manifest: manifest(`${SRC}/worker.js`, SOURCE_MODULES), env: { ...binding, ...vars(ON) } },
+    dev: { outboundService: { type: "fetcher", handler: request => { yahoo.strays.push(request.url); return new Response("no", { status: 599 }); } } },
+  });
+  const world = await startWorld({ real: true, yahoo, extra: [worker("no-binding", {}), worker("plain-variable", vars({ UPSTREAM_COORDINATOR: "UpstreamCoordinator" }))] });
+  try {
+    for (const name of ["no-binding", "plain-variable"]) {
+      const answer = await world.ask(name, "AAPL");
+      await expectError(answer, "busy", 503);
+      assert.equal(answer.headers.get("retry-after"), "60");
+      const h = await world.health(name);
+      assert.equal(h.upstream.state, "unverified", name);
+      assert.equal(h.upstream.reason, "coordinator_binding_missing", name);
+    }
+    assert.equal(yahoo.calls.length, 0);
+    assert.deepEqual(yahoo.strays, []);
+  } finally {
+    await world.stop();
+  }
+});
+
+test("10. a class without SQLite storage (not available on Workers Free) fails closed", { timeout: 60000 }, () => withWorld({ real: true, storage: "legacy-kv" }, async world => {
+  const answer = await world.ask("isolate-b", "AAPL");
+  await expectError(answer, "busy", 503);
+  assert.equal(world.yahoo.calls.length, 0);
+  assert.equal((await world.health()).upstream.state, "unverified");
+}));
+
+test("10. a source that is switched off contacts nothing and does not need the coordinator", { timeout: 60000 }, () => withWorld({ real: true, env: { KEYLESS_SOURCE: "", OWNER_ATTESTATION: "" } }, async world => {
+  await expectError(await world.ask("isolate-b", "AAPL"), "source_disabled", 503);
+  const h = await world.health();
+  assert.equal(h.keyless.enabled, false);
+  assert.equal(world.yahoo.calls.length, 0);
+}));
+
+// M1: isolates b and c keep the source-on settings, as isolates of the previous version do while a
+// source-off deployment replaces it; isolate-a hosts the coordinator with the new settings.
+test("M1: a source-off deployment's coordinator refuses enabled (stale) isolates in real workerd; its state survives to the next source-on deployment", { timeout: 180000 }, async () => {
+  const persist = persistDir("m1-transition");
+  const yahoo = syntheticYahoo();
+  let world = await startWorld({ persist, yahoo });
+  try {
+    assert.equal((await world.ask("isolate-b", "AAPL")).status, 200);
+  } finally { await world.stop(); }
+  for (const off of [SOURCE_OFF, { OWNER_ATTESTATION: "" }]) {
+    world = await startWorld({ persist, yahoo, coordinatorEnv: off });
+    try {
+      for (const name of ["isolate-b", "isolate-c"]) await expectError(await world.ask(name, "MSFT"), "source_disabled", 503);
+      await expectError(await world.ask("isolate-a", "MSFT"), "source_disabled", 503); // its own Worker refuses first
+      assert.equal(yahoo.calls.length, 1, `nothing reaches the source: ${JSON.stringify(off)}`);
+      assert.ok(world.logs.some(l => l.event === "coordinator_source_disabled"), "the coordinator itself refused");
+      assert.equal((await world.row()).starts.length, 1, "a refused request uses no budget and writes nothing");
+    } finally { await world.stop(); }
+  }
+  world = await startWorld({ persist, yahoo });
+  try {
+    assert.equal((await world.ask("isolate-c", "MSFT")).status, 200);
+    assert.equal(yahoo.calls.length, 2);
+    assert.equal((await world.row()).starts.length, 2, "the first deployment's start is still on disk");
+  } finally { await world.stop(); }
+});
+
+test("10. Workers Free: each admission writes one row, so the daily row allowance cannot be reached by the budget", { timeout: 60000 }, () => withWorld({}, async world => {
+  assert.equal(await world.test("rows-written"), 1);
+  // One write at admission and at most one for the outcome, at 20 starts a minute.
+  assert.ok(20 * 60 * 24 * 2 < 100000);
+}));
+
+test("10. wrangler deploy --dry-run accepts both configurations and lists the coordinator", { timeout: 120000 }, () => {
+  const wrangler = path.join(path.dirname(require.resolve("wrangler/package.json")), "bin/wrangler.js");
+  const run = env => {
+    const outdir = path.join(TEMP, `dry-run-${env || "top"}`);
+    const result = spawnSync(process.execPath, [wrangler, "deploy", "--dry-run", `--env=${env}`, `--outdir=${outdir}`], {
+      cwd: SERVICE, encoding: "utf8", timeout: 100000, env: { ...process.env, WRANGLER_SEND_METRICS: "false", NO_COLOR: "1", CI: "1" },
+    });
+    const output = `${result.stdout}\n${result.stderr}`;
+    assert.equal(result.status, 0, output);
+    return output;
+  };
+  for (const env of ["", "production"]) {
+    const output = run(env);
+    assert.match(output, /env\.UPSTREAM_COORDINATOR \(UpstreamCoordinator\)\s+Durable Object/, output);
+    assert.match(output, /env\.RATE_LIMITER/, output);
+    assert.doesNotMatch(output, /UPSTREAM_LIMITER/, output);
+    assert.match(output, /--dry-run: exiting now/, output);
+  }
+  assert.match(run("production"), /env\.KEYLESS_SOURCE \("yahoo-chart"\)/);
+  assert.match(run(""), /env\.KEYLESS_SOURCE \(""\)/);
+});

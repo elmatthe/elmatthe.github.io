@@ -341,7 +341,16 @@ class MonteCarloApp:
         except (ValidationError, FieldError) as err:
             self._show_validation_error(str(err), getattr(err, "field", None))
             return
-        target = self._choose_workbook(inputs.workbook_path)
+        try:
+            target = self._choose_workbook(inputs.workbook_path)
+        except OSError:
+            # A folder, a workbook locked by Excel or a path without read access: say so
+            # instead of failing silently inside the Tk callback.
+            self._show_validation_error(
+                "The selected workbook cannot be opened. Close it in Excel, check that the path is a .xlsx file "
+                "you can read and write, then try again. Nothing was changed."
+            )
+            return
         if target is None:
             self._set_status("Cancelled: the workbook was not changed.", STATUS_NEUTRAL)
             return

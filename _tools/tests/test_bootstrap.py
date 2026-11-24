@@ -69,7 +69,10 @@ def test_launcher_files(key):
     assert b"\r" not in body and body.startswith(b"#!/bin/bash")
     if os.name != "nt":
         assert command.stat().st_mode & stat.S_IXUSR
-    assert subprocess.run(["bash", "-n", str(command)]).returncode == 0
+    # On Windows, a bare "bash" can start the WSL launcher, which cannot read this path.
+    bash = shutil.which("bash")
+    if bash and not any(part in bash.lower() for part in ("system32", "windowsapps")):
+        assert subprocess.run([bash, "-n", str(command)]).returncode == 0
     config = tomllib.loads((TOOLS[key] / "config.toml").read_text(encoding="utf-8"))
     assert config["python"] == {"minimum_version": "3.11", "maximum_version_exclusive": "3.15"}
     assert (TOOLS[key] / config["execution"]["entry_point"]).is_file()
@@ -285,3 +288,36 @@ def test_gui_starts_after_bootstrap(key, tmp_path):
                             cwd=root, capture_output=True, text=True)
     assert result.returncode == 124, result.stdout[-2000:] + result.stderr[-2000:]
     assert "Traceback" not in result.stderr
+
+
+def test_rendered_text_compares_equal_from_a_crlf_checkout():
+    """core.autocrlf gives Python and TOML files CRLF on Windows; launchers stay byte-exact."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("render", ROOT / "_tools" / "bootstrap" / "render.py")
+    render = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(render)
+    assert render.same_content(Path("x/bootstrap.py"), b"a\r\nb\r\n", b"a\nb\n") is True
+    assert render.same_content(Path("x/config.toml"), b"a\r\nb\r\n", b"a\nb\n") is True
+    assert render.same_content(Path("x/bootstrap.py"), b"a\nc\n", b"a\nb\n") is False
+    assert render.same_content(Path("x/run.command"), b"a\r\nb\r\n", b"a\nb\n") is False, "a launcher with CRLF would not run on macOS"
+    assert render.same_content(Path("x/run.bat"), b"a\nb\n", b"a\r\nb\r\n") is False, "cmd.exe needs CRLF"
+
+
+def test_zip_builder_gives_the_same_bytes_on_every_platform():
+    import importlib.util
+    import sys as _sys
+
+    spec = importlib.util.spec_from_file_location("build_project_zips", ROOT / "_tools" / "build_project_zips.py")
+    zips = importlib.util.module_from_spec(spec)
+    _sys.modules["build_project_zips"] = zips
+    spec.loader.exec_module(zips)
+    assert zips.content_for("scripts/main.py", b"x\r\ny\r\n") == b"x\ny\n", "a CRLF checkout packages canonical LF text"
+    assert zips.content_for("README.md", b"x\r\n") == b"x\n"
+    assert zips.content_for("run.bat", b"x\ny\n") == b"x\r\ny\r\n"
+    assert zips.content_for("run.command", b"x\r\ny\n") == b"x\ny\n"
+    binary = bytes(range(256)) + b"\r\n"
+    assert zips.content_for("files/CPI.xlsx", binary) == binary, "binary files are never rewritten"
+    # Order: by path components, case-sensitively, whatever the platform's path comparison does.
+    names = sorted(["scripts/b.py", "README.md", "config.toml", "scripts/A.py", "scripts-x/c.py"], key=zips.sort_key)
+    assert names == ["README.md", "config.toml", "scripts/A.py", "scripts/b.py", "scripts-x/c.py"]

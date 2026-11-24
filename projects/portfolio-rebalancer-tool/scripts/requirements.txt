@@ -4,3 +4,4 @@
 # standard-library market_data package in this folder; no third-party data library.
 
 openpyxl==3.1.5      # Excel export of the trade plan
+tzdata==2026.6       # time zones of the exchanges on Windows, which has no database of its own

@@ -1,0 +1,98 @@
+# Cloudflare Workers configuration for the shared market-data gateway (Workers Free plan).
+# Deployment, activation, verification and rollback: README.md in this folder.
+#
+# Uses no paid feature. The one storage product is a SQLite-backed Durable Object (below),
+# which Workers Free includes; no KV, D1, R2, Queues or Workers Paid feature. Keep the account
+# on the Workers Free plan; Cloudflare then refuses requests above the free daily allowance
+# instead of billing.
+#
+# Two configurations:
+#   npx wrangler@4 deploy --env=""           top-level settings below: the data source is
+#                                            OFF (a fresh, unconfigured deployment)
+#   npx wrangler@4 deploy --env production   the owner's approved deployment ([env.production]):
+#                                            the data source is ON by the owner's attestation
+# Both deploy the same Worker name, so the last deploy decides the live settings.
+name = "market-data-gateway"
+main = "src/worker.js"
+compatibility_date = "2026-10-01"
+# Lets a request see its client disconnect (request.signal), so a queued upstream request
+# nobody is waiting for is cancelled. Effective from the next deployment.
+compatibility_flags = ["enable_request_signal"]
+workers_dev = true
+
+# Request logs are not stored by default. If you enable Workers Logs, the gateway still
+# logs only an event name, a code, a venue and an upstream status (never an IP or a URL).
+[observability]
+enabled = false
+
+# THE UPSTREAM COORDINATOR: one object worldwide, the only code that contacts the data
+# source (src/coordinator.js). Required: without it no upstream request is ever sent.
+# `exports` creates the class on the first deploy (no migration tag) and named environments
+# inherit it. It is a one-way step for `wrangler rollback`: see README.md, "Roll back".
+# Never change `storage`, and never set `state = "deleted"` without reading that section:
+# deleting the class deletes a recorded stop.
+[exports.UpstreamCoordinator]
+type = "durable-object"
+storage = "sqlite"
+
+[[durable_objects.bindings]]
+name = "UPSTREAM_COORDINATOR"
+class_name = "UpstreamCoordinator"
+
+[vars]
+# Exact browser origins allowed to call the data endpoints (comma separated; https, or
+# http://127.0.0.1:<port> / http://localhost:<port> for local development only).
+ALLOWED_ORIGINS = "https://elmatthe.github.io"
+
+# THE ACTIVATION SETTINGS. The keyless source stays OFF unless BOTH are set exactly:
+#   KEYLESS_SOURCE    = "yahoo-chart"
+#   OWNER_ATTESTATION = "owner-confirms-yahoo-permission"
+# OWNER_ATTESTATION is a plain flag by which the site owner confirms that their own
+# written permission covers automated retrieval through this Worker, temporary caching
+# and display to visitors. It holds no document, reference or secret. With either value
+# missing, every data request is answered with `source_disabled` and nothing is sent to
+# the data source.
+KEYLESS_SOURCE = ""
+OWNER_ATTESTATION = ""
+
+# "true" lets clients that send no Origin header (the desktop apps) use the data
+# endpoints. Browsers always send Origin on these requests; an unlisted Origin is refused.
+ALLOW_NO_ORIGIN = "false"
+
+# Cross-isolate per-client rate limit, in addition to the in-memory limit in src/gateway.js.
+# Requires Wrangler 4.36.0 or later; namespace_id is any integer unique within your
+# Cloudflare account. If your account cannot use the binding, remove these blocks
+# (here and under [env.production]): the in-memory limit still applies. The limit is
+# approximate and per Cloudflare location. It protects the Worker from one client; the data
+# source is protected by the coordinator, which does not depend on it.
+[[ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "21011"
+
+  [ratelimits.simple]
+  limit = 30
+  period = 60
+
+# ---------------------------------------------------------------------------------
+# The owner's approved deployment. `vars` and bindings are not inherited by an environment
+# in Wrangler, so they are repeated here in full. `exports` above is inherited.
+[env.production]
+name = "market-data-gateway"
+
+[[env.production.durable_objects.bindings]]
+name = "UPSTREAM_COORDINATOR"
+class_name = "UpstreamCoordinator"
+
+[env.production.vars]
+ALLOWED_ORIGINS = "https://elmatthe.github.io"
+KEYLESS_SOURCE = "yahoo-chart"
+OWNER_ATTESTATION = "owner-confirms-yahoo-permission"
+ALLOW_NO_ORIGIN = "true"
+
+[[env.production.ratelimits]]
+name = "RATE_LIMITER"
+namespace_id = "21011"
+
+  [env.production.ratelimits.simple]
+  limit = 30
+  period = 60

@@ -12,6 +12,7 @@ import posixpath
 import re
 import tempfile
 import zipfile
+from decimal import Decimal
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -63,11 +64,21 @@ def safe_text(value) -> str:
 
 
 def js_number(value) -> str:
-    """Numbers written as the web app's CSV writes them (String(number) in JavaScript)."""
+    """Numbers written as the web app's CSV writes them (String(number) in JavaScript).
+
+    Both languages print the shortest digits that round-trip; JavaScript writes them
+    positionally from 1e-6 up to 1e21 (str(int(x)) would print the exact binary value
+    above 2**53, e.g. ...683968 for 1.2345678901234568e20) and otherwise uses an
+    exponent without leading zeros (1e-7, not 1e-07).
+    """
     number = float(value)
-    if number.is_integer() and abs(number) < 1e21:
-        return str(int(number))
-    return repr(number)
+    if number == 0:
+        return "0"
+    text = repr(number)
+    if 1e-6 <= abs(number) < 1e21:
+        fixed = format(Decimal(text), "f")
+        return fixed[:-2] if fixed.endswith(".0") else fixed
+    return re.sub(r"e([+-])0*(\d)", r"e\1\2", text)
 
 
 def raw_input_pairs(inputs: SimulationInputs) -> list[tuple[str, float | int | str]]:

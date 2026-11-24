@@ -15,13 +15,18 @@
 //     (labelled as such on screen and in every export).
 // Every holding is an ordinary row in one list, whatever its market or currency: the
 // same card, the same Get prices action, the same valuation gate and the same plan.
+// Prices come from the visitor's ordered source list (../market-data/sources.js): Yahoo
+// Finance through this site's data gateway (no key; first by default) and providers
+// with the visitor's own key, tried in that order; or prices the visitor enters or
+// imports.
 // Holdings are never sent anywhere or stored: only ticker symbols go to the price
-// provider, and only currency codes go to the central banks.
+// source, and only currency codes go to the central banks.
 
 import * as E from "./engine.js";
 import * as R from "./rows.js";
-import { SAMPLE_PORTFOLIO, isUnchangedInternationalExample, targetTotalBasisPoints } from "./sample.js";
-import { createMarketData, KEY_STORAGE_TEXT, PROVIDERS, providerAvailable } from "../market-data/index.js";
+import { SAMPLE_PORTFOLIO, targetTotalBasisPoints } from "./sample.js";
+import { createMarketData, KEY_STORAGE_TEXT, PROVIDERS, providerAvailable, KEYLESS_ID, KEYLESS_PROVIDER, sourceName, resolveMarketGateway, describeSkipped, shortFailure } from "../market-data/index.js";
+import { createSourceList } from "../market-data/sources-ui.js";
 import { csvRecords } from "../market-data/csv.js";
 import { buildXlsx, toCsv, downloadBlob, timestampSlug } from "../shared/export-files.js";
 
@@ -32,6 +37,7 @@ const PRICE_TYPE = {
   eod_close: "close",
   previous_close: "previous close",
   last_trade: "last price",
+  regular_market_price: "latest regular-session price (may be delayed)",
 };
 const BROWSER_PROVIDERS = Object.keys(PROVIDERS).filter(id => providerAvailable(id, "browser"));
 const DISCLAIMER = "Illustrative planning only; not financial, investment, or trading advice. Verify prices and holdings at your broker before trading.";
@@ -41,7 +47,7 @@ if (root) init();
 
 function init() {
   const $ = id => document.getElementById(id);
-  const md = createMarketData();
+  const md = createMarketData({ gatewayUrl: resolveMarketGateway(root.dataset.marketGateway, window.location) });
   const state = {
     rows: [],
     fx: { CAD: { cadPer: 1, kind: "official", label: "Reporting base", date: null } },
@@ -55,7 +61,7 @@ function init() {
   const els = {
     rows: $("rbRows"),
     reporting: $("rbReporting"), mode: $("rbMode"), budget: $("rbBudget"), rounding: $("rbRounding"),
-    showAccount: $("rbShowAccount"), source: $("rbSource"), fallback: $("rbFallback"),
+    showAccount: $("rbShowAccount"),
     status: $("rbStatus"), results: $("rbResults"), estimate: $("rbEstimate"), summary: $("rbSummary"),
   };
 
@@ -92,6 +98,19 @@ function init() {
     els.status.textContent = text;
     if (tone) els.status.dataset.tone = tone; else delete els.status.dataset.tone;
   }
+  const ageText = ms => { const m = Math.round((ms || 0) / 60000); return m < 60 ? `${m} min` : `${Math.round(m / 60)} h`; };
+  const cacheText = q => (q.cacheStatus === "cached" ? ` (saved copy, ${ageText(q.cachedAgeMs)} old)` : q.cacheStatus === "gateway_cache" ? ` (gateway copy, ${ageText(q.cachedAgeMs)} old)` : "");
+  // A failure the visitor must know about even when another source then answered.
+  const seriousFailure = f => f.kind === "auth" || (f.kind === "rate_limited" && ["daily", "monthly"].includes(f.quotaScope)) || f.kind === "entitlement";
+  const problemWord = f => shortFailure(f);
+  // Why no source can be asked, in plain words.
+  function noSourceText() {
+    const yahoo = md.sources.list().find(x => x.id === KEYLESS_ID);
+    const why = yahoo && !yahoo.enabled ? "Yahoo Finance is switched off in your source list." : yahoo && !yahoo.available ? `Yahoo Finance is ${yahoo.state.reason}.` : "";
+    return `${why} Switch on a source under Market data, add your own key, or use your own price.`.trim();
+  }
+  // "used because Alpha Vantage: daily limit reached; skipped Marketstack: no key"
+  const fallbackText = q => (q.fallbackFrom?.length ? `used because ${q.fallbackFrom.map(f => `${f.provider}: ${problemWord(f)}`).join("; ")}` : "");
 
   /* ---------------- rows ---------------- */
   const getRow = id => state.rows.find(r => r.id === id);
@@ -108,7 +127,7 @@ function init() {
     putRow(row);
     renderRow(row);
     afterChange();
-    if (identity.status === "resolved" && R.isActive(row) && md.configuredProviders().length) priceRow(id);
+    if (identity.status === "resolved" && R.isActive(row) && md.hasPriceSource()) priceRow(id);
   }
 
   // Fetches one holding's price. Every answer is checked against the request token,
@@ -117,10 +136,10 @@ function init() {
     let row = getRow(id);
     if (!row?.identity || row.identity.status !== "resolved") return;
     const token = R.requestToken(row, null);
-    const route = md.route(row.identity);
+    const route = md.route(row.identity, "quote");
     if (!route.candidates.length) {
-      const why = route.skipped.map(s => `${PROVIDERS[s.id].name}: ${s.reason}`).join("; ");
-      ({ row } = R.applyError(row, token, { kind: md.configuredProviders().length ? "not_covered" : "not_configured", message: md.configuredProviders().length ? `Not covered by your saved sources${why ? ` (${why})` : ""}.` : "No price source is set up yet: add your own key under Market data, or use your own price.", retryable: false }));
+      const why = describeSkipped(route.skipped).join("; ");
+      ({ row } = R.applyError(row, token, { kind: md.hasPriceSource() ? "not_covered" : "not_configured", message: md.hasPriceSource() ? `Not covered by the sources switched on in your list${why ? ` (${why})` : ""}.` : noSourceText(), retryable: false }));
       putRow(row);
       renderRow(row);
       afterChange();
@@ -137,7 +156,7 @@ function init() {
     } catch (error) {
       if (error?.kind === "aborted") return;
       const contract = typeof error?.toContract === "function" ? error.toContract() : { kind: "failed", message: String(error?.message || error) };
-      const result = R.applyError(getRow(id), token, { ...contract, kind: error?.kind || contract.kind, quotaScope: error?.quotaScope || null, provider: error?.provider || null });
+      const result = R.applyError(getRow(id), token, { ...contract, kind: error?.kind || contract.kind, quotaScope: error?.quotaScope || null, provider: error?.provider || null, attempts: error?.attempts || [], skipped: error?.skipped || [] });
       if (result.applied) putRow(result.row);
     }
     const current = getRow(id);
@@ -151,11 +170,12 @@ function init() {
     if (row.identity && row.identity.status !== "resolved") return row.identity.reason || "ticker not recognised";
     if (!row.identity) return "ticker not looked up yet";
     const kind = row.error?.kind;
-    if (kind === "not_covered") return "not covered by your saved sources";
-    if (kind === "not_configured") return "no price source set up";
+    if (kind === "not_covered") return "not covered by your sources";
+    if (kind === "not_configured") return "no source available";
     if (kind === "budget_withheld") return "not requested: allowance used up";
-    if (kind === "rate_limited") return "provider limit reached";
-    if (row.error) return "price unavailable";
+    if (kind === "rate_limited") return "sources limited or paused";
+    if (kind === "auth") return "key rejected";
+    if (row.error) return "no source gave a usable price";
     return "no price yet";
   }
 
@@ -216,9 +236,13 @@ function init() {
     const missing = [...targets.map(r => getRow(r.id) || r).filter(r => !R.effectivePrice(r)), ...notIdentified]
       .sort((a, b) => (order.get(a.id) ?? 1e9) - (order.get(b.id) ?? 1e9)); // in the order of the holdings list
     const total = targets.length + notIdentified.length;
+    // Prices that came from another source after the chosen one failed are named, with
+    // the failure, so a rejected key or a used-up allowance is never hidden.
+    const fellBack = targets.map(r => getRow(r.id)).filter(r => r?.quote?.fallbackFrom?.length);
+    const fallbackText = fellBack.length ? ` ${fellBack.length} priced by another source after the first one failed: ${fellBack.map(r => `${r.ticker} (${r.quote.fallbackFrom.map(f => `${f.provider}: ${problemWord(f)}`).join("; ")})`).join(", ")}.` : "";
     setStatus(missing.length
-      ? `${label}: ${total - missing.length} of ${total} priced. Without a usable price: ${missing.map(r => `${r.ticker} (${shortProblem(r)})`).join(", ")}. The plan stays withheld until each has a verified price or one you supply.`
-      : `${label}: all ${total} priced.`, missing.length ? "warn" : "ok");
+      ? `${label}: ${total - missing.length} of ${total} priced. Without a usable price: ${missing.map(r => `${r.ticker} (${shortProblem(r)})`).join(", ")}. The plan stays withheld until each has a verified price or one you supply.${fallbackText}`
+      : `${label}: all ${total} priced.${fallbackText}`, missing.length || fellBack.some(r => r.quote.fallbackFrom.some(seriousFailure)) ? "warn" : "ok");
     renderProviders();
     afterChange();
   }
@@ -304,26 +328,28 @@ function init() {
       const fresh = eff.source.kind === "provider" ? R.freshnessOf(eff.source.tradingDate, Date.now(), id?.timeZone || "America/New_York") : { freshness: "current" };
       const freshText = fresh.freshness === "stale" ? `older than the latest session (${fresh.missed} missed)` : fresh.freshness === "too_old" ? "too old to use" : fresh.freshness === "unknown" ? "date unknown" : "";
       const tone = eff.source.kind !== "provider" || fresh.freshness !== "current" ? (fresh.freshness === "too_old" ? "error" : "warn") : "ok";
-      return {
+      const out = {
         tone,
         price: `${moneyIn(eff.currency)(eff.price)}`,
         text: eff.source.kind === "provider"
-          ? `${row.quote.label}${row.quote.cacheStatus === "cached" ? " (saved copy)" : ""}${freshText ? ` · ${freshText}` : ""} · value ${moneyIn(eff.currency)(value)}`
+          ? `${row.quote.label}${cacheText(row.quote)}${freshText ? ` · ${freshText}` : ""} · value ${moneyIn(eff.currency)(value)}${row.quote.fallbackFrom ? ` · ${fallbackText(row.quote)}` : ""}`
           : `${eff.source.label} · value ${moneyIn(eff.currency)(value)}`,
         state: eff.source.kind === "provider" ? (fresh.freshness === "current" ? "Verified" : "Check date") : "User-supplied",
       };
+      if (eff.source.kind === "provider" && row.quote.fallbackFrom?.some(seriousFailure) && out.tone === "ok") out.tone = "warn";
+      return out;
     }
     if (row.error) {
       const covered = row.error.kind === "not_covered" || row.error.kind === "not_configured";
       return { tone: covered || row.error.kind === "budget_withheld" ? "warn" : "error", state: covered ? "Not covered" : "Price unavailable", text: row.error.message };
     }
     if (!R.isActive(row)) return { tone: "", text: "Not priced: 0 shares and a 0% target (not part of the plan)." };
-    if (!md.configuredProviders().length) return { tone: "", text: "No price source yet: add your own key under Market data, or use your own price." };
-    const route = id?.status === "resolved" ? md.route(id) : null;
+    if (!md.hasPriceSource()) return { tone: "", text: noSourceText() };
+    const route = id?.status === "resolved" ? md.route(id, "quote") : null;
     if (route && !route.candidates.length) {
-      return { tone: "warn", state: "Not covered", text: `${route.skipped.map(x => `${PROVIDERS[x.id].name}: ${x.reason}`).join("; ")}. Use your own price, or add a source that covers ${id.venueName}.` };
+      return { tone: "warn", state: "Not covered", text: `${describeSkipped(route.skipped).join("; ") || "No source is switched on"}. Use your own price, or add a source that covers ${id.venueName}.` };
     }
-    return { tone: "", text: route ? `Not priced yet (source: ${PROVIDERS[route.candidates[0].id].name}).` : "Not priced yet." };
+    return { tone: "", text: route ? `Not priced yet (source: ${sourceName(route.candidates[0].id)}).` : "Not priced yet." };
   }
 
   function renderRow(row) {
@@ -367,7 +393,7 @@ function init() {
     const tools = li.querySelector(".rb-row-tools");
     tools.replaceChildren();
     if (id?.status === "resolved") {
-      const routed = md.route(id).candidates.length > 0;
+      const routed = md.route(id, "quote").candidates.length > 0;
       if (routed) tools.append(button(row.quote ? "Refresh price" : row.error ? "Retry" : "Get price", () => priceRow(row.id, { force: Boolean(row.quote) || Boolean(row.error) })));
       tools.append(button(row.manual ? "Edit my price" : "Use my own price", () => toggleManual(row.id)));
       if (row.error?.kind === "rate_limited" && row.error.quotaScope === "daily") tools.append(button("Check again (1 request)", () => checkAgain(row.error.provider)));
@@ -391,17 +417,22 @@ function init() {
     }
     const q = row.quote;
     if (q) {
-      add("Provider", `${q.provider} (symbol ${q.providerSymbol})${q.fallbackFrom ? `; used because ${q.fallbackFrom.map(f => `${f.provider} failed: ${f.message}`).join("; ")}` : ""}`);
+      add("Source", `${q.provider}${q.sourceTier === "free" ? `, through ${q.via}` : ", with your own key"} (symbol ${q.providerSymbol})`);
+      (q.fallbackFrom || []).forEach((f, i) => add(i ? "" : "Tried first", `${f.provider}: ${f.message}`));
+      describeSkipped(q.skippedSources || []).forEach((t, i) => add(i ? "" : "Skipped", t));
       add("Price", `${moneyIn(q.nativeCurrency)(q.nativePriceMajorUnits)}${q.quoteUnit === "minor" ? ` (provider quoted ${q.rawPrice} ${q.rawCurrency || "pence"})` : ""}`);
-      add("Price type", `${PRICE_TYPE[q.priceType] || q.priceType}${q.feed ? `, ${q.feed.toUpperCase()} feed` : ""}; not adjusted`);
+      add("Price type", `${PRICE_TYPE[q.priceType] || q.priceType}${q.feed ? `, ${q.feed.toUpperCase()} feed` : ""}; not adjusted; not labelled real-time`);
       add("Trading date", q.tradingDate);
       add("Price time", q.asOf ? new Date(q.asOf).toLocaleString() : "not given by the provider");
       add("Currency evidence", { curated_reference: "curated reference", provider_quote: "stated in the provider's quote", provider_listing: "provider's listing search", provider_market: "provider serves only US listings (USD)" }[q.currencyEvidence] || q.currencyEvidence);
-      add("Retrieved", `${new Date(q.retrievedAt).toLocaleString()}${q.cacheStatus === "cached" ? " (saved copy in this browser)" : ""}`);
+      add("Retrieved", `${new Date(q.retrievedAt).toLocaleString()}${q.cacheStatus === "cached" ? ` (saved copy in this browser${q.cachedAgeMs ? `, ${ageText(q.cachedAgeMs)} old` : ""})` : q.cacheStatus === "gateway_cache" ? ` (the gateway's saved copy, ${ageText(q.cachedAgeMs)} old)` : ""}`);
+      if (q.sourceTier === "free") add("Attribution", q.attribution);
       (q.notes || []).forEach(n => add("Note", n));
     }
     if (row.error) {
       add("Problem", row.error.message);
+      (row.error.attempts || []).forEach((f, i) => add(i ? "" : "Sources tried", `${f.provider}: ${f.message}`));
+      describeSkipped(row.error.skipped || []).forEach((t, i) => add(i ? "" : "Sources skipped", t));
       add("Provider said", row.error.redactedNotice);
       add("What you can do", row.error.resolutionHint);
     }
@@ -502,15 +533,15 @@ function init() {
   function renderEstimate() {
     const pending = state.rows.filter(r => r.identity?.status === "resolved" && R.isActive(r) && !R.effectivePrice(r));
     const btn = $("rbPriceAll");
-    $("rbRemoveIntl").hidden = !state.rows.some(isUnchangedInternationalExample);
-    if (!md.configuredProviders().length) {
-      els.estimate.textContent = state.rows.some(r => r.ticker) ? "To get prices automatically, add your own key for at least one source under Market data → Your API keys. Without a key you can still enter your own prices." : "";
+    if (!md.hasPriceSource()) {
+      els.estimate.textContent = state.rows.some(r => r.ticker) ? `${noSourceText()} You can still enter your own prices.` : "";
       btn.textContent = "Get prices";
       btn.disabled = !pending.length;
       return;
     }
     const est = md.estimate(pending.map(r => r.identity));
     const parts = Object.entries(est.perProvider).map(([id, e]) => {
+      if (id === KEYLESS_ID) return `about ${e.requests} ${KEYLESS_PROVIDER} request${e.requests === 1 ? "" : "s"} for ${e.rows} holding${e.rows === 1 ? "" : "s"} (no key; sent one at a time through this site's data gateway, so a full list takes a few seconds)`;
       const limit = e.period === "day" ? `${PROVIDERS[id].name} allows ${md.providerStatus(id).plan.limits.perDay} per day on your plan; this browser sent ${e.sentToday} today`
         : e.period === "month" ? `${PROVIDERS[id].name} allows ${md.providerStatus(id).plan.limits.perMonth.toLocaleString("en-US")} per month on your plan; this browser sent ${e.sentMonth} this month`
           : `${PROVIDERS[id].name} allows ${e.perMinute} per minute`;
@@ -524,7 +555,7 @@ function init() {
     // plans often cover fewer of those exchanges, so they are named before any request.
     const abroad = pending.filter(r => !["CAD", "USD"].includes(r.identity.currency)).map(r => `${r.ticker} (${r.identity.venueName}, ${r.identity.currency})`);
     els.estimate.textContent = pending.length
-      ? `Getting ${pending.length} price${pending.length === 1 ? "" : "s"} needs ${parts.join("; ") || "no requests"}.${abroad.length ? ` Listings outside Canada and the US: ${abroad.join(", ")}; they count against the same allowances.` : ""}${uncovered.length ? ` Not covered by your saved sources: ${uncovered.join(", ")} (use your own price, or add a source that covers it).` : ""}`
+      ? `Getting ${pending.length} price${pending.length === 1 ? "" : "s"} needs ${parts.join("; ") || "no requests"}, from the first source in your list that covers each holding; later sources are asked only if an earlier one cannot answer.${abroad.length ? ` Listings outside Canada and the US: ${abroad.join(", ")}; they follow the same list and allowances.` : ""}${uncovered.length ? ` Not covered by the sources switched on: ${uncovered.join(", ")} (use your own price, or add a source that covers it).` : ""}`
       : "";
     btn.textContent = pending.length ? `Get prices (about ${est.total} request${est.total === 1 ? "" : "s"})` : "Get prices";
     btn.disabled = !pending.length || est.total === 0 && !uncovered.length && !pending.length;
@@ -610,31 +641,73 @@ function init() {
     afterChange();
   });
 
-  /* ---------------- providers and keys ---------------- */
-  function renderSourceSelect() {
-    const current = md.routing.mode;
-    els.source.replaceChildren();
-    const auto = el("option", "Automatic (route by market)");
-    auto.value = "auto";
-    els.source.append(auto);
-    for (const id of BROWSER_PROVIDERS) {
-      const o = el("option", `${PROVIDERS[id].name}${md.providerStatus(id).configured ? "" : " (no key saved)"}`);
-      o.value = id;
-      els.source.append(o);
+  /* ---------------- source list, Yahoo Finance, keys ---------------- */
+  const sourceList = createSourceList($("rbSources"), md, {
+    op: "quote",
+    idPrefix: "rbSrc",
+    describeKey: id => `Add your ${sourceName(id)} key under “Your API keys” below; it is then switched on here.`,
+    onChange: change => onSourcesChanged(change),
+  });
+  // Order changes apply to prices fetched from now on; prices already shown keep their
+  // source label. Switching a source off clears the prices it gave.
+  function onSourcesChanged(change) {
+    if (change.type === "enabled" && !md.sources.list().find(x => x.id === change.id)?.enabled) {
+      // Prices it gave are cleared, and a request in flight is discarded (it may be its).
+      const hit = r => r.quote?.providerId === change.id || r.status === "pricing";
+      const affected = state.rows.filter(r => hit(r) && !(r.useManual && r.manual));
+      state.rows = state.rows.map(r => (hit(r) ? R.resetQuote(r) : r));
+      state.rows.forEach(renderRow);
+      const text = affected.length ? `${change.message} Prices it gave were cleared (${affected.map(r => r.ticker).join(", ")}); press Get prices to fetch them from your other sources.` : change.message;
+      setStatus(text, null);
+      sourceList.note(text); // kept beside the list: a plan recalculation may replace the status line
+    } else {
+      setStatus(`${change.message}${change.type === "move" ? " The new order applies to prices fetched from now on." : ""}`, null);
+      sourceList.note("");
     }
-    els.source.value = current;
-    els.fallback.checked = md.routing.fallback;
+    renderSourceState();
+    state.rows.forEach(renderRow);
+    afterChange();
+  }
+
+  function renderSourceState() {
+    sourceList.render();
     const configured = md.configuredProviders().map(id => PROVIDERS[id].name);
-    $("rbSourceNote").textContent = current === "auto"
-      ? `Automatic: US listings use Finnhub, then Alpha Vantage, then Marketstack; Toronto, TSX Venture, London, Xetra and Shanghai/Shenzhen use Alpha Vantage, then Marketstack; other exchanges use Marketstack. Only sources with a saved key are used${configured.length ? ` (saved: ${configured.join(", ")})` : " (none saved yet)"}.`
-      : `${PROVIDERS[current].name} only. Holdings it does not cover are marked "Not covered".`;
     $("rbKeysTag").textContent = configured.length ? `(${configured.join(", ")})` : "(none saved)";
+    renderFreeSource();
+  }
+
+  // Yahoo Finance's state, always shown (also when it is unavailable, and why).
+  function renderFreeSource() {
+    const box = $("rbFreeSource");
+    const line = $("rbFreeState");
+    const st = md.keyless.status();
+    const yahoo = md.sources.list().find(x => x.id === KEYLESS_ID);
+    const pause = md.keyless.pauseState();
+    const stateName = st.state === "enabled" && pause.paused ? "paused" : st.state;
+    root.dataset.freeSource = stateName;
+    box.dataset.state = stateName;
+    line.replaceChildren();
+    const text = {
+      enabled: yahoo?.enabled ? `Available, and position ${yahoo.position} in your list.` : "Available, but switched off in your list.",
+      paused: `Paused: ${pause.reason}. Nothing is sent to it until then; the other sources in your list are used.`,
+      checking: "Checking whether Yahoo Finance is available…",
+      disabled: "Not available right now: it is switched off on this site at the moment.",
+      unreachable: "Not available right now: this site's data gateway could not be reached.",
+      not_configured: "Not available on this site yet. Add your own key below, or use your own prices.",
+    }[stateName] || "Not available right now.";
+    line.append(el("strong", "Status: "), text);
+    if (st.state === "unreachable" || st.state === "disabled") line.append(" ", button("Check again", async () => { await md.keyless.check({ force: true }); onFreeSourceChecked(); }));
+  }
+  function onFreeSourceChecked() {
+    renderProviders({ force: true });
+    state.rows.forEach(renderRow);
+    afterChange();
   }
 
   function renderProviders({ force = false } = {}) {
     const box = $("rbProviders");
     // Never rebuild a key form the visitor is typing in.
-    if (!force && box.contains(document.activeElement) && document.activeElement?.tagName === "INPUT") { renderSourceSelect(); return; }
+    if (!force && box.contains(document.activeElement) && document.activeElement?.tagName === "INPUT") { renderSourceState(); return; }
     box.replaceChildren();
     for (const id of BROWSER_PROVIDERS) {
       const p = PROVIDERS[id];
@@ -667,15 +740,15 @@ function init() {
       const save = el("button", "Save key", "pj-btn");
       save.type = "submit";
       form.append(keyField, remember, save);
-      if (s.configured) form.append(button("Remove key", () => { md.setKey(id, ""); onKeysChanged(id, `${p.name} key removed from this browser, with everything fetched with it.`); }));
+      if (s.configured) form.append(button("Remove key", () => { const r = md.setKey(id, ""); onKeysChanged(id, `${p.name} key removed from this browser, with everything fetched with it.${r.note ? ` ${r.note}` : ""}`); }));
       const out = el("p", "", "rb-note");
       out.setAttribute("role", "status");
       form.addEventListener("submit", event => {
         event.preventDefault();
         try {
-          const { persistence } = md.setKey(id, keyInput.value, { remember: rememberBox.checked });
+          const { persistence, note } = md.setKey(id, keyInput.value, { remember: rememberBox.checked });
           keyInput.value = "";
-          onKeysChanged(id, persistence ? `${p.name} key ${KEY_STORAGE_TEXT[persistence]}.` : `${p.name} key removed.`);
+          onKeysChanged(id, `${persistence ? `${p.name} key ${KEY_STORAGE_TEXT[persistence]}.` : `${p.name} key removed.`}${note ? ` ${note}` : ""}`);
         } catch (error) { out.textContent = error.message; }
       });
       card.append(form, out);
@@ -735,17 +808,19 @@ function init() {
     }
     const off = Object.keys(PROVIDERS).filter(id => !providerAvailable(id, "browser"));
     $("rbNotOffered").textContent = off.length ? `Not offered on this website: ${off.map(id => `${PROVIDERS[id].name} (${PROVIDERS[id].status.browser === "deferred" ? "deferred" : "desktop app only"}): ${PROVIDERS[id].unsupportedReason}`).join(" ")}` : "";
-    renderSourceSelect();
+    renderSourceState();
   }
 
-  // A key or source change retires prices from the previous source: every provider
-  // quote is cleared (late answers are then ignored), user-supplied prices stay.
+  // A key change retires prices fetched with that key (late answers are then ignored);
+  // "Forget all keys" (id null) retires every key-based price. Prices from other
+  // sources and user-supplied prices stay.
   function onKeysChanged(id, message) {
-    state.rows = state.rows.map(r => (r.quote || r.error || r.status === "pricing" ? R.resetQuote(r) : r));
+    const affected = r => (r.status === "pricing" || r.error || (r.quote && (id ? r.quote.providerId === id : r.quote.providerId !== KEYLESS_ID)));
+    state.rows = state.rows.map(r => (affected(r) ? R.resetQuote(r) : r));
     state.rows.forEach(renderRow);
     renderProviders({ force: true });
     afterChange();
-    setStatus(`${message} Fetched prices were cleared; press Get prices to fetch them again (saved copies are reused without a request).`, null);
+    setStatus(`${message} Prices fetched with that key were cleared; press Get prices to fetch them again (saved copies are reused without a request).`, null);
   }
 
   async function checkAgain(providerName) {
@@ -758,9 +833,7 @@ function init() {
     afterChange();
   }
 
-  els.source.addEventListener("change", () => { md.setRouting({ mode: els.source.value }); onKeysChanged(null, "Price source changed."); });
-  els.fallback.addEventListener("change", () => { md.setRouting({ fallback: els.fallback.checked }); renderSourceSelect(); });
-  $("rbForgetKeys").addEventListener("click", () => { md.forgetAllKeys(); onKeysChanged(null, "All keys were removed from this browser, with everything fetched with them."); });
+  $("rbForgetKeys").addEventListener("click", () => { const r = md.forgetAllKeys(); onKeysChanged(null, `All keys were removed from this browser, with everything fetched with them.${r.notes.length ? ` ${r.notes.join(" ")}` : ""}`); });
 
   /* ---------------- plan ---------------- */
   function budgetValue() { return E.parseNumber(els.budget.value); }
@@ -926,8 +999,10 @@ function init() {
     if (manualFx.length) attention.push(`Exchange rates you entered: ${manualFx.join(", ")}.`);
     for (const w of run.plan.warnings) (/scaled down|No sells are needed/.test(w) ? info : attention).push(w);
     info.push(...E.weightWarnings(run.positions), ...E.duplicateWarnings(run.positions));
-    const fallbacks = run.rows.filter(r => r.quote?.fallbackFrom).map(r => `${r.ticker}: priced by ${r.quote.provider} because ${r.quote.fallbackFrom.map(f => f.provider).join(", ")} could not`);
-    info.push(...fallbacks);
+    const fallbacks = run.rows.filter(r => r.quote?.fallbackFrom).map(r => `${r.ticker}: priced by ${r.quote.provider} because ${r.quote.fallbackFrom.map(f => `${f.provider} (${problemWord(f)})`).join(", ")} could not`);
+    (run.rows.some(r => r.quote?.fallbackFrom?.some(seriousFailure)) ? attention : info).push(...fallbacks);
+    const free = run.rows.filter(r => R.effectivePrice(r)?.source.kind === "provider" && r.quote?.sourceTier === "free").map(r => r.ticker);
+    if (free.length) info.push(`Priced by ${KEYLESS_PROVIDER} through this site's data gateway (no key; may be delayed; not official exchange data): ${free.join(", ")}.`);
     const pence = run.rows.filter(r => r.quote?.quoteUnit === "minor").map(r => r.ticker);
     if (pence.length) info.push(`${pence.join(", ")}: quoted in pence and converted to pounds (÷100).`);
     const cash = run.whole ? run.whole.cashLeft : run.plan.summary.cashLeft;
@@ -959,16 +1034,27 @@ function init() {
     const run = state.plan;
     const rows = run.whole ? run.whole.results : run.plan.results;
     const rc = run.reporting;
-    const header = ["Ticker (as entered)", "Listing", "Instrument", "Account type", "Currency", "Shares", "Price (local)", "Price source", "Provider symbol", "Price type", "Trading date", "Retrieved at (UTC)", "Currency evidence", `FX to ${rc}`, "FX source", `Current value (${rc})`, "Target weight", `Target value (${rc})`, "Action", `Trade value (${rc})`, "Trade value (local)", "Trade shares", "Post-trade shares"];
+    const header = ["Ticker (as entered)", "Listing", "Instrument", "Account type", "Currency", "Shares", "Price (local)", "Price source", "Provider symbol", "Price type", "Trading date", "Retrieved at (UTC)", "Currency evidence", `FX to ${rc}`, "FX source", `Current value (${rc})`, "Target weight", `Target value (${rc})`, "Action", `Trade value (${rc})`, "Trade value (local)", "Trade shares", "Post-trade shares", "Price source details", "Sources tried first", "Sources skipped", "Source order at the request"];
     const body = rows.map(r => {
       const row = run.rows[r.rowIndex];
       const q = row.useManual && row.manual ? null : row.quote;
-      const src = q ? `${q.provider} (provider)` : row.manual?.label || "";
+      const src = q ? `${q.provider} (${q.sourceTier === "free" ? "no key, this site's data gateway" : "your own key"})` : row.manual?.label || "";
+      const details = q ? [q.sourceTier === "free" ? `through ${q.via}` : "with your own key", q.cacheStatus === "cached" ? `saved copy in this browser, ${ageText(q.cachedAgeMs)} old` : q.cacheStatus === "gateway_cache" ? `gateway copy, ${ageText(q.cachedAgeMs)} old` : null,
+        ...(q.notes || [])].filter(Boolean).join("; ") : row.manual ? "user-supplied" : "";
+      const tried = q?.fallbackFrom ? q.fallbackFrom.map(f => `${f.provider}: ${problemWord(f)}`).join("; ") : "";
+      const skipped = q ? describeSkipped(q.skippedSources || []).join("; ") : "";
       const w = run.whole;
       return [r.ticker, row.identity?.canonicalId || "", row.identity?.name || "", r.accountType || "", r.currencyKey, r.shares, r.price, src, q?.providerSymbol || "", q ? PRICE_TYPE[q.priceType] || q.priceType : "user-supplied", q?.tradingDate || "", q?.retrievedAt || (row.manual ? new Date(row.manual.at).toISOString() : ""), q?.currencyEvidence || "user", r.fxToReporting, r.currencyKey === rc ? "reporting currency" : run.fx[r.currencyKey]?.label || "",
-        r.currentValue, r.targetWeightNorm, r.targetValue, w ? r.wholeAction : r.action, w ? r.wholeTradeValue : r.tradeValue, w ? r.wholeTradeValueLocal : r.tradeValueLocal, w ? r.wholeShares : r.tradeShares, w ? r.wholePostTradeShares : r.postTradeShares];
+        r.currentValue, r.targetWeightNorm, r.targetValue, w ? r.wholeAction : r.action, w ? r.wholeTradeValue : r.tradeValue, w ? r.wholeTradeValueLocal : r.tradeValueLocal, w ? r.wholeShares : r.tradeShares, w ? r.wholePostTradeShares : r.postTradeShares, details, tried, skipped, q?.sourceOrder || ""];
     });
     return [header, ...body];
+  }
+  // The order each price in this plan was really requested under, kept with the price: a
+  // later reorder of the list never rewrites it. Different only if the list changed between
+  // pricing runs.
+  function planSourceOrder(run) {
+    const orders = [...new Set(run.rows.filter(r => r.quote?.sourceOrder && !(r.useManual && r.manual)).map(r => r.quote.sourceOrder))];
+    return orders.length ? orders.join(" | then ") : "not applicable (no price in this plan came from your source list)";
   }
   function exportMeta() {
     const run = state.plan;
@@ -982,6 +1068,8 @@ function init() {
       ["Reporting currency", run.reporting],
       ["Share quantities", run.whole ? "Whole shares" : "Fractional shares"],
       ["Prices", manual ? `Includes ${manual} user-supplied price(s); the rest verified by providers` : "All verified by providers"],
+      ["Source order (first tried first)", planSourceOrder(run)],
+      ...(run.rows.some(r => r.quote?.sourceTier === "free" && !(r.useManual && r.manual)) ? [["Yahoo Finance", `${KEYLESS_PROVIDER} data through this site's data gateway (no key; briefly cached; may be delayed; not official exchange data)`]] : []),
       ["Total current", s.totalCurrent], ["Target pool", s.pool],
       ["Total buys", run.whole ? run.whole.totalBuys : s.totalBuys], ["Total sells", run.whole ? run.whole.totalSells : s.totalSells],
       ...(run.mode === "new_money" ? [["New money budget", s.budget]] : []),
@@ -1103,16 +1191,6 @@ function init() {
     setStatus(`Sample portfolio loaded: ${SAMPLE_PORTFOLIO.rows.length} holdings (targets total ${(bp / 100).toFixed(1)}%), with no prices. Press Get prices; nothing is fetched until you do.`, null);
   });
   $("rbPriceAll").addEventListener("click", () => priceAll());
-  // Optional convenience: removes only the four international examples that are still
-  // exactly as loaded. Edited rows, and the same securities added by the user, stay.
-  $("rbRemoveIntl").addEventListener("click", () => {
-    const removed = state.rows.filter(isUnchangedInternationalExample);
-    if (!removed.length) return;
-    state.rows = state.rows.filter(r => !isUnchangedInternationalExample(r));
-    if (!state.rows.length) state.rows.push(R.createRow());
-    rebuildRows();
-    setStatus(`Removed ${removed.map(r => r.ticker).join(", ")}. The remaining targets are scaled to 100% in the plan.`, null);
-  });
   function syncMode() { $("rbBudgetField").hidden = els.mode.value !== "new_money"; $("rbBudgetLabel").textContent = `New money budget (${rep()})`; }
   els.mode.addEventListener("change", () => { syncMode(); afterChange(); });
   els.reporting.addEventListener("change", async () => { syncMode(); await ensureFx([]); state.rows.forEach(renderRow); afterChange(); });
@@ -1128,6 +1206,8 @@ function init() {
   renderProviders();
   setStatus("Ready. Enter your holdings, or load the sample portfolio.", null);
   root.dataset.ready = "true";
+  // One health check of the site's market-data gateway, only when one is configured.
+  md.keyless.check().then(onFreeSourceChecked);
   md.ready().then(() => { resolveAll(); afterChange(); });
   ensureFx(STARTUP_FX).then(() => { root.dataset.fxReady = "true"; afterChange(); });
 }

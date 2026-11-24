@@ -253,6 +253,9 @@ function scaleBuys(results, scale) {
   });
 }
 
+// True when `amount` is above `cap` by more than floating-point rounding of the sums.
+const exceeds = (amount, cap) => amount > cap + 1e-9 * Math.max(1, Math.abs(cap));
+
 // Turns every Buy into a Hold with no trade (nothing can fund it).
 function holdBuys(results) {
   results.forEach(r => {
@@ -302,22 +305,24 @@ export function calculateRebalancePlan(enriched, mode, budget, { money = usd } =
   let totalBuys = results.reduce((s, r) => s + (r.action === "Buy" ? r.tradeValue : 0), 0);
   const totalSells = results.reduce((s, r) => s + (r.action === "Sell" ? Math.abs(r.tradeValue) : 0), 0);
 
-  // Invariant 1: new-money budget cap.
-  if (mode === "new_money" && totalBuys > budget + 0.01 && totalBuys > 0) {
+  // Invariant 1: new-money budget cap. Any excess beyond floating-point rounding is
+  // scaled away, even under a cent (a holding overweight by $0.009 used to leave
+  // $100.009 of buys on a $100 budget); the warning is kept for excesses over a cent.
+  if (mode === "new_money" && totalBuys > 0 && exceeds(totalBuys, budget)) {
     const scale = budget / totalBuys;
     scaleBuys(results, scale);
     const scaled = results.reduce((s, r) => s + (r.action === "Buy" ? r.tradeValue : 0), 0);
-    warnings.push(`Buy recommendations scaled down by ${((1 - scale) * 100).toFixed(1)}% to stay within the new-money budget of ${money(budget)} (raw need was ${money(totalBuys)}; scaled to ${money(scaled)}).`);
+    if (totalBuys > budget + 0.01) warnings.push(`Buy recommendations scaled down by ${((1 - scale) * 100).toFixed(1)}% to stay within the new-money budget of ${money(budget)} (raw need was ${money(totalBuys)}; scaled to ${money(scaled)}).`);
     totalBuys = scaled;
   }
   // Invariant 2: rebalance is self-funding. With no sell proceeds at all (every
   // overweight holding is inside the hold band) nothing can be bought (RB-01).
-  if (mode === "rebalance" && totalBuys > totalSells + 0.01 && totalBuys > 0) {
+  if (mode === "rebalance" && totalBuys > 0 && exceeds(totalBuys, totalSells)) {
     if (totalSells > 0) {
       const scale = totalSells / totalBuys;
       scaleBuys(results, scale);
       const scaled = results.reduce((s, r) => s + (r.action === "Buy" ? r.tradeValue : 0), 0);
-      warnings.push(`Buy recommendations scaled down by ${((1 - scale) * 100).toFixed(1)}% to stay within sell proceeds of ${money(totalSells)} (raw need was ${money(totalBuys)}; scaled to ${money(scaled)}).`);
+      if (totalBuys > totalSells + 0.01) warnings.push(`Buy recommendations scaled down by ${((1 - scale) * 100).toFixed(1)}% to stay within sell proceeds of ${money(totalSells)} (raw need was ${money(totalBuys)}; scaled to ${money(scaled)}).`);
       totalBuys = scaled;
     } else {
       holdBuys(results);
@@ -434,7 +439,8 @@ export function assessValuation(rows, { acceptStale = false } = {}) {
     const src = row.source || {};
     const price = parseNumber(row.price);
     let reason = null;
-    if (shares === null || target === null) reason = "shares and target must be numbers";
+    // Negative shares or targets would be normalized into sells beyond the holding.
+    if (shares === null || target === null || shares < 0 || target < 0) reason = "shares and target must be numbers of 0 or more";
     else if (!(price > 0)) reason = row.problem || "no price yet";
     else if (!row.currency) reason = "quote currency unknown";
     else if (src.kind === "provider" && !src.currencyVerified) reason = "the provider did not confirm the quote currency";

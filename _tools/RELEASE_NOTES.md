@@ -1,5 +1,91 @@
 # Release notes: web tools on /projects/
 
+## 2026-11-04 (latest, candidate on PR 46): Yahoo Finance with no key, and your own source order
+
+Nothing below is investment advice. No calculation engine changed.
+
+### Corrections after independent review (still candidate on PR 46)
+- **A reused ticker no longer mixes two securities (website).** SPCX and CBRS have a recorded
+  listing date. Prices from before it belong to a different security that used the symbol
+  earlier; the website now removes them from every comparison, snapshot and export, as the
+  desktop already did, and says so. A comparison involving SPCX over 1Y now starts at its
+  listing date, so its figures differ from earlier candidates of this page.
+- **Exports state what was asked and what happened.** The three Stock CSVs keep their rows
+  exactly as they were and add a marked `#provenance` section: the source order at the moment
+  of the request, the source used, and what failed or was skipped, with reasons, per ticker,
+  including tickers left out. The workbook and JSON carry the same record. Portfolio
+  Rebalancer exports now state the order each price was requested under; reordering the list
+  afterwards no longer rewrites it.
+- **Windows desktop: exchange dates.** Windows has no time-zone database of its own, so the
+  desktop apps silently treated every exchange's date as UTC there. They now install one
+  (`tzdata`); Tokyo and Shanghai sessions and stale-price warnings are dated correctly.
+- **Gentler on Yahoo Finance when it asks (takes effect when the gateway is next deployed).**
+  One coordinator now makes every request to Yahoo Finance, worldwide: one a second, first come
+  first served, and no request waits more than 15 seconds. When Yahoo Finance asks the site to
+  wait, that wait is recorded permanently and can only get longer. If the site cannot confirm
+  it is safe to ask, it does not ask, and the tools use the next source in your list. The tools
+  wait as long as the gateway says, up to 24 hours at a time.
+
+### Portfolio Rebalancer and Stock Comparison (web and desktop)
+- **Yahoo Finance — Free Market Data.** Prices come from Yahoo Finance through this site's
+  data gateway with no account or key, briefly cached; quotes may be delayed, incomplete or
+  differ from official exchange data. It is the first source in a fresh list.
+- **Your sources, in the order they are tried.** One numbered list in both tools and both
+  desktop apps: Yahoo Finance and the providers you add with your own key (Alpha Vantage,
+  Marketstack, Finnhub; Alpaca on the desktop). Reorder by dragging, with *Move up* /
+  *Move down*, or the keyboard; switch sources on or off. The order is remembered (shared by
+  both tools on this site; per program on the desktop). A new key joins below Yahoo Finance
+  and never jumps to the top; removing a key switches that provider off and keeps its place.
+- **Sequential fallback with reasons.** Each holding (or Stock series) uses the first
+  source that covers it and gives a usable answer; the next is tried only if it cannot (no
+  data, different listing, currency not confirmed, rate limit, rejected key, outage). The
+  row, the status line, the plan notes and the exports say which source answered and why
+  the others were skipped or failed. A rejected key or a used-up allowance is shown, not
+  hidden, and that provider is not asked again. Nothing is ever filled in.
+- **Gentle on Yahoo Finance.** Requests go one at a time; the gateway spaces, budgets,
+  coalesces and caches them and stops entirely after Yahoo asks it to slow down; the tools
+  then pause Yahoo Finance (also across reloads) and use your other sources.
+- **Stock Comparison:** latest-price-only sources (Marketstack and Finnhub on the web,
+  Finnhub on the desktop) are listed but never asked for history; one comparison never
+  mixes daily and weekly prices; a comparison from several sources says so and every
+  export names each series' source. The snapshot takes price and history from one source.
+- **Portfolio Rebalancer:** the *Price source* selector, the fallback checkbox and *Remove
+  international examples* are gone; the fourteen sample holdings are unchanged.
+- **Desktop:** Portfolio Rebalancer 1.4.0 and Stock Comparison 0.6.0 (candidates; ZIPs
+  rebuilt; no tag or release created). *Sources…* opens the list; no browser or local
+  server is needed.
+- **Gateway live.** The owner deployed the data gateway (Cloudflare Workers Free,
+  `https://market-data-gateway.elmatthe.workers.dev`); after a capped live check (seven
+  quotes and one history, all answered with the expected listing and currency) the site
+  and both desktop apps point at it. Until this branch is merged, the live site keeps the
+  previous version.
+
+## 2026-11-03: free market-data source prepared, switched off
+
+Nothing below is investment advice. No calculation, sample or desktop app changed.
+
+### Portfolio Rebalancer and Stock Comparison (web)
+- **A free source that needs no key is built in, but not switched on.** Both pages can use
+  Yahoo Finance chart data through this site's own small Cloudflare Worker
+  (`_services/market-data-gateway`). It stays off until written permission for automated
+  retrieval and public redistribution of that data is on record: Yahoo's endpoint is
+  unofficial and its terms restrict both. The live site points at no gateway, so both pages
+  now say "Free source (no key): not available. This site's market-data gateway has not been
+  set up" and everything else works as before.
+- When it is switched on: with no key saved it is the default (Rebalancer *Automatic*, Stock
+  *Free source*); saved keys keep precedence; *Free source only* can be chosen; falling back
+  to it after a key fails stays opt-in and the key's error (for example a daily limit)
+  remains visible on the row, in the status, in the plan and in exports. Prices are labelled
+  "Yahoo Finance (free source)", "latest regular-session price (may be delayed)", with the
+  trading date, retrieval time and the age of any saved copy; never real-time. London
+  prices in pence are converted to pounds; every answer must match the listing and
+  currency asked for, or it is not used.
+- Stock Comparison: the free source gives daily prices for every horizon, with *Close*
+  (split-adjusted, dividends excluded) and *Adjusted close* (also distributions) kept
+  apart; the CSV exports and the workbook now show the source of every series.
+- Only ticker symbols (and a period for history) would be sent; never holdings, quantities,
+  targets or accounts.
+
 ## 2026-11-03 (later): unified Rebalancer sample, CPI web app
 
 Owner decisions 1A–4A. Nothing below is investment advice.

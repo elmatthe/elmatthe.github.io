@@ -1,6 +1,8 @@
-"""Daily price history for the desktop Stock Comparison tool, with the user's own keys.
+"""Daily price history for the desktop Stock Comparison tool, by the user's source list.
 
-Providers (same catalog and pacing as quotes):
+Sources (same list, catalog and pacing as quotes):
+  Yahoo Finance  through the site's data gateway (./gateway.py), no key: daily close
+                 (split-adjusted) and adjusted close (splits and distributions), 1mo-5y.
   Alpha Vantage  TIME_SERIES_DAILY (compact, ~100 sessions, AS TRADED) for windows up to
                  135 days, else TIME_SERIES_WEEKLY_ADJUSTED (close and adjusted close).
                  Daily adjusted closes are a premium Alpha Vantage feature.
@@ -9,23 +11,31 @@ Providers (same catalog and pacing as quotes):
   Alpaca         /v2/stocks/{symbol}/bars, 1Day bars, adjustment=all for adjusted closes
                  or raw; US listings only (IEX feed on the Basic plan).
 Every series is checked for the symbol, exchange and currency it claims, and dates are
-strict YYYY-MM-DD trading dates. Exchange-rate history comes from the Bank of Canada.
+strict YYYY-MM-DD trading dates. Prices from before a listing's date belong to a different
+security that used the same ticker and are removed (cut_to_listing). Exchange-rate history
+comes from the Bank of Canada, with the ECB as the fallback (official_fx_history).
 """
 from __future__ import annotations
 
+import csv
 import datetime as dt
+import io
 import json
+import math
 import re
 from urllib.parse import quote as urlquote, urlencode
 
 from . import alphavantage as av
 from .adapters import date_in, normalize_currency
 from .catalog import PROVIDERS, venue_matches
+from . import sources as src
 from .errors import DataError
-from .fx import BOC_BASE, BOC_CURRENCIES, BOC_PROVIDER
+from .fx import BOC_BASE, BOC_CURRENCIES, BOC_PROVIDER, ECB_BASE, ECB_CURRENCIES, ECB_PROVIDER
+from .gateway import GATEWAY_ID
 
 DAILY_WINDOW_DAYS = 135
-HISTORY_PROVIDERS = ["alphavantage", "marketstack", "alpaca"]
+HISTORY_PROVIDERS = ["yahoo", "alphavantage", "marketstack", "alpaca"]
+_FINENESS = {"daily": 0, "weekly": 1, "monthly": 2}
 _DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -33,10 +43,66 @@ def history_kind(start: str, end: str) -> str:
     return "daily" if (dt.date.fromisoformat(end) - dt.date.fromisoformat(start)).days <= DAILY_WINDOW_DAYS else "weekly"
 
 
+def native_frequency(pid: str, start: str, end: str) -> str:
+    """The series a source gives for a window, before anything is fetched."""
+    return history_kind(start, end) if pid == "alphavantage" else "daily"
+
+
+def history_by_sources(md, identity: dict, start: str, end: str, analysis_frequency: str | None = None, cancelled=lambda: False) -> dict:
+    """History from the first source in the user's list that can give it (fetch_history's
+    shape, plus "sourceId", "attempts" and "skipped"). With `analysis_frequency`, a source
+    whose series would be coarser than it (Alpha Vantage's weekly closes for a Daily
+    analysis) is skipped, so a comparison never silently mixes frequencies; finer series
+    are resampled by the caller."""
+    def require(pid: str):
+        if not analysis_frequency:
+            return None
+        native = native_frequency(pid, start, end)
+        if _FINENESS.get(native, 0) > _FINENESS.get(analysis_frequency.lower(), 0):
+            return f"would give {native} prices for this period, and this comparison uses {analysis_frequency.lower()} prices"
+        return None
+    plan = md.route(identity, "history", require=require)
+    h, attempts, used = md.try_sources(identity, "history", plan, lambda c: fetch_history(md, c["id"], identity, start, end, cancelled), "usable price history")
+    return {**h, "sourceId": used, "sourceName": src.source_name(used), "attempts": attempts, "skipped": [x for x in plan["skipped"] if x["code"] != "off"]}
+
+
+def cut_to_listing(h: dict, identity: dict | None, start: str) -> dict:
+    """Removes prices dated before the listing's `listedFrom`: they belong to a different
+    security that used the same ticker. Same rule and wording as the browser's cutToListing
+    (assets/js/market-data/instruments.js). Returns `h` unchanged when no date is on file;
+    otherwise a copy with "listing": {"listedFrom", "removed", "note"}. A series with only
+    earlier prices is refused, so the next source in the list can be asked."""
+    listed = (identity or {}).get("listedFrom")
+    if not listed:
+        return h
+    ticker = identity.get("displayTicker")
+    provider = h.get("provider")
+    try:
+        if not _DAY.match(str(listed)):
+            raise ValueError
+        dt.date.fromisoformat(listed)
+    except ValueError:
+        raise DataError(f"The instrument reference has an unreadable listing date for {ticker}; its price history was not used.", kind="invalid", definitive=True, provider=provider) from None
+    rows = [r for r in h["observations"] if r[0] >= listed]
+    removed = len(h["observations"]) - len(rows)
+    if removed and not rows:
+        raise DataError(f"{ticker} has been listed only since {listed}; {provider or 'the source'} returned only earlier prices, which belong to a different security, so they were not used.",
+                        kind="not_found", definitive=True, provider=provider)
+    note = f"{ticker}: listed only since {listed}; earlier history under this symbol belongs to a different security and is not used." if removed or start < listed else None
+    return {**h, "observations": rows, "listing": {"listedFrom": listed, "removed": removed, "note": note}}
+
+
 def fetch_history(md, pid: str, identity: dict, start: str, end: str, cancelled=lambda: False) -> dict:
-    """{"observations": [(date, close, adjClose)], "currency", "basisNote", "frequency", "provider", "symbol"}."""
+    """{"observations": [(date, close, adjClose)], "currency", "basisNote", "frequency", "provider", "symbol"},
+    without any price from before the listing's date."""
+    return cut_to_listing(_fetch_history(md, pid, identity, start, end, cancelled), identity, start)
+
+
+def _fetch_history(md, pid: str, identity: dict, start: str, end: str, cancelled=lambda: False) -> dict:
     if pid not in HISTORY_PROVIDERS:
         raise DataError(f"{PROVIDERS.get(pid, {}).get('name', pid)} does not provide price history here.", kind="not_covered", definitive=True)
+    if pid == GATEWAY_ID:
+        return md.gateway.history(identity, start, end, cancelled)
     s = md._session(pid)
     name = PROVIDERS[pid]["name"]
     if not s:
@@ -154,8 +220,19 @@ def _alpaca(md, s, identity, symbol, start, end, cancelled) -> dict:
             "frequency": "daily", "provider": "Alpaca", "symbol": symbol, "hasAdjusted": True, "currencyVerified": True}
 
 
+def _fixing(value, what: str, day: str, provider: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        number = float("nan")
+    if not (math.isfinite(number) and number > 0):
+        raise DataError(f"{provider} {what} had an invalid value on {day}", kind="invalid", provider=provider)
+    return number
+
+
 def boc_history(md, codes: list[str], start: str, end: str) -> dict[str, list[tuple[str, float]]]:
-    """{CODE: [(date, CAD per unit)]} from Bank of Canada daily averages (keyless)."""
+    """{CODE: [(date, CAD per unit)]} from Bank of Canada daily averages (keyless).
+    Mirrors boc.js parseObservations: an invalid value fails the whole answer."""
     wanted = sorted({c for c in codes if c and c != "CAD"})
     if not wanted:
         return {}
@@ -166,18 +243,87 @@ def boc_history(md, codes: list[str], start: str, end: str) -> dict[str, list[tu
     status, text = md.http(url, {"Accept": "application/json"})
     if status != 200:
         raise DataError(f"Bank of Canada HTTP {status}", kind="unavailable", provider=BOC_PROVIDER)
-    payload = json.loads(text)
+    try:
+        payload = json.loads(text)
+    except ValueError:
+        raise DataError("Bank of Canada response was not JSON", kind="invalid", provider=BOC_PROVIDER) from None
+    observations = payload.get("observations") if isinstance(payload, dict) else None
+    if not isinstance(observations, list):
+        raise DataError("Bank of Canada response had no observations", kind="invalid", provider=BOC_PROVIDER)
     out: dict[str, list[tuple[str, float]]] = {c: [] for c in wanted}
-    for row in payload.get("observations") or []:
-        day = str(row.get("d", ""))
-        if not _DAY.match(day):
+    for row in observations:
+        day = str(row.get("d", "")) if isinstance(row, dict) else ""
+        if not _DAY.match(day) or not start <= day <= end:  # never a fixing after the window
             continue
         for c in wanted:
-            cell = row.get(f"FX{c}CAD") or {}
-            try:
-                value = float(cell.get("v"))
-            except (TypeError, ValueError):
+            cell = row.get(f"FX{c}CAD")
+            if not isinstance(cell, dict) or cell.get("v") in (None, ""):
                 continue
-            if value > 0:
-                out[c].append((day, value))
+            out[c].append((day, _fixing(cell["v"], f"FX{c}CAD", day, BOC_PROVIDER)))
+    return {c: sorted(v) for c, v in out.items()}
+
+
+def ecb_history(md, codes: list[str], start: str, end: str) -> dict[str, list[tuple[str, float]]]:
+    """{CODE: [(date, CAD per unit)]} from ECB euro reference rates (keyless), converted as
+    ecb.js toCadPer does: CAD per EUR is the CAD series; any other currency is
+    (CAD per EUR) / (currency per EUR) on dates where both were published."""
+    wanted = sorted({c for c in codes if c and c != "CAD"})
+    if not wanted:
+        return {}
+    series = sorted({c for c in wanted if c != "EUR"} | {"CAD"})
+    missing = [c for c in series if c not in ECB_CURRENCIES]
+    if missing:
+        raise DataError(f"{', '.join(missing)} is not published by the ECB.", kind="not_found", definitive=True, provider=ECB_PROVIDER)
+    url = f"{ECB_BASE}/D.{'+'.join(series)}.EUR.SP00.A?{urlencode({'format': 'csvdata', 'startPeriod': start, 'endPeriod': end})}"
+    status, text = md.http(url, {"Accept": "text/csv"})
+    if status != 200:
+        raise DataError(f"ECB HTTP {status}", kind="unavailable", provider=ECB_PROVIDER)
+    reader = csv.DictReader(io.StringIO(text.lstrip("﻿")))
+    if not {"CURRENCY", "TIME_PERIOD", "OBS_VALUE"} <= set(reader.fieldnames or []):
+        raise DataError("ECB response was not the expected CSV", kind="invalid", provider=ECB_PROVIDER)
+    per_eur: dict[str, dict[str, float]] = {}
+    for r in reader:
+        if r.get("CURRENCY_DENOM") not in (None, "", "EUR"):
+            continue
+        day, raw = r.get("TIME_PERIOD") or "", r.get("OBS_VALUE") or ""
+        if not _DAY.match(day) or raw in ("", "NaN") or not start <= day <= end:
+            continue
+        per_eur.setdefault(r.get("CURRENCY") or "", {})[day] = _fixing(raw, r.get("CURRENCY") or "", day, ECB_PROVIDER)
+    cad = per_eur.get("CAD", {})
+    out: dict[str, list[tuple[str, float]]] = {}
+    for c in wanted:
+        if c == "EUR":
+            out[c] = sorted(cad.items())
+        else:
+            out[c] = sorted((d, cad[d] / v) for d, v in per_eur.get(c, {}).items() if d in cad)
     return out
+
+
+FX_HISTORY_SOURCES = [
+    (BOC_PROVIDER, lambda c: c in BOC_CURRENCIES, boc_history),
+    (ECB_PROVIDER, lambda c: c == "EUR" or c in ECB_CURRENCIES, ecb_history),
+]
+
+
+def official_fx_history(md, codes: list[str], start: str, end: str) -> dict:
+    """{"series": {CODE: [(date, CAD per unit)]}, "provider", "failures"} from the Bank of
+    Canada, or from the ECB when the Bank of Canada does not publish one of the currencies
+    or its answer fails. One source serves all currencies of a request, as in the browser's
+    fx.js history(); nothing is mixed between sources or invented. Raises DataError
+    ("unavailable") with every source's reason when neither can answer."""
+    wanted = sorted({str(c).upper() for c in codes if c} - {"CAD"})
+    if not wanted:
+        return {"series": {}, "provider": None, "failures": []}
+    failures: list[str] = []
+    for name, supports, fetch in FX_HISTORY_SOURCES:
+        unsupported = [c for c in wanted if not supports(c)]
+        if unsupported:
+            failures.append(f"{name}: does not publish {', '.join(unsupported)}")
+            continue
+        try:
+            return {"series": fetch(md, wanted, start, end), "provider": name, "failures": failures}
+        except DataError as error:
+            failures.append(f"{name}: {error.message}")
+        except (ValueError, KeyError, TypeError, AttributeError) as error:
+            failures.append(f"{name}: unexpected response ({type(error).__name__})")
+    raise DataError(f"Official exchange rates could not be retrieved ({'; '.join(failures)}).", kind="unavailable")

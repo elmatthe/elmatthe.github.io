@@ -3,11 +3,90 @@
 Maintainer reference for how the Portfolio Rebalancer and the Stock Comparison &
 Analytics web apps get prices and exchange rates, why they get them that way, and how
 to test, operate and extend that path. Not published (Jekyll ignores `_tools/`).
-Evidence in sections 1–13 was gathered on 2026-11-02. **Section 0 (2026-11-03) is the
-current design; where an older section disagrees, section 0 wins.** Provider eligibility
-and licensing: `PROVIDER_MATRIX.md`. Listing identity: `INSTRUMENT_IDENTITY.md`.
+Evidence in sections 1–13 was gathered on 2026-11-02. **Section 0 (2026-11-04) is the
+current design; sections 0.1 and 0.2 (2026-11-03) still describe the providers and the
+gateway contract, but where any older text disagrees with section 0, section 0 wins.**
+Provider eligibility: `PROVIDER_MATRIX.md` (Yahoo Finance gateway: §10). Listing
+identity: `INSTRUMENT_IDENTITY.md`. Gateway operations: `_services/market-data-gateway/README.md`.
 
-## 0. Current design (2026-11-03)
+## 0. Current design (2026-11-04): one ordered source list
+
+**One list, both tools, both platforms.** Prices come from an ordered list of sources
+(`assets/js/market-data/sources.js`; Python mirror `market_data/sources.py`, parity-tested
+function by function including message text):
+
+| Source | Key | Web: operations | Desktop: operations |
+|---|---|---|---|
+| Yahoo Finance (site's data gateway) | none | latest prices, daily history 1mo–5y (close and adjusted close) | same |
+| Alpha Vantage | user's | latest prices, history (daily as traded ≤ ~4 months, weekly adjusted beyond) | same |
+| Marketstack | user's | latest prices (end of day) | latest prices, daily history |
+| Finnhub | user's | latest prices (US on the free plan) | same |
+| Alpaca | user's key ID + secret | not offered (trading credential) | latest trades, daily bars |
+| Massive | — | not offered (deferred) | not offered (deferred) |
+
+Defaults and rules:
+- A fresh list: Yahoo Finance at position 1 and switched on; every key provider listed,
+  off. With no key at all, Yahoo Finance is the source.
+- Saving a **new** key switches that provider on **where it stands** (below Yahoo Finance
+  by default) and says so ("Alpha Vantage is switched on at position 2 of 4, after Yahoo
+  Finance"); it never moves a provider to the top. Replacing a key changes nothing.
+- Removing a key switches the provider off and keeps its position. If no other usable
+  source remains switched on, Yahoo Finance is switched back on and the change is
+  explained. The last usable source cannot be switched off.
+- Any order is allowed; the list is open-ended (a provider added to the catalog later
+  takes the next position). Deferred and unsupported providers never appear.
+- Persistence: `localStorage` `md.sources.v1` (shared by both web tools; written only
+  when changed); desktop `files/runtime/market-data-settings.json` → `sources`. The
+  earlier *Automatic* / single-provider / fallback choice is migrated once
+  (`migrateLegacy`): Automatic kept the saved keys ahead of the free source, so they stay
+  ahead of Yahoo Finance; a single chosen provider stays first.
+
+**Planning one request** (`planSources(identity, op)`), per source in list order, the
+first reason that applies wins: switched off → operation not provided here (a
+latest-price-only source is never asked for history) → listing not covered → source
+unavailable (no key, key rejected earlier, daily/monthly limit recorded, Yahoo Finance
+paused or not set up) → an extra requirement (the Stock tool's frequency rule). The
+remaining sources are tried **one after another** (`trySources`); the next one is asked
+only when the previous one fails with a reason another source could overcome (no data,
+not covered, different listing, currency not confirmed, invalid answer, rate limit,
+rejected key, outage, timeout). Every quote carries `fallbackFrom` (sources that failed
+first, with their own wording) and `skippedSources`; when all fail, one `DataError` lists
+each source's short reason ("Yahoo Finance: unavailable; Alpha Vantage: daily limit
+reached; Finnhub: rejected the key") and keeps the full answers in `attempts`/`skipped`.
+No price is ever filled in.
+
+**No retry loops.** A provider whose key was rejected or whose daily/monthly limit was
+recorded is skipped (not asked) for later holdings; Yahoo Finance pauses after any
+"slow down" answer for the time the gateway gives (`md.yahoo.v1.pause` /
+`files/runtime/yahoo-pause.json`), across reloads. Requests stay within each provider's
+pacing; Yahoo Finance requests go one at a time, ≥ 0.35 s apart.
+
+**Stock tool.** History follows the same list. One comparison never silently mixes daily
+and weekly prices: on the web, the frequency of the first usable history source for the
+window is the run's frequency, and a source that would give another is skipped with the
+reason ("would give daily prices for this period, and this comparison uses weekly
+prices"); on the desktop, where prices are resampled to the chosen frequency, a source
+coarser than the analysis frequency is skipped. Series from different sources are allowed
+only with a plain warning naming which source gave which ticker; bases are never
+relabelled (mixed bases are flagged "Not comparable"). The snapshot takes the latest
+price and the history from the **same** source.
+
+**Provenance.** Rebalancer rows and details show the source, the sources tried first and
+the ones skipped; exports add *Price source* ("… (your own key)" / "… (no key, this site's
+data gateway)"), *Sources tried first*, *Sources skipped* and the *Source order*. Stock
+exports carry per-series `sourceId`, `triedFirst`, `skipped` and the comparison's
+`sourceOrder` (JSON, CSV source column, workbook read-me; desktop: Settings sheet).
+
+**Keys never reach the gateway**, and the gateway receives only symbols and ranges
+(tested on both platforms).
+
+**UI.** `sources-ui.js` (web) and `sources_tk.py` (desktop): a numbered list with each
+source's operations and state; reorder by drag and drop, *Move up* / *Move down*, or the
+keyboard (web: arrow keys, Home/End on the entry's handle; desktop: Alt+Up/Down,
+Alt+Home/End), focus kept on the moved entry, changes announced (`aria-live`). The
+*Yahoo Finance — Free Market Data* panel explains the source in plain words.
+
+## 0.2 Providers and contracts (2026-11-03)
 
 **Layers** (`assets/js/market-data/`; Python mirror `_tools/shared_py/market_data/`, copied
 into the Rebalancer and Stock desktop apps by `_tools/sync_shared_py.py`, `--check` in CI):
@@ -15,7 +94,9 @@ into the Rebalancer and Stock desktop apps by `_tools/sync_shared_py.py`, `--che
 | Module | Role |
 |---|---|
 | `instruments.js` + `assets/data/instruments.v1.json` | Ticker → `md.instrument.v1` identity (venue, currency, unit), no request. |
-| `catalog.js` | The five provider candidates, their plans, coverage, symbol mapping, request cost, known gaps and status per platform; `ROUTES` for *Automatic (route by market)*. |
+| `catalog.js` | The five provider candidates, their plans, coverage, symbol mapping, request cost, known gaps and status per platform. (The per-market `ROUTES` table was removed on 2026-11-04: the user's list decides the order.) |
+| `sources.js`, `sources-ui.js` | The ordered source list (section 0) and its editor. |
+| `keyless.js` | Yahoo Finance through the site's gateway (section 0.1). |
 | `providers/alphavantage.js` | Alpha Vantage client and notice classifier. |
 | `providers/quote-adapters.js` | Marketstack, Finnhub (and Massive, deferred) quote adapters with venue and currency checks. |
 | `scheduler.js` | Per-provider, per-key request pacing shared across tabs. |
@@ -24,12 +105,9 @@ into the Rebalancer and Stock desktop apps by `_tools/sync_shared_py.py`, `--che
 
 **Providers.** Alpha Vantage, Marketstack, Finnhub: browser and desktop. Alpaca: desktop
 only (its key secret is a trading credential). Massive: deferred (needs the owner's
-written confirmation of its Market Data Terms). The user picks one source or *Automatic
-(route by market)*: US → Finnhub, Alpaca, Alpha Vantage, Marketstack, Massive; TSX/TSX-V,
-London, Xetra, Shanghai/Shenzhen → Alpha Vantage, Marketstack, Finnhub; Cboe Canada →
-Marketstack, Finnhub; other venues → Marketstack, Finnhub. Only configured, available
-providers are used; falling back to another provider after a failure happens only when the
-user opted in. Free and paid plans are both described with their real allowances (no plan
+written confirmation of its Market Data Terms). *(Superseded 2026-11-04: the single
+source choice, Automatic per-market routing and the opt-in fallback were replaced by the
+ordered list in section 0.)* Free and paid plans are both described with their real allowances (no plan
 is assumed unlimited); the request estimate is shown before *Get prices*.
 
 **Alpha Vantage notices** (`classifyAvNotice`, fixtures in
@@ -66,7 +144,76 @@ Investigate with likely causes (different session, venue, currency or adjustment
 
 **Chart.js** is self-hosted (`assets/vendor/chart.js/4.4.2/`, SRI-pinned, `defer`); no page
 contacts a CDN. The browser test harness mocks the Bank of Canada, ECB, Alpha Vantage,
-Marketstack and Finnhub, and fails on any other host.
+Marketstack and Finnhub, runs the real market-data gateway code for `md.gateway.test`, and
+fails on any other host.
+
+## 0.1 Yahoo Finance through the site's market-data gateway (2026-11-03; updated 2026-11-04)
+
+*Updates on 2026-11-04 (section 0 and the gateway README win where this differs): the
+source is called Yahoo Finance in both tools and is one entry in the ordered list (id
+`yahoo`, formerly `keyless`); activation is the owner's attestation flag
+(`OWNER_ATTESTATION`), not a document reference; caches are 10 min / 12 h at the gateway
+and 10 min / 12 h in the browser; the gateway spaces, budgets, coalesces and caches its
+upstream requests and stops after refusals (circuit breaker); clients pause after any
+slow-down answer. The desktop apps use the same gateway (`market_data/gateway.py`).*
+
+**Source tiers**, shown the same way in both tools:
+1. *Free source (no key)*: Yahoo Finance chart data relayed by the site's own Cloudflare
+   Worker (`_services/market-data-gateway`). Offered only when `_data/market_data.yml`
+   names a gateway **and** its `/v1/health` reports the source enabled. *(2026-11-03: it
+   did neither. Since 2026-11-04 it does both: the owner's production Worker is deployed
+   at `https://market-data-gateway.elmatthe.workers.dev`, activated by the owner's
+   attestation and verified live; see the gateway README, "Deployment status".)*
+2. *Your own key*: Alpha Vantage, Marketstack, Finnhub (unchanged, five-provider catalog).
+3. *Your own prices*: typed prices and CSV files (Rebalancer), CSV files and the synthetic
+   demo (Stock).
+
+**Modules.** `keyless.js` (gateway client, availability states `not_configured` /
+`checking` / `unreachable` / `disabled` / `enabled`, symbol mapping MIC → Yahoo suffix,
+re-validation of every answer, browser cache `md.keyless.v1.*`). `index.js` adds the free
+source to routing, estimates and caches without adding it to `PROVIDERS` (the Python
+catalog and its parity tests are unchanged). The gateway URL is resolved by
+`resolveMarketGateway` (site setting; a `?mdgateway=` override only on pages served from
+127.0.0.1/localhost).
+
+**Routing.** Mode *Automatic* (default): the visitor's saved keys first, by market as
+before, then the free source for listings it covers; with no key saved, the free source
+prices every holding it covers. Mode *Free source only*: only the free source. A provider
+chosen explicitly is used alone. Falling back to another source after a failure still
+happens only when the visitor ticks the fallback option; every attempt is bounded (one per
+candidate), and the failed source is named on the row, in the status line, in the plan
+(under *Needs your attention* when it was a rejected key or a daily/monthly limit) and in
+exports, while that provider's card keeps its limit record. The free source never hides a
+key's error.
+
+**Quote** (`md.quote.v1` from the free source): `provider: "Yahoo Finance"`,
+`providerId: "keyless"`, `sourceTier: "free"`, `via`, `providerSymbol` (Yahoo form, e.g.
+`YNVD.NE`, `BRK-B`, `DLR-U.TO`), `priceType: "regular_market_price"` ("latest
+regular-session price (may be delayed)"), `tradingDate` (venue time zone), `asOf`,
+`retrievedAt` (the gateway's upstream time; cached copies keep it), `cacheStatus`
+`live` / `gateway_cache` / `cached` with `cachedAgeMs`, `currencyVerified` from the
+provider's stated currency (checked against the curated reference: a different currency
+is refused), `quoteUnit` (`GBp` → GBP ÷100), `notes` (delay). Never labelled real-time.
+
+**History** (Stock): daily for every horizon (gateway ranges 1mo…5y chosen to cover the
+window), both `close` (split-adjusted, not dividend-adjusted) and `adjClose` (splits and
+distributions) kept apart; `selectBasis` uses adjusted closes only when the source has
+them and otherwise says it used closes, so mixed bases are flagged "Not comparable". The
+running session is dropped; missing days stay missing. Provenance per series (source,
+via, symbol, retrieval time, gateway or browser cache age) appears in the sources list,
+the metrics/prices CSVs ("Source" column per row), the JSON and the workbook.
+
+**Privacy.** Requests carry a symbol (and a range for history) only; tests assert that no
+shares, targets, accounts, cookies or credentials leave the page. The gateway holds no
+key; exports never contain its settings.
+
+**Caching.** Gateway: quotes 5 min, history 6 h, in memory per isolate and through the
+Cache API (functional on a custom domain). Browser: quotes 10 min, history 6 h. Ages are
+always shown; there is no stale-if-error for the free source.
+
+**Tests.** `market-gateway.test.mjs` (Worker), `keyless.test.mjs` (adapter + routing,
+against the Worker in-process), `freesource.test.js` (both pages in Chromium against the
+Worker code), fixtures `fixtures/yahoo-chart.mjs` (synthetic; nothing contacts Yahoo).
 
 ## 1. Summary
 
@@ -78,8 +225,9 @@ Marketstack and Finnhub, and fails on any other host.
 | Prices, no account | Prices the visitor types (Rebalancer) or CSV files they open (Stock tool) | none | local only | the visitor's own data |
 | Demo | Synthetic prices from a fixed seed (Stock tool) | none | local only | not market data, labelled |
 
-There is no server, no proxy, no relay and no secret anywhere in the site. The code
-is in `assets/js/market-data/`.
+There is no public proxy or relay and no secret anywhere in the site. The code is in
+`assets/js/market-data/`. (Since 0.1, the site's own market-data gateway may serve the
+free source; since 2026-11-04 it is deployed and serves Yahoo Finance, see section 0.)
 
 ## 2. Why the previous design failed (root cause)
 

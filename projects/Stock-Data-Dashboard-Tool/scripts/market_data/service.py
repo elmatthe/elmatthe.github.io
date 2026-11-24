@@ -1,6 +1,11 @@
-"""MarketData: keys, routing, pacing, caching and md.quote.v1 quotes for the desktop apps.
+"""MarketData: keys, the ordered source list, pacing, caching and md.quote.v1 quotes for the desktop apps.
 
-Mirrors the quote side of assets/js/market-data/index.js. Keys belong to the user:
+Mirrors the quote side of assets/js/market-data/index.js. Prices come from ONE ordered
+list of sources (./sources.py): Yahoo Finance through the site's data gateway
+(./gateway.py; no key, position 1 by default) and the providers the user adds with
+their own key, tried one after another; every answer says which source gave it and why
+earlier sources were skipped or failed. The list is saved in
+files/runtime/market-data-settings.json. Keys belong to the user:
 they stay on this computer and are sent only to their own provider (Finnhub and
 Alpaca in request headers; Alpha Vantage and Marketstack in the query string, the
 only method those providers offer). A key is kept for this session only unless the
@@ -24,18 +29,21 @@ from urllib.parse import urlencode
 
 from . import alphavantage as av
 from .adapters import ADAPTERS, normalize_currency
-from .catalog import (PROVIDER_IDS, PROVIDERS, is_us_venue, key_valid, plan_of, provider_available, route_instrument)
+from . import sources as src
+from .catalog import PROVIDER_IDS, PROVIDERS, is_us_venue, key_valid, plan_of, provider_available
 from .errors import DataError
 from .fx import latest_cad_rates
+from .gateway import GATEWAY_ID, GATEWAY_NAME, GATEWAY_VIA, GatewayClient, configured_gateway_url
 from .instruments import InstrumentResolver
 from .pacing import Scheduler, UsageCounter
 
 QUOTE_SCHEMA = "md.quote.v1"
 MAX_BYTES = 4 * 1024 * 1024
 QUOTE_FRESH_S = {"last_trade": 600, "latest_trading_day": 4 * 3600, "eod_close": 4 * 3600, "previous_close": 4 * 3600}
-FALLBACK_KINDS = {"not_found", "not_covered", "entitlement", "auth", "rate_limited", "unavailable", "network", "timeout", "http",
-                  "provider_notice", "invalid", "ambiguous"}
-USER_AGENT = "PortfolioTools-Desktop/1.2 (+https://elmatthe.github.io/projects/)"
+# Errors after which the next source in the list may still answer.
+FALLBACK_KINDS = {"not_found", "not_covered", "not_configured", "entitlement", "auth", "rate_limited", "unavailable", "network", "timeout", "http",
+                  "provider_notice", "invalid", "ambiguous", "currency_mismatch"}
+USER_AGENT = "PortfolioTools-Desktop/1.3 (+https://elmatthe.github.io/projects/)"
 
 
 def default_http(url: str, headers: dict, timeout: float = 15.0) -> tuple[int, str]:
@@ -105,7 +113,8 @@ class _Session:
 class MarketData:
     def __init__(self, runtime_dir: Path | str | None = None, http: Callable[[str, dict], tuple[int, str]] | None = None,
                  now: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep, reference: dict | None = None,
-                 platform: str = "desktop", pacing_override_ms: int | None = None, clock: Callable[[], float] = time.monotonic) -> None:
+                 platform: str = "desktop", pacing_override_ms: int | None = None, clock: Callable[[], float] = time.monotonic,
+                 gateway_url: str | None = None) -> None:
         self.runtime = Path(runtime_dir) if runtime_dir else None
         self.http = http or default_http
         self.now, self.sleep, self.clock = now, sleep, clock
@@ -115,7 +124,11 @@ class MarketData:
         self.lock = threading.RLock()
         self.keys: dict[str, dict] = {}
         self.sessions: dict[str, _Session] = {}
-        self.prefs = {"routing": "auto", "fallback": False, "plans": {}}
+        self.prefs: dict = {"plans": {}}
+        self.priority: dict = {"order": [], "enabled": {}}
+        self.notes: list[str] = []  # explanations of list changes the UI has not shown yet
+        self.gateway = GatewayClient(configured_gateway_url() if gateway_url is None else gateway_url, self.http, now=now, sleep=sleep,
+                                     runtime_dir=self.runtime, spacing_s=0 if pacing_override_ms == 0 else 0.35, clock=clock)
         self._load()
 
     # ------------------------------------------------------------ persistence
@@ -132,19 +145,36 @@ class MarketData:
             except (OSError, ValueError):
                 continue
             if target == "prefs" and isinstance(data, dict):
-                self.prefs.update({k: data[k] for k in ("routing", "fallback", "plans") if k in data})
+                if isinstance(data.get("plans"), dict):
+                    self.prefs["plans"] = data["plans"]
+                if isinstance(data.get("sources"), dict):
+                    self.prefs["sources"] = data["sources"]
+                elif "routing" in data or "fallback" in data:
+                    self.prefs["legacy"] = {"routing": data.get("routing"), "fallback": data.get("fallback")}
             if target == "keys" and isinstance(data, dict):
                 for pid, entry in data.items():
                     if pid in PROVIDERS and provider_available(pid, self.platform) and isinstance(entry, dict) and key_valid(pid, entry.get("key")):
                         self.keys[pid] = {"key": entry["key"].strip(), "secret": entry.get("secret"), "persistence": "local"}
-        if self.prefs.get("routing") != "auto" and not provider_available(self.prefs.get("routing", ""), self.platform):
-            self.prefs["routing"] = "auto"
+        # The source list: as saved, or built once from the previous routing choice.
+        legacy = self.prefs.pop("legacy", None)
+        saved = self.prefs.get("sources")
+        if isinstance(saved, dict) and isinstance(saved.get("order"), list):
+            built = src.normalize_priority(saved, self.platform, self.configured())
+        elif legacy:
+            built = src.migrate_legacy(legacy, self.platform, self.configured())
+        else:
+            built = src.normalize_priority(None, self.platform, self.configured())
+        self.priority = {"order": built["order"], "enabled": built["enabled"]}
+        self.notes.extend(built["notes"])
+        if legacy or built["notes"] or (isinstance(saved, dict) and (saved.get("order") != self.priority["order"] or saved.get("enabled") != self.priority["enabled"])):
+            self._save_prefs()
 
     def _save_prefs(self) -> None:
         path = self._path("market-data-settings.json")
         if path:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(self.prefs, indent=1), encoding="utf-8")
+            data = {"plans": self.prefs.get("plans", {}), "sources": {"v": 1, **self.priority}}
+            path.write_text(json.dumps(data, indent=1), encoding="utf-8")
 
     def _save_keys(self) -> None:
         path = self._path("keys.json")
@@ -174,6 +204,7 @@ class MarketData:
             raise ValueError(f"{PROVIDERS.get(pid, {}).get('name', pid)} is not available here.")
         key = (key or "").strip()
         with self.lock:
+            had_key = pid in self.keys
             if key:
                 if not key_valid(pid, key):
                     raise ValueError(f"That does not look like a {PROVIDERS[pid]['name']} key (letters and digits only).")
@@ -188,11 +219,23 @@ class MarketData:
                         path.unlink()
             self._retire(pid)
             self._save_keys()
+            # A new key switches the provider on where it stands in the list (never at the
+            # top); a removed key switches it off and keeps its place.
+            if bool(key) != had_key:
+                r = src.key_changed(self.priority, pid, bool(key), is_new=not had_key, configured=self.configured())
+                self.priority = {"order": r["priority"]["order"], "enabled": r["priority"]["enabled"]}
+                if r["note"]:
+                    self.notes.append(r["note"])
+                self._save_prefs()
             return self.keys.get(pid, {}).get("persistence", "")
 
     def forget_all_keys(self) -> None:
         for pid in list(self.keys):
             self.set_key(pid, "")
+        fixed = src.normalize_priority(self.priority, self.platform, [])
+        self.priority = {"order": fixed["order"], "enabled": fixed["enabled"]}
+        self.notes.extend(fixed["notes"])
+        self._save_prefs()
 
     def set_plan(self, pid: str, plan_id: str, limit: float | None = None, international: bool = False) -> dict:
         with self.lock:
@@ -201,14 +244,64 @@ class MarketData:
             self._retire(pid)
         return self.plan_for(pid)
 
-    def set_routing(self, mode: str | None = None, fallback: bool | None = None) -> dict:
+    # ------------------------------------------------------------ the source list
+    def take_notes(self) -> list[str]:
+        """Explanations of list changes (keys added or removed, repairs) not yet shown."""
+        notes, self.notes = self.notes, []
+        return notes
+
+    def source_state(self, pid: str) -> dict:
+        """Whether a source can be asked right now, and why not: {"available", "code", "reason", "short"}."""
+        if pid == GATEWAY_ID:
+            return self.gateway.availability()
+        if not provider_available(pid, self.platform):
+            return {"available": False, "code": "not_offered", "reason": PROVIDERS.get(pid, {}).get("unsupportedReason") or "not offered here"}
+        if pid not in self.keys:
+            return {"available": False, "code": "no_key", "reason": "no API key saved", "short": "no key"}
+        s = self._session(pid)
+        if s.rejected:
+            return {"available": False, "code": "auth", "reason": "rejected your key earlier (check the key)", "short": "rejected the key"}
+        lim = s.usage.limit
+        if lim:
+            when = dt.datetime.fromtimestamp(lim["at"] / 1000, dt.timezone.utc).strftime("%H:%M")
+            period = "month" if lim["scope"] == "monthly" else "day"
+            return {"available": False, "code": "rate_limited", "short": f"{lim['scope']} limit reached",
+                    "reason": f"reported its {lim['scope']} limit at {when} UTC; nothing more is sent until the {period} ends (UTC) unless you choose \"Check again\""}
+        return {"available": True, "code": None, "reason": None}
+
+    def _states(self) -> dict:
+        return {pid: self.source_state(pid) for pid in self.priority["order"]}
+
+    def has_price_source(self, op: str = "quote") -> bool:
+        return any(self.priority["enabled"].get(p) and op in src.capabilities(p, self.platform) and self.source_state(p)["available"] for p in self.priority["order"])
+
+    def sources_list(self) -> list[dict]:
+        out = []
+        for index, pid in enumerate(self.priority["order"]):
+            st = self.source_state(pid)
+            info = src.SOURCE_INFO[pid]
+            enabled = bool(self.priority["enabled"].get(pid))
+            status = ("needs_key" if info["needsKey"] and pid not in self.keys else "off") if not enabled else ("on" if st["available"] else "unavailable")
+            out.append({"id": pid, "name": info["name"], "position": index + 1, "enabled": enabled, "needsKey": info["needsKey"],
+                        "configured": (pid in self.keys) if info["needsKey"] else True, "available": st["available"], "state": st,
+                        "ops": src.capabilities(pid, self.platform), "labels": info["labels"], "summary": info["summary"], "status": status})
+        return out
+
+    def move_source(self, pid: str, to_index: int) -> dict:
         with self.lock:
-            if mode is not None:
-                self.prefs["routing"] = mode if mode == "auto" or provider_available(mode, self.platform) else "auto"
-            if fallback is not None:
-                self.prefs["fallback"] = bool(fallback)
+            before = self.priority["order"].index(pid) if pid in self.priority["order"] else -1
+            self.priority = src.move_source(self.priority, pid, to_index)
             self._save_prefs()
-        return {"mode": self.prefs["routing"], "fallback": self.prefs["fallback"]}
+            after = self.priority["order"].index(pid) if pid in self.priority["order"] else -1
+        return {"moved": before != after, "position": after + 1, "count": len(self.priority["order"]),
+                "message": f"{src.source_name(pid)} moved to position {after + 1} of {len(self.priority['order'])}."}
+
+    def set_source_enabled(self, pid: str, on: bool) -> dict:
+        with self.lock:
+            r = src.set_source_enabled(self.priority, pid, on, self.configured())
+            self.priority = {"order": r["priority"]["order"], "enabled": r["priority"]["enabled"]}
+            self._save_prefs()
+        return {"changed": r["changed"], "note": r["note"], "message": r["note"] or f"{src.source_name(pid)} switched {'on' if on else 'off'}."}
 
     def configured(self) -> list[str]:
         return [pid for pid in PROVIDER_IDS if pid in self.keys and provider_available(pid, self.platform)]
@@ -238,11 +331,14 @@ class MarketData:
     def resolve(self, text: str) -> dict:
         return self.resolver.resolve(text)
 
-    def route(self, identity: dict, mode: str | None = None) -> dict:
-        return route_instrument(identity, mode or self.prefs["routing"], self.configured(),
-                                {pid: self.plan_for(pid) for pid in PROVIDER_IDS}, self.platform)
+    def route(self, identity: dict, op: str = "quote", require=None) -> dict:
+        """The sources to try for an identity and operation, in list order, and why others are skipped."""
+        return src.plan_sources(identity, op, self.priority, self.platform, self._states(), {pid: self.plan_for(pid) for pid in PROVIDER_IDS}, require)
 
     def budget(self, pid: str) -> dict:
+        if pid == GATEWAY_ID:
+            return {"shared": True, "sentToday": None, "sentMonth": None, "planId": "free", "planLabel": "Yahoo Finance (no key; shared and rate-limited)",
+                    "remaining": None, "period": None, "limitRecord": None}
         s = self._session(pid)
         plan = self.plan_for(pid)
         out = {"sentToday": s.usage.count if s else 0, "sentMonth": s.usage.month_count if s else 0, "planId": plan["id"],
@@ -256,19 +352,26 @@ class MarketData:
             out["period"], out["perMinute"] = "minute", limits["perMinute"]
         return out
 
-    def estimate(self, identities: list[dict], mode: str | None = None) -> dict:
+    def estimate(self, identities: list[dict]) -> dict:
         per: dict[str, dict] = {}
         uncovered = []
         for identity in identities:
             if not identity or identity.get("status") != "resolved":
                 uncovered.append({"displayTicker": (identity or {}).get("displayTicker"), "reason": (identity or {}).get("reason") or "not resolved"})
                 continue
-            r = self.route(identity, mode)
+            r = self.route(identity, "quote")
             if not r["candidates"]:
-                reasons = "; ".join(f"{PROVIDERS[x['id']]['name']}: {x['reason']}" for x in r["skipped"]) or "no provider configured"
+                reasons = "; ".join(src.describe_skipped(r["skipped"])) or "no source switched on"
                 uncovered.append({"displayTicker": identity["displayTicker"], "reason": reasons})
                 continue
             first = r["candidates"][0]
+            if first["id"] == GATEWAY_ID:
+                hit = self.gateway.quotes.get(first["symbol"])
+                cost = 0 if hit and self.now() - hit[0] <= 600 else 1
+                entry = per.setdefault(GATEWAY_ID, {"requests": 0, "rows": 0})
+                entry["requests"] += cost
+                entry["rows"] += 1
+                continue
             s = self.sessions.get(first["id"])
             hit = s.quotes.get(f"{identity['canonicalId']}|{first['symbol']}") if s else None
             fresh = hit and self.now() - hit[0] <= QUOTE_FRESH_S.get(hit[1]["priceType"], 600)
@@ -350,7 +453,7 @@ class MarketData:
         raise DataError("unreachable", kind="unavailable")
 
     def _settle_currency(self, pid: str, identity: dict, raw: dict, listing: dict | None) -> dict:
-        name = PROVIDERS[pid]["name"]
+        name = GATEWAY_NAME if pid == GATEWAY_ID else PROVIDERS[pid]["name"]
         if raw.get("currency"):
             if identity.get("currencyEvidence") == "curated_reference" and raw["currency"] != identity.get("currency"):
                 raise DataError(f"{name} reports {identity['displayTicker']} in {raw.get('rawCurrency') or raw['currency']}, but this listing trades in {identity['currency']}. The price was not used.",
@@ -367,7 +470,34 @@ class MarketData:
         return {"currency": identity.get("currency"), "unitScale": identity.get("unitScale", 1.0), "verified": False,
                 "evidence": "venue_default_unconfirmed", "note": f"{name} did not state the currency."}
 
+    def _price_gateway(self, identity: dict, use_cache: bool, cancelled: Callable[[], bool]) -> dict:
+        """A quote from Yahoo Finance through the site's gateway, in the md.quote.v1 contract."""
+        try:
+            raw = self.gateway.quote(identity, use_cache, cancelled)
+        except DataError as error:
+            error.instrument = error.instrument or identity.get("canonicalId")
+            raise
+        cur = self._settle_currency(GATEWAY_ID, identity, raw, None)
+        price = float(f"{raw['rawPrice'] * cur['unitScale']:.12g}")
+        if not price > 0:
+            raise DataError(f"Yahoo Finance returned an invalid price for {identity['displayTicker']}.", kind="invalid", provider=GATEWAY_NAME)
+        local = raw.get("cacheAgeS") is not None
+        gw = raw["gatewayCache"]
+        return {
+            "schema": QUOTE_SCHEMA, "canonicalId": identity["canonicalId"], "displayTicker": identity["displayTicker"],
+            "provider": GATEWAY_NAME, "providerId": GATEWAY_ID, "sourceTier": "free", "via": GATEWAY_VIA, "providerSymbol": raw["symbol"],
+            "nativePriceMajorUnits": price, "nativeCurrency": cur["currency"], "quoteUnit": "major" if cur["unitScale"] == 1 else "minor",
+            "rawPrice": raw["rawPrice"], "rawCurrency": raw["rawCurrency"], "priceType": raw["priceType"], "tradingDate": raw["tradingDate"],
+            "asOf": raw["asOf"], "delayMinutes": None, "adjusted": False, "retrievedAt": raw["retrievedAt"],
+            "cacheStatus": "cached" if local else ("gateway_cache" if gw["status"] == "hit" else "live"),
+            "cachedAgeS": raw["cacheAgeS"] if local else (gw["ageSeconds"] if gw["status"] == "hit" else 0),
+            "attribution": raw.get("attribution") or f"Data from {GATEWAY_NAME} through {GATEWAY_VIA}.", "entitlement": "free", "feed": None,
+            "currencyVerified": cur["verified"], "currencyEvidence": cur["evidence"], "notes": [n for n in (cur["note"], raw.get("delayNote")) if n],
+        }
+
     def price_with(self, pid: str, identity: dict, use_cache: bool = True, cancelled: Callable[[], bool] = lambda: False) -> dict:
+        if pid == GATEWAY_ID:
+            return self._price_gateway(identity, use_cache, cancelled)
         name = PROVIDERS[pid]["name"]
         s = self._session(pid)
         if not s:
@@ -442,30 +572,58 @@ class MarketData:
             error.instrument = error.instrument or identity["canonicalId"]
             raise
 
-    def price_instrument(self, identity: dict, mode: str | None = None, fallback: bool | None = None, use_cache: bool = True,
-                         cancelled: Callable[[], bool] = lambda: False) -> dict:
-        if not identity or identity.get("status") != "resolved":
-            raise DataError((identity or {}).get("reason") or "The ticker is not resolved.", kind="invalid", definitive=True)
-        fallback = self.prefs["fallback"] if fallback is None else fallback
-        r = self.route(identity, mode)
-        if not r["candidates"]:
-            reasons = "; ".join(f"{PROVIDERS[x['id']]['name']}: {x['reason']}" for x in r["skipped"])
-            raise DataError(f"No configured source covers {identity['displayTicker']} ({identity.get('venueName') or identity.get('mic')}).",
-                            kind="not_covered" if self.configured() else "not_configured", definitive=True, instrument=identity["canonicalId"],
-                            hint=reasons or "Add a key for a provider that covers this market, or enter your own price.")
+    def try_sources(self, identity: dict, op: str, plan: dict, run: Callable[[dict], object], label: str) -> tuple[object, list[dict], str]:
+        """Runs `run(candidate)` for each candidate in order; returns (value, attempts, used id) or
+        raises one DataError listing every source's reason (same rules and text as the web)."""
         attempts: list[dict] = []
-        for index, c in enumerate(r["candidates"]):
+        for c in plan["candidates"]:
             try:
-                quote = self.price_with(c["id"], identity, use_cache, cancelled)
-                return {**quote, "fallbackFrom": attempts} if attempts else quote
+                return run(c), attempts, c["id"]
             except DataError as error:
                 if error.kind in ("aborted", "key_changed"):
                     raise
-                attempts.append({"provider": PROVIDERS[c["id"]]["name"], "kind": error.kind, "message": error.message})
-                if not fallback or index == len(r["candidates"]) - 1 or error.kind not in FALLBACK_KINDS:
-                    error.attempts = attempts
+                attempts.append({"provider": src.source_name(c["id"]), "providerId": c["id"], "kind": error.kind, "quotaScope": error.quota_scope,
+                                 "message": error.message, "paused": bool(getattr(error, "paused", False))})
+                if error.kind not in FALLBACK_KINDS:
+                    error.attempts, error.skipped = attempts, plan["skipped"]
                     raise
-        raise DataError("No source returned a price.", kind="unavailable")
+        reasons = [f"{a['provider']}: {src.short_failure(a)}" for a in attempts] + src.describe_skipped(plan["skipped"], short=True)
+        any_available = self.has_price_source(op)
+        kinds = [a["kind"] for a in attempts]
+        if not plan["candidates"]:
+            kind = "not_covered" if any_available or any(x["code"] == "not_covered" for x in plan["skipped"]) else "not_configured"
+        elif "auth" in kinds:
+            kind = "auth"
+        elif "rate_limited" in kinds:
+            kind = "rate_limited"
+        elif all(k in ("not_found", "not_covered") for k in kinds):
+            kind = "not_found"
+        else:
+            kind = kinds[-1] if kinds else "unavailable"
+        head = "No source in your list could give" if plan["candidates"] else "No source in your list can give"
+        error = DataError(f"{head} {label}{' (' + '; '.join(reasons) + ')' if reasons else ''}.", kind=kind,
+                          definitive=not plan["candidates"] or all(k in ("not_found", "not_covered", "ambiguous", "currency_mismatch") for k in kinds),
+                          instrument=identity.get("canonicalId"), quota_scope=next((a["quotaScope"] for a in attempts if a["kind"] == "rate_limited"), None),
+                          provider=attempts[0]["provider"] if len(attempts) == 1 else None,
+                          hint="Use your own price, or add or reorder sources." if plan["candidates"] else
+                          "Add a source that covers this market, or use your own price." if any_available else "Switch on Yahoo Finance or add your own key, or use your own price.")
+        error.attempts, error.skipped = attempts, plan["skipped"]
+        raise error
+
+    def describe_order(self) -> str:
+        """The list in order, as words, at this moment: stored with what it was used for,
+        because a later reorder must not rewrite the record of an earlier request."""
+        return "; ".join(f"{x['position']}. {x['name']}{'' if x['enabled'] else ' (off)'}" for x in self.sources_list())
+
+    def price_instrument(self, identity: dict, use_cache: bool = True, cancelled: Callable[[], bool] = lambda: False) -> dict:
+        """Latest price from the first source in the list that can give a usable one."""
+        if not identity or identity.get("status") != "resolved":
+            raise DataError((identity or {}).get("reason") or "The ticker is not resolved.", kind="invalid", definitive=True)
+        plan = self.route(identity, "quote")
+        source_order = self.describe_order()
+        quote, attempts, _used = self.try_sources(identity, "quote", plan, lambda c: self.price_with(c["id"], identity, use_cache, cancelled), "a usable price")
+        skipped = [x for x in plan["skipped"] if x["code"] != "off"]
+        return {**quote, "sourceOrder": source_order, **({"fallbackFrom": attempts} if attempts else {}), **({"skippedSources": skipped} if skipped else {})}
 
     def check_again(self, pid: str) -> dict:
         s = self._session(pid)

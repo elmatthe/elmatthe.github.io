@@ -1,6 +1,7 @@
 """The public CPI workbook (shipped in the CPI ZIP) carries no S&P 500 values, no cached
 results derived from them and no local metadata (see _tools/cpi_public_workbook.py)."""
 import importlib.util
+import io
 import re
 import sys
 import zipfile
@@ -34,6 +35,32 @@ def test_model_structure_is_kept():
     assert counts == {"CPI_Downloader": 0, "US Data": 44, "CDN Data": 25, "Data Visualizations": 6402}
     assert sum(1 for n in package.namelist() if n.startswith("xl/charts/chart")) == 5
     assert b'fullCalcOnLoad="1"' in package.read("xl/workbook.xml")
+
+
+def test_chart_caches_are_kept_empty():
+    # Excel drops a chart's legend-entry customizations on save when the cache element is
+    # missing (real Excel, 2026-11-23); an empty cache (format code + point count) keeps them.
+    package = zipfile.ZipFile(tool.WORKBOOK)
+    charts = {n: package.read(n) for n in package.namelist() if n.startswith("xl/charts/chart")}
+    assert sum(x.count(b"<c:numCache>") for x in charts.values()) == 30
+    assert not any(b"<c:pt " in x or b"<c:pt>" in x for x in charts.values())
+    assert charts["xl/charts/chart1.xml"].count(b"<c:legendEntry>") == 2
+
+
+def test_audit_catches_a_cached_chart_point():
+    xml = '<c:val><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="1"/><c:pt idx="0"><c:v>4000.5</c:v></c:pt></c:numCache></c:val>'
+    assert tool.scrub_chart(xml) == '<c:val><c:numCache><c:formatCode>General</c:formatCode><c:ptCount val="1"/></c:numCache></c:val>'
+    data = tool.WORKBOOK.read_bytes()
+    package = zipfile.ZipFile(tool.WORKBOOK)
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as target:
+        for name in package.namelist():
+            body = package.read(name)
+            if name == "xl/charts/chart1.xml":
+                body = body.replace(b"</c:numCache>", b'<c:pt idx="0"><c:v>4000.5</c:v></c:pt></c:numCache>', 1)
+            target.writestr(name, body)
+    assert "a chart keeps cached series values" in tool.audit(out.getvalue())
+    assert tool.audit(data) == []
 
 
 def test_scrub_removes_a_planted_value(tmp_path):

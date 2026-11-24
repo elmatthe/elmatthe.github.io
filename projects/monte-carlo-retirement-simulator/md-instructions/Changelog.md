@@ -1,5 +1,14 @@
 # Monte Carlo Retirement Simulator — Changelog
 
+## Unreleased — 2026-11-23 (PR 46 application fixes)
+- Run Simulation with an unreadable target workbook (a folder named `.xlsx`, a workbook locked by Excel, no read
+  access) now shows an error and changes nothing; before, the error was raised inside the Tk callback and the
+  button silently did nothing.
+- CSV numbers are now written exactly as the web app writes them (JavaScript `String(number)`): values above
+  2^53, between 1e-6 and 1e-4, and exponents had different text (the parsed numbers were always equal).
+- Tests: an independent reimplementation of the model and generator (20 seeded scenarios, both engines), a
+  five-path case calculated by hand, a scipy-integrated failure probability, and Excel/CSV read-back.
+
 ## v1.2.0 — 2026-11-03
 - Spending basis: spending and pension can be entered in first-retirement-year dollars (the
   default, unchanged) or in today's dollars, converted with (spending - pension) x

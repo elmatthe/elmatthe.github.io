@@ -238,10 +238,14 @@ test("timeouts and provider outages: clear codes, retry hints, nothing leaked", 
 
 test("timeouts: the upstream request is aborted after the limit", async t => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
-  const slow = setup({ upstream: (url, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))) });
+  // Tick only once the upstream request has started: the gateway arms its timeout just before
+  // it, after hashing the caller with crypto.subtle (thread pool), which a fixed number of
+  // event-loop turns does not cover on a busy machine.
+  let started;
+  const upstreamStarted = new Promise(r => { started = r; });
+  const slow = setup({ upstream: (url, init) => { started(); return new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")))); } });
   const pending = slow.gw.handle(post(good()), env());
-  await new Promise(r => setImmediate(r));
-  await new Promise(r => setImmediate(r));
+  await upstreamStarted;
   t.mock.timers.tick(LIMITS.upstreamTimeoutMs);
   const r = await read(await pending);
   assert.deepEqual([r.status, r.body.error.code], [504, "upstream_timeout"]);

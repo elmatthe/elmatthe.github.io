@@ -1,7 +1,8 @@
 // Opt-in LIVE smoke test (no mocks): the web apps against the real official FX
 // sources and, only when ALPHAVANTAGE_KEY is set, Alpha Vantage with that key.
 // Small and polite: a handful of requests per run. Informational; not part of the
-// deterministic suite. Never commit a key; pass it through the environment.
+// deterministic suite. The pages load with ?mdgateway=none, so this test never uses the
+// site's Yahoo Finance gateway. Never commit a key; pass it through the environment.
 //
 //   ALPHAVANTAGE_KEY=yourkey node live.test.js
 "use strict";
@@ -19,7 +20,7 @@ const DAY = 86400000;
   // 1. Rebalancer: official Bank of Canada rates load in a real browser (CORS).
   const rb = await context.newPage();
   const rbNet = watchNetwork(rb);
-  await rb.goto(`${SITE_URL}/projects/portfolio-rebalancer/`, { waitUntil: "networkidle" });
+  await rb.goto(`${SITE_URL}/projects/portfolio-rebalancer/?mdgateway=none`, { waitUntil: "networkidle" });
   await rb.waitForSelector('#rb-app[data-fx-ready="true"]', { timeout: 60000 });
   const fxTable = await rb.locator("#rbFxRows").innerText();
   const cadRate = Number(await rb.locator('.rb-fx-input[data-key="CAD"]').inputValue());
@@ -32,7 +33,7 @@ const DAY = 86400000;
   const ecbContext = await browser.newContext();
   await ecbContext.route(/bankofcanada\.ca/, r => r.abort("connectionrefused"));
   const ecb = await ecbContext.newPage();
-  await ecb.goto(`${SITE_URL}/projects/portfolio-rebalancer/`, { waitUntil: "networkidle" });
+  await ecb.goto(`${SITE_URL}/projects/portfolio-rebalancer/?mdgateway=none`, { waitUntil: "networkidle" });
   await ecb.waitForSelector('#rb-app[data-fx-ready="true"]', { timeout: 60000 });
   const ecbTable = await ecb.locator("#rbFxRows").innerText();
   const ecbCad = Number(await ecb.locator('.rb-fx-input[data-key="CAD"]').inputValue());
@@ -44,7 +45,7 @@ const DAY = 86400000;
   // 2. Stock tool: CSV import normalized to USD with live official FX history.
   const st = await context.newPage();
   const stNet = watchNetwork(st);
-  await st.goto(`${SITE_URL}/projects/stock-data-dashboard-tool/`, { waitUntil: "networkidle" });
+  await st.goto(`${SITE_URL}/projects/stock-data-dashboard-tool/?mdgateway=none`, { waitUntil: "networkidle" });
   await st.waitForSelector('#sdd-app[data-ready="true"]');
   await st.check('input[name="source"][value="csv"]');
   const lines = ["Date,Ticker,Close,Adj Close,Currency"];

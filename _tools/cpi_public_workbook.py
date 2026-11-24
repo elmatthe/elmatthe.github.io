@@ -11,9 +11,10 @@ What `--write` does (package-level edits only; no formula, style, chart, sheet o
 defined-name changes, so the model's structure is preserved):
   * CPI_Downloader column N (S&P 500) rows 2+: values removed (header kept).
   * Cached results removed from every formula cell and every dynamic-array spill range,
-    and from every chart's cached series (numCache/strCache), because they can be
-    derived from the S&P values; <calcPr fullCalcOnLoad="1"> makes desktop Excel
-    recalculate everything when the file is opened.
+    and every point removed from every chart's cached series (numCache/strCache keep only
+    their format code and point count, which Excel needs to keep legend entries), because
+    they can be derived from the S&P values; <calcPr fullCalcOnLoad="1"> makes desktop
+    Excel recalculate everything when the file is opened.
   * Removed: the x15ac:absPath block, the web-extension (add-in) parts, the printer
     settings part, and the creator / last-modified-by names in docProps/core.xml.
 The ZIP is rewritten deterministically (fixed timestamps, original part order).
@@ -96,9 +97,15 @@ def scrub_sheet(xml: str, blank_column: str | None = None) -> str:
     return _CELL.sub(fix, xml)
 
 
+_CACHE = re.compile(r"(<c:(numCache|strCache)>)(.*?)(</c:\2>)", re.S)
+_CACHE_KEEP = re.compile(r"<c:formatCode>.*?</c:formatCode>|<c:ptCount val=\"\d+\"/>", re.S)
+
+
 def scrub_chart(xml: str) -> str:
-    xml = re.sub(r"<c:numCache>.*?</c:numCache>", "", xml, flags=re.S)
-    return re.sub(r"<c:strCache>.*?</c:strCache>", "", xml, flags=re.S)
+    """Empty every cached series: keep the cache element, its format code and point count,
+    drop every point (<c:pt>). Removing the element itself made Excel discard the chart's
+    legend-entry customizations on its first save (verified with real Excel, 2026-11-23)."""
+    return _CACHE.sub(lambda m: m.group(1) + "".join(_CACHE_KEEP.findall(m.group(3))) + m.group(4), xml)
 
 
 def scrub(data: bytes) -> bytes:
@@ -163,6 +170,7 @@ def scrub(data: bytes) -> bytes:
                 continue
             info = zipfile.ZipInfo(name, FIXED_TIME)
             info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = 3  # the default depends on the platform; the bytes must not
             info.external_attr = 0o644 << 16
             target.writestr(info, files[name])
     return out.getvalue()
@@ -197,7 +205,8 @@ def audit(data: bytes) -> list[str]:
             if any(c1 <= col <= c2 and r1 <= row <= r2 for c1, r1, c2, r2 in ranges):
                 problems.append(f"{name}: a dynamic-array spill keeps cached values")
                 break
-    if any("<c:numCache>" in x or "<c:strCache>" in x for n, x in text.items() if n.startswith("xl/charts/chart")):
+    if any(re.search(r"<c:(pt|lvl)\b", cache) for n, x in text.items() if n.startswith("xl/charts/chart")
+           for cache in (m.group(3) for m in _CACHE.finditer(x))):
         problems.append("a chart keeps cached series values")
     if 'fullCalcOnLoad="1"' not in text["xl/workbook.xml"]:
         problems.append("the workbook is not set to recalculate when opened")

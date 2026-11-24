@@ -41,6 +41,9 @@ def _settings_frame(settings: dict | None) -> pd.DataFrame:
             value = f"{value * 100:g}% per year"
         rows.append({"Setting": key, "Value": safe_text(str(value))})
     rows.append({"Setting": "data", "Value": "Prices and Returns sheets hold the exact inputs of every figure; metrics can be recomputed from them."})
+    rows.append({"Setting": "pairing", "Value": "Correlation, beta and regression use only returns over identical intervals (the same previous and current "
+                 "date; the same ISO weeks or months for weekly or monthly prices). Returns on one Returns row can span different "
+                 "intervals when the markets' holidays differ."})
     return pd.DataFrame(rows)
 
 

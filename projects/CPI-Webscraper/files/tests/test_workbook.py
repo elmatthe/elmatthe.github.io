@@ -54,11 +54,57 @@ def test_bulk_clear_and_cleanup(com,config,rows):
     assert not any('Delete' in str(call) or 'Add(' in str(call) for call in com.sheet.mock_calls)
     assert com.sheet.EnableCalculation is False
 
-def test_quit_even_when_close_fails(com,config,rows):
+@pytest.fixture
+def ended(monkeypatch):
+    calls=[]
+    monkeypatch.setattr(io,'_excel_pid',lambda excel:4242)
+    monkeypatch.setattr(io,'_end_stuck_excel',calls.append)
+    return calls
+
+def rejected():
+    # pywintypes.com_error carries the HRESULT first; RPC_E_CALL_REJECTED.
+    return OSError(-2147418111,'Call was rejected by callee.',None,None)
+
+def test_close_failure_after_save_still_reports_the_write(com,config,rows,ended):
     com.wb.Close.side_effect=RuntimeError('close failed')
-    with pytest.raises(RuntimeError): io.write_to_workbook(rows,com.path,config)
+    stats=io.write_to_workbook(rows,com.path,config)
+    assert stats['rows']==1
+    com.wb.Save.assert_called_once()
     com.excel.Quit.assert_called_once()
     com.pythoncom.CoUninitialize.assert_called_once()
+    assert ended==[4242]
+
+def test_clean_exit_never_ends_excel(com,config,rows,ended):
+    io.write_to_workbook(rows,com.path,config)
+    assert ended==[]
+
+@pytest.mark.parametrize('where',['open','find','save'])
+def test_rejected_call_is_explained_and_excel_does_not_linger(com,config,rows,ended,where):
+    # Real HOME-PC reproduction: an Office prompt makes every later call fail, Close and Quit too.
+    if where=='open': com.excel.Workbooks.Open.side_effect=rejected()
+    if where=='find': com.cell.Find.side_effect=rejected()
+    if where=='save': com.wb.Save.side_effect=rejected()
+    com.wb.Close.side_effect=rejected()
+    com.excel.Quit.side_effect=rejected()
+    with pytest.raises(io.WorkbookError,match='did not accept the request.*not changed'):
+        io.write_to_workbook(rows,com.path,config)
+    com.pythoncom.CoUninitialize.assert_called_once()
+    assert ended==[4242]
+
+def test_other_failures_keep_their_message_when_quit_also_fails(com,config,rows,ended):
+    com.sheet.ProtectContents=True
+    com.excel.Quit.side_effect=RuntimeError('quit failed')
+    with pytest.raises(io.WorkbookError,match='protected'):
+        io.write_to_workbook(rows,com.path,config)
+    assert ended==[4242]
+
+def test_rejection_detected_through_exception_chain():
+    try:
+        try: raise rejected()
+        except OSError: raise RuntimeError('wrapped')
+    except RuntimeError as exc:
+        assert io._rejected(exc)
+    assert not io._rejected(RuntimeError(-1))
 
 def test_1904_dates(com,config,rows):
     com.wb.Date1904=True

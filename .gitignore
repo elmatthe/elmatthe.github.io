@@ -33,6 +33,9 @@ projects/*/files/run-temp/
 projects/CPI-Webscraper/config.toml
 projects/CPI-Webscraper/files/config.json
 
+# Cloudflare Wrangler local state (wrangler dev / deploy in _services/*)
+_services/*/.wrangler/
+
 # Local Jekyll toolchain (bundle install --path vendor/bundle)
 .bundle/
 vendor/bundle/

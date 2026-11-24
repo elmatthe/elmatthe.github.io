@@ -3,7 +3,7 @@
 const path = require("path");
 const fs = require("fs");
 const os = require("os");
-const { SITE_URL, launch, watchNetwork, checker } = require("./harness");
+const { SITE_URL, launch, watchNetwork, checker, blockExternal } = require("./harness");
 
 const PAGE = `${SITE_URL}/projects/monte-carlo-simulator/`;
 const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "mc-test-"));
@@ -12,6 +12,7 @@ const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "mc-test-"));
   const { check, done } = checker();
   const browser = await launch();
   const context = await browser.newContext({ acceptDownloads: true, viewport: { width: 1280, height: 900 } });
+  await blockExternal(context);
   await context.route(/favicon\.ico/, r => r.fulfill({ status: 204 }));
   const page = await context.newPage();
   const net = watchNetwork(page);

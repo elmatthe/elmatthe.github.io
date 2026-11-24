@@ -1,37 +1,49 @@
 // Market-data service used by the Portfolio Rebalancer and the Stock Comparison tool.
 //
-// Sources, in the order a tool uses them:
-//   1. Exchange rates: official, keyless, CORS-enabled central-bank data
-//      (Bank of Canada, falling back to the ECB) via ./fx.js. Always available.
-//   2. Security prices: the visitor's OWN keys for the providers in ./catalog.js
-//      (Alpha Vantage, Marketstack, Finnhub; see _tools/PROVIDER_MATRIX.md). Keys and
-//      everything fetched with them stay in this browser; each key has its own
-//      storage namespace, request pacing and request count.
-//   3. Prices the visitor deliberately enters or imports (handled by each tool), and
-//      the clearly labelled synthetic demo of the Stock tool.
-// There is no public relay or shared server in the path, and nothing here invents a
-// price: when a source cannot answer, the caller gets a DataError that explains why.
+// Price sources come from ONE ordered list the visitor controls (./sources.js): Yahoo
+// Finance through this site's data gateway (./keyless.js; no key, position 1 by
+// default) and the personal-key providers in ./catalog.js (Alpha Vantage, Marketstack,
+// Finnhub). Sources are tried one after another in that order; a source is asked only
+// for an operation it has (a latest-price-only source is never asked for history), only
+// for listings it covers, and never while it is unavailable (no key, key rejected, a
+// daily or monthly limit reached, or Yahoo Finance pausing after a rate limit). Every
+// answer says which source gave it and why earlier sources were skipped or failed.
+//
+// Exchange rates are official, keyless central-bank data (Bank of Canada, falling back
+// to the ECB) via ./fx.js. Keys and everything fetched with them stay in this browser;
+// each key has its own storage namespace, request pacing and request count, and a key
+// is sent only to its own provider (never to the gateway). Prices the visitor enters or
+// imports are handled by each tool. Nothing here invents a price: when no source can
+// answer, the caller gets a DataError that explains why, source by source.
 
 import { DataError, createDeduper, fetchText, httpError } from "./http.js";
 import { createCache, safeStorage, memoryStorage, storageKeys } from "./cache.js";
 import { classifyFreshness } from "./contract.js";
 import { createFxService } from "./fx.js";
 import { createScheduler } from "./scheduler.js";
-import { PROVIDERS, PROVIDER_IDS, CATALOG_VERSION, planOf, routeInstrument, providerAvailable, isUsVenue } from "./catalog.js";
+import { PROVIDERS, PROVIDER_IDS, CATALOG_VERSION, planOf, providerAvailable, isUsVenue } from "./catalog.js";
 import { ADAPTERS, normalizeCurrency } from "./providers/quote-adapters.js";
-import { createInstrumentResolver, loadInstrumentReference } from "./instruments.js";
+import { createInstrumentResolver, cutToListing, loadInstrumentReference } from "./instruments.js";
 import { AV_PROVIDER, AV_DAILY_LIMIT, createAlphaVantageClient, createUsageCounter, toAvSymbol, pickListing, parseGlobalQuote, parseSeries, validKey, redactKey } from "./providers/alphavantage.js";
+import { KEYLESS_ID, KEYLESS_NAME, KEYLESS_PROVIDER, KEYLESS_VIA, createKeylessSource } from "./keyless.js";
+import { SOURCE_INFO, offeredSources, capabilities, normalizePriority, migrateLegacy, moveSource, setSourceEnabled, keyChanged as priorityKeyChanged, planSources, describeSkipped, shortFailure, sourceName as sourceDisplayName } from "./sources.js";
 
 export { DataError } from "./http.js";
 export { classifyFreshness, describeAge, FRESHNESS_LABEL, selectBasis, isoDay } from "./contract.js";
 export { AV_DAILY_LIMIT, validKey } from "./providers/alphavantage.js";
 export { fxSupported } from "./fx.js";
 export { PROVIDERS, PROVIDER_IDS, planOf, providerAvailable } from "./catalog.js";
+export { KEYLESS_ID, KEYLESS_NAME, KEYLESS_PROVIDER, KEYLESS_VIA, resolveMarketGateway, keylessSymbol } from "./keyless.js";
+export { SOURCE_INFO, YAHOO_ID, capabilities, offeredSources, describeSkipped, shortFailure } from "./sources.js";
+
+// Display name of any price source id.
+export const sourceName = sourceDisplayName;
 
 export const QUOTE_SCHEMA = "md.quote.v1";
 const LEGACY_SETTINGS_KEY = "md.settings.v1";
 const KEY_PREFIX = "md.key.v2."; // + provider id, in session or local storage
-const PREFS_KEY = "md.prefs.v2"; // routing and plan choices (no secrets), local storage
+const PREFS_KEY = "md.prefs.v2"; // plan choices (no secrets), local storage; earlier versions also kept routing here
+const SOURCES_KEY = "md.sources.v1"; // the visitor's ordered source list (no secrets), local storage
 // Everything fetched with a key is stored under "md.<provider>.v2.<fingerprint>.", so
 // data, misses and request counts are never shared between keys. Alpha Vantage keeps
 // its historical prefix "md.av.v2." so earlier caches of the same key remain valid.
@@ -165,11 +177,13 @@ export function createMarketData({
   reference = null, // instrument reference object (tests); the site loads the shipped JSON
   platform = "browser",
   referenceFetch = (...a) => globalThis.fetch(...a),
+  gatewayUrl = "", // the site's market-data gateway (Yahoo Finance); "" = not configured
 } = {}) {
   // Without usable storage everything lives in memory for this page view, so request
   // counts and caches still work until the page is closed.
   const store = local || memoryStorage();
   const fx = createFxService({ fetchImpl, storage: store, now });
+  const keyless = createKeylessSource({ baseUrl: gatewayUrl, fetchImpl, now, storage: store, sleep, locks, ...(minSpacingMs === null ? {} : { spacingMs: minSpacingMs }) });
   const sleeper = sleep || ((ms, signal) => new Promise((resolve, reject) => {
     if (signal?.aborted) { reject(new DataError("Request cancelled.", { kind: "aborted" })); return; }
     const timer = setTimeout(resolve, ms);
@@ -188,12 +202,15 @@ export function createMarketData({
     if (validProviderKey(id, s)) keys[id] = { key: s.trim(), persistence: "session" };
     else if (validProviderKey(id, l)) keys[id] = { key: l.trim(), persistence: "local" };
   }
-  let prefs = { routing: "auto", fallback: false, plans: {} };
+  let prefs = { plans: {} };
+  let legacy = null; // routing/fallback from the previous version, used once to build the list
   try {
     const saved = JSON.parse(readText(store, PREFS_KEY) || "null");
-    if (saved && typeof saved === "object") prefs = { routing: typeof saved.routing === "string" ? saved.routing : "auto", fallback: saved.fallback === true, plans: saved.plans && typeof saved.plans === "object" ? saved.plans : {} };
+    if (saved && typeof saved === "object") {
+      prefs = { plans: saved.plans && typeof saved.plans === "object" ? saved.plans : {} };
+      if (typeof saved.routing === "string" || saved.fallback !== undefined) legacy = { routing: saved.routing, fallback: saved.fallback };
+    }
   } catch (_) { /* defaults */ }
-  if (prefs.routing !== "auto" && !providerAvailable(prefs.routing, platform)) prefs.routing = "auto";
   const savePrefs = () => writeText(store, PREFS_KEY, JSON.stringify(prefs));
   const planFor = id => planOf(id, prefs.plans[id]?.id, prefs.plans[id] || {});
 
@@ -353,7 +370,14 @@ export function createMarketData({
 
   // Price history for a window (Alpha Vantage). Daily (as traded) when the window fits
   // the free daily series, otherwise weekly adjusted closes. Returns { history, provenance }.
-  async function history(symbol, range, { signal } = {}) {
+  // Prices from before the listing's date are removed here on every read, saved copies
+  // included (./instruments.js cutToListing).
+  async function history(symbol, range, { signal, identity = null } = {}) {
+    const result = await avHistory(symbol, range, { signal });
+    const known = identity || (resolver ? resolver.resolve(symbol) : null);
+    return { ...result, history: cutToListing(result.history, known, { provider: AV_PROVIDER, rangeStart: range.start }) };
+  }
+  async function avHistory(symbol, range, { signal } = {}) {
     const avSymbol = toAvSymbol(symbol);
     const s = requireAv();
     const kind = historyKind(range);
@@ -411,7 +435,7 @@ export function createMarketData({
   // Price currency and unit for a provider's answer, checked against the instrument.
   // Returns { currency, unitScale, verified, evidence, note } or throws currency_mismatch.
   function settleCurrency(id, identity, raw, listing) {
-    const name = PROVIDERS[id].name;
+    const name = id === KEYLESS_ID ? KEYLESS_PROVIDER : PROVIDERS[id].name;
     if (raw.currency) {
       if (identity.currencyEvidence === "curated_reference" && raw.currency !== identity.currency) {
         throw new DataError(`${name} reports ${identity.displayTicker} in ${raw.rawCurrency || raw.currency}, but this listing trades in ${identity.currency}. The price was not used.`, { kind: "currency_mismatch", definitive: true, provider: name });
@@ -463,6 +487,7 @@ export function createMarketData({
   // that provider (recorded with the provider's own wording until the UTC day or month
   // ends, or until "Check again").
   async function priceWith(id, identity, { signal, useCache = true } = {}) {
+    if (id === KEYLESS_ID) return priceKeyless(identity, { signal, useCache });
     const name = PROVIDERS[id].name;
     const s = session(id);
     if (!s) throw new DataError(`No ${name} key is saved.`, { kind: "not_configured", provider: name });
@@ -536,57 +561,231 @@ export function createMarketData({
     }
   }
 
+  // ---------------------------------------------------------------- free (keyless) source
+  // A quote from the site's market-data gateway, in the same md.quote.v1 contract as the
+  // key-based providers, with its tier, gateway cache age and delay note stated.
+  async function keylessRaw(identity, { signal, useCache = true } = {}) {
+    try { return await forCaller(keyless.quote(identity, { signal, useCache }), signal); }
+    catch (error) { if (error instanceof DataError && !error.instrument) error.instrument = identity.canonicalId; throw error; }
+  }
+  const priceKeyless = async (identity, options) => buildKeylessQuote(identity, await keylessRaw(identity, options));
+  function buildKeylessQuote(identity, raw) {
+    const cur = settleCurrency(KEYLESS_ID, identity, raw, null);
+    const price = Number((raw.rawPrice * cur.unitScale).toPrecision(12));
+    if (!(price > 0) || !Number.isFinite(price)) throw new DataError(`Yahoo Finance returned an invalid price for ${identity.displayTicker}.`, { kind: "invalid", provider: KEYLESS_NAME });
+    const fromBrowser = raw.browserCacheAgeMs !== null && raw.browserCacheAgeMs !== undefined;
+    return {
+      schema: QUOTE_SCHEMA,
+      canonicalId: identity.canonicalId,
+      displayTicker: identity.displayTicker,
+      provider: KEYLESS_PROVIDER,
+      providerId: KEYLESS_ID,
+      sourceTier: "free",
+      via: KEYLESS_VIA,
+      providerSymbol: raw.symbol,
+      nativePriceMajorUnits: price,
+      nativeCurrency: cur.currency,
+      quoteUnit: cur.unitScale === 1 ? "major" : "minor",
+      rawPrice: raw.rawPrice,
+      rawCurrency: raw.rawCurrency,
+      priceType: raw.priceType,
+      tradingDate: raw.tradingDate,
+      asOf: raw.asOf,
+      delayMinutes: null,
+      adjusted: false,
+      retrievedAt: raw.retrievedAt, // when the gateway fetched it (a cached copy keeps its original time)
+      cacheStatus: fromBrowser ? "cached" : raw.gatewayCache.status === "hit" ? "gateway_cache" : "live",
+      cachedAgeMs: fromBrowser ? raw.browserCacheAgeMs : raw.gatewayCache.status === "hit" ? raw.gatewayCache.ageSeconds * 1000 : 0,
+      attribution: raw.attribution || `Data from ${KEYLESS_PROVIDER} through ${KEYLESS_VIA}.`,
+      entitlement: "free",
+      feed: null,
+      currencyVerified: cur.verified,
+      currencyEvidence: cur.evidence,
+      notes: [cur.note, raw.delayNote].filter(Boolean),
+    };
+  }
+
+  // Free-source history for the Stock tool: { history, provenance }.
+  async function keylessHistory(symbol, range, { signal, identity: known = null } = {}) {
+    await ready();
+    const identity = known || resolve(symbol);
+    if (identity.status !== "resolved") throw new DataError(identity.reason || `${symbol} is not a supported listing.`, { kind: "not_covered", definitive: true, provider: KEYLESS_NAME });
+    const h = cutToListing(await forCaller(keyless.history(identity, range, { signal }), signal), identity, { provider: KEYLESS_PROVIDER, rangeStart: range.start });
+    if (identity.currencyEvidence === "curated_reference" && h.currency !== identity.currency) {
+      throw new DataError(`${KEYLESS_PROVIDER} reports ${identity.displayTicker} in ${h.rawCurrency || h.currency}, but this listing trades in ${identity.currency}. The prices were not used.`, { kind: "currency_mismatch", definitive: true, provider: KEYLESS_NAME });
+    }
+    const k = h.keyless;
+    const gatewayAge = k.gatewayCache.status === "hit" ? k.gatewayCache.ageSeconds * 1000 : 0;
+    return {
+      history: { ...h, currencyVerified: true, identity },
+      provenance: {
+        provider: KEYLESS_PROVIDER, via: KEYLESS_VIA, sourceTier: "free", retrievedAt: k.retrievedAt,
+        cached: k.browserCacheAgeMs !== null || k.gatewayCache.status === "hit", cacheWhere: k.browserCacheAgeMs !== null ? "browser" : k.gatewayCache.status === "hit" ? "gateway" : null,
+        stale: false, ageMs: k.browserCacheAgeMs ?? gatewayAge, symbol: h.symbol, range: k.range, missing: k.missing, droppedRunningSession: k.droppedRunningSession, attribution: k.attribution,
+      },
+    };
+  }
+
+  // Free-source latest price for the Stock tool's snapshot ({ quote, provenance, freshness }).
+  async function keylessQuote(symbol, { signal, identity: known = null } = {}) {
+    await ready();
+    const identity = known || resolve(symbol);
+    if (identity.status !== "resolved") throw new DataError(identity.reason || `${symbol} is not a supported listing.`, { kind: "not_covered", definitive: true, provider: KEYLESS_NAME });
+    const raw = await keylessRaw(identity, { signal });
+    const q = buildKeylessQuote(identity, raw);
+    return {
+      quote: { requestedSymbol: symbol, symbol: q.providerSymbol, price: q.nativePriceMajorUnits, currency: q.nativeCurrency, sessionDate: q.tradingDate, priceTime: q.asOf, previousClose: raw.previousClose, dayHigh: raw.dayHigh, dayLow: raw.dayLow, volume: raw.volume, name: raw.name, exchange: raw.exchangeName, instrumentType: raw.instrumentType },
+      provenance: { provider: KEYLESS_PROVIDER, via: KEYLESS_VIA, sourceTier: "free", retrievedAt: q.retrievedAt, cached: q.cacheStatus !== "live", stale: false, ageMs: q.cachedAgeMs },
+      freshness: classifyFreshness(q.asOf, now()),
+      identity,
+    };
+  }
+
   const configured = () => Object.keys(keys).filter(id => providerAvailable(id, platform));
   const allPlans = () => Object.fromEntries(PROVIDER_IDS.map(id => [id, planFor(id)]));
-  const route = (identity, mode = prefs.routing) => routeInstrument(identity, { mode, configured: configured(), plans: allPlans(), platform });
 
-  // Errors after which a different provider could still answer.
-  const FALLBACK_KINDS = new Set(["not_found", "not_covered", "entitlement", "auth", "rate_limited", "unavailable", "network", "timeout", "http", "provider_notice", "invalid", "ambiguous"]);
+  // ---------------------------------------------------------------- the source list
+  // Saved in local storage (shared by both tools on this site). Built once from the
+  // previous version's routing choice when no list was saved yet.
+  let priority;
+  let priorityNotes = [];
+  {
+    let saved = null;
+    try { saved = JSON.parse(readText(store, SOURCES_KEY) || "null"); } catch (_) { saved = null; }
+    const built = saved && Array.isArray(saved.order) ? normalizePriority(saved, { platform, configured: configured() }) : legacy ? migrateLegacy(legacy, { platform, configured: configured() }) : normalizePriority(null, { platform, configured: configured() });
+    priority = { order: built.order, enabled: built.enabled };
+    priorityNotes = built.notes;
+    // Written only when it differs from what was saved (a migrated choice, a repaired
+    // list); a visitor who never changes anything stores nothing.
+    const migrated = !saved && legacy;
+    if (migrated || (saved && (built.notes.length || JSON.stringify(saved.order) !== JSON.stringify(priority.order) || JSON.stringify(saved.enabled) !== JSON.stringify(priority.enabled)))) writeText(store, SOURCES_KEY, JSON.stringify({ v: 1, ...priority }));
+  }
+  const savePriority = () => writeText(store, SOURCES_KEY, JSON.stringify({ v: 1, ...priority }));
+  const utcTime = at => new Date(at).toISOString().slice(11, 16);
 
-  // Latest price for a resolved instrument from the chosen source (or the first
-  // eligible one in Automatic mode). Other providers are tried only when the user
-  // enabled fallback; the returned quote then lists what was tried first.
-  async function priceInstrument(identity, { signal, mode = prefs.routing, fallback = prefs.fallback, useCache = true } = {}) {
-    if (!identity || identity.status !== "resolved") throw new DataError(identity?.reason || "The ticker is not resolved.", { kind: "invalid", definitive: true });
-    const { candidates, skipped } = route(identity, mode);
-    if (!candidates.length) {
-      const reasons = skipped.map(x => `${PROVIDERS[x.id].name}: ${x.reason}`);
-      throw new DataError(`No configured source covers ${identity.displayTicker} (${identity.venueName || identity.mic}).`, {
-        kind: configured().length ? "not_covered" : "not_configured", definitive: true, instrument: identity.canonicalId,
-        hint: reasons.length ? reasons.join("; ") : "Add a key for a provider that covers this market, or enter your own price.",
-      });
-    }
+  // Whether a source can be asked right now, and why not: { available, code, reason }.
+  function sourceState(id) {
+    if (id === KEYLESS_ID) return keyless.availability();
+    if (!providerAvailable(id, platform)) return { available: false, code: "not_offered", reason: PROVIDERS[id]?.unsupportedReason || "not offered here" };
+    if (!keys[id]) return { available: false, code: "no_key", reason: "no API key saved", short: "no key" };
+    const s = session(id);
+    if (s.rejected || (id === "alphavantage" && s.client?.exhausted && !s.usage.limit)) return { available: false, code: "auth", reason: "rejected your key earlier on this page (check the key)", short: "rejected the key" };
+    const lim = s.usage.limit;
+    if (lim) return { available: false, code: "rate_limited", reason: `reported its ${lim.scope} limit at ${utcTime(lim.at)} UTC; nothing more is sent until the ${lim.scope === "monthly" ? "month" : "day"} ends (UTC) unless you choose "Check again"`, short: `${lim.scope} limit reached` };
+    return { available: true, code: null, reason: null };
+  }
+  const states = () => Object.fromEntries(priority.order.map(id => [id, sourceState(id)]));
+
+  // The sources to try for an identity and operation ("quote" | "history"), in order.
+  const route = (identity, op = "quote", { require = null } = {}) => planSources(identity, op, { priority, platform, state: states(), plans: allPlans(), require });
+  // The list in order, as words, at this moment: stored with what it was used for, because
+  // a later reorder must not rewrite the record of an earlier request.
+  const describeOrder = () => priority.order.filter(id => offeredSources(platform).includes(id)).map((id, i) => `${i + 1}. ${sourceDisplayName(id)}${priority.enabled[id] ? "" : " (off)"}`).join("; ");
+  // Whether any source in the list could be asked at all.
+  const hasPriceSource = (op = "quote") => priority.order.some(id => priority.enabled[id] && capabilities(id, platform).includes(op) && sourceState(id).available);
+
+  // The list as the tools show it.
+  function listSources() {
+    return priority.order.map((id, index) => {
+      const st = sourceState(id);
+      const info = SOURCE_INFO[id];
+      return {
+        id, name: info.name, position: index + 1, enabled: Boolean(priority.enabled[id]), needsKey: info.needsKey,
+        configured: info.needsKey ? Boolean(keys[id]) : true, available: st.available, state: st,
+        ops: capabilities(id, platform), labels: info.labels, summary: info.summary,
+        status: !priority.enabled[id] ? (info.needsKey && !keys[id] ? "needs_key" : "off") : st.available ? "on" : "unavailable",
+      };
+    });
+  }
+  function moveTo(id, toIndex) {
+    const before = priority.order.indexOf(id);
+    priority = moveSource(priority, id, toIndex);
+    savePriority();
+    const after = priority.order.indexOf(id);
+    return { moved: before !== after, position: after + 1, count: priority.order.length, message: `${sourceDisplayName(id)} moved to position ${after + 1} of ${priority.order.length}.` };
+  }
+  function setEnabled(id, on) {
+    const r = setSourceEnabled(priority, id, on, { configured: configured() });
+    priority = { order: r.priority.order, enabled: r.priority.enabled };
+    savePriority();
+    return { changed: r.changed, note: r.note, message: r.note || `${sourceDisplayName(id)} switched ${on ? "on" : "off"}.` };
+  }
+
+  // Errors after which the next source in the list may still answer.
+  const FALLBACK_KINDS = new Set(["not_found", "not_covered", "not_configured", "entitlement", "auth", "rate_limited", "unavailable", "network", "timeout", "http", "provider_notice", "invalid", "ambiguous", "currency_mismatch"]);
+  const attemptOf = (id, error) => ({ provider: sourceDisplayName(id), providerId: id, kind: error?.kind, quotaScope: error?.quotaScope || null, message: error?.message, paused: Boolean(error?.paused) });
+
+  // Tries `run(id, candidate)` for each candidate in order. Returns { value, attempts }
+  // or throws one DataError that lists every source's reason.
+  async function trySources(identity, op, plan, run, label) {
     const attempts = [];
-    for (const [index, c] of candidates.entries()) {
+    for (const c of plan.candidates) {
       try {
-        const q = await priceWith(c.id, identity, { signal, useCache });
-        return attempts.length ? { ...q, fallbackFrom: attempts } : q;
+        return { value: await run(c), attempts, used: c.id };
       } catch (error) {
         if (error?.kind === "aborted" || error?.kind === "key_changed") throw error;
-        attempts.push({ provider: PROVIDERS[c.id].name, kind: error?.kind, message: error?.message });
-        const last = index === candidates.length - 1;
-        if (!fallback || last || !FALLBACK_KINDS.has(error?.kind)) {
-          if (error instanceof DataError) error.attempts = attempts;
+        attempts.push(attemptOf(c.id, error));
+        if (!FALLBACK_KINDS.has(error?.kind)) {
+          if (error instanceof DataError) { error.attempts = attempts; error.skipped = plan.skipped; }
           throw error;
         }
       }
     }
-    throw new DataError("No source returned a price.", { kind: "unavailable" });
+    // One listing-independent line (the same cause reads the same for every holding);
+    // the full wording of each source's answer stays in error.attempts / error.skipped.
+    const reasons = [...attempts.map(a => `${a.provider}: ${shortFailure(a)}`), ...describeSkipped(plan.skipped, { short: true })];
+    const anyAvailable = hasPriceSource(op);
+    const kinds = attempts.map(a => a.kind);
+    const kind = !plan.candidates.length ? (anyAvailable || plan.skipped.some(x => x.code === "not_covered") ? "not_covered" : "not_configured")
+      : kinds.includes("auth") ? "auth" : kinds.includes("rate_limited") ? "rate_limited" : kinds.every(k => ["not_found", "not_covered"].includes(k)) ? "not_found" : kinds[kinds.length - 1] || "unavailable";
+    const error = new DataError(`${plan.candidates.length ? "No source in your list could give" : "No source in your list can give"} ${label}${reasons.length ? ` (${reasons.join("; ")})` : ""}.`, {
+      kind, definitive: !plan.candidates.length || kinds.every(k => ["not_found", "not_covered", "ambiguous", "currency_mismatch"].includes(k)),
+      instrument: identity.canonicalId, quotaScope: attempts.find(a => a.kind === "rate_limited")?.quotaScope || null,
+      provider: attempts.length === 1 ? attempts[0].provider : null,
+      hint: plan.candidates.length ? "Use your own price, or add or reorder sources." : anyAvailable ? "Add a source that covers this market, or use your own price." : "Switch on Yahoo Finance or add your own key, or use your own price.",
+    });
+    error.attempts = attempts;
+    error.skipped = plan.skipped;
+    throw error;
   }
 
-  // Requests a batch would send, per provider, before anything is fetched.
-  function estimate(identities, { mode = prefs.routing } = {}) {
+  // Latest price for a resolved instrument from the first source in the list that can
+  // give a usable one. The quote lists the sources that failed before it (fallbackFrom)
+  // and the ones skipped (skippedSources).
+  async function priceInstrument(identity, { signal, useCache = true } = {}) {
+    if (!identity || identity.status !== "resolved") throw new DataError(identity?.reason || "The ticker is not resolved.", { kind: "invalid", definitive: true });
+    const plan = route(identity, "quote");
+    const sourceOrder = describeOrder();
+    let found;
+    try {
+      found = await trySources(identity, "quote", plan, c => priceWith(c.id, identity, { signal, useCache }), "a usable price");
+    } catch (error) {
+      if (error instanceof DataError) error.sourceOrder = sourceOrder;
+      throw error;
+    }
+    const { value, attempts } = found;
+    const skipped = plan.skipped.filter(x => x.code !== "off");
+    return { ...value, sourceOrder, ...(attempts.length ? { fallbackFrom: attempts } : {}), ...(skipped.length ? { skippedSources: skipped } : {}) };
+  }
+
+  // Requests a batch would send, per source, before anything is fetched (first source
+  // that would be asked for each holding).
+  function estimate(identities) {
     const perProvider = {};
     const uncovered = [];
     for (const identity of identities) {
       if (!identity || identity.status !== "resolved") { uncovered.push({ displayTicker: identity?.displayTicker, reason: identity?.reason || "not resolved" }); continue; }
-      const { candidates, skipped } = route(identity, mode);
-      if (!candidates.length) { uncovered.push({ displayTicker: identity.displayTicker, reason: skipped.map(x => `${PROVIDERS[x.id].name}: ${x.reason}`).join("; ") || "no provider configured" }); continue; }
+      const { candidates, skipped } = route(identity, "quote");
+      if (!candidates.length) { uncovered.push({ displayTicker: identity.displayTicker, reason: describeSkipped(skipped).join("; ") || "no source switched on" }); continue; }
       const { id, symbol } = candidates[0];
-      const s = sessions[id];
-      const cached = s?.quotes.get(`${identity.canonicalId}|${symbol}`, { freshMs: 4 * HOUR });
-      const fresh = cached && cached.ageMs <= (QUOTE_FRESH_MS[cached.value.priceType] || 10 * MINUTE);
-      const cost = fresh ? 0 : PROVIDERS[id].requestCost(identity, { listingCached: id === "alphavantage" && avListingCached(symbol) });
+      let cost;
+      if (id === KEYLESS_ID) cost = keyless.quoteCached(identity) ? 0 : 1;
+      else {
+        const s = sessions[id];
+        const cached = s?.quotes.get(`${identity.canonicalId}|${symbol}`, { freshMs: 4 * HOUR });
+        const fresh = cached && cached.ageMs <= (QUOTE_FRESH_MS[cached.value.priceType] || 10 * MINUTE);
+        cost = fresh ? 0 : PROVIDERS[id].requestCost(identity, { listingCached: id === "alphavantage" && avListingCached(symbol) });
+      }
       perProvider[id] = perProvider[id] || { requests: 0, rows: 0 };
       perProvider[id].requests += cost;
       perProvider[id].rows += 1;
@@ -595,8 +794,75 @@ export function createMarketData({
     return { perProvider, uncovered, total: Object.values(perProvider).reduce((sum, e) => sum + e.requests, 0) };
   }
 
+  // ---------------------------------------------------------------- history and snapshot by the list
+  // A comparison ticker must be one listing; indexes and other unsupported symbols are
+  // explained in the Stock tool's terms (no request is sent for them).
+  function resolvedOrThrow(symbol) {
+    const identity = resolve(symbol);
+    if (identity.status === "resolved") return identity;
+    if (identity.instrumentType === "index") throw new DataError(`${symbol}: market indexes are not available from these sources (they serve stocks, ETFs and funds). Use an index ETF such as SPY or XIU.TO, or import index prices from a CSV file.`, { kind: "not_found", definitive: true });
+    throw new DataError(identity.reason || `${symbol} is not a supported listing.`, { kind: "not_covered", definitive: true });
+  }
+
+  // Price series a source gives for a window, before anything is fetched: "daily" or
+  // "weekly". Yahoo Finance is daily for every window; Alpha Vantage's free daily series
+  // covers about four months, so longer windows are weekly adjusted closes.
+  const historyFrequency = (id, range) => (id === "alphavantage" ? historyKind(range) : "daily");
+
+  // Daily or weekly history for a symbol from the first source in the list that can give
+  // it. `frequency` (optional) skips sources whose series would have another frequency,
+  // so one comparison never silently mixes daily and weekly prices.
+  // Returns { history, provenance } like history() and keylessHistory().
+  async function historyBySources(symbol, range, { signal, frequency = null } = {}) {
+    await ready();
+    const identity = resolvedOrThrow(symbol);
+    const require = frequency ? id => (historyFrequency(id, range) !== frequency ? `would give ${historyFrequency(id, range)} prices for this period, and this comparison uses ${frequency} prices` : null) : null;
+    const plan = route(identity, "history", { require });
+    const sourceOrder = describeOrder();
+    let found;
+    try {
+      found = await trySources(identity, "history", plan, c => (c.id === KEYLESS_ID ? keylessHistory(symbol, range, { signal, identity }) : history(symbol, range, { signal, identity })), "usable price history");
+    } catch (error) {
+      if (error instanceof DataError) error.sourceOrder = sourceOrder;
+      throw error;
+    }
+    const { value, attempts, used } = found;
+    const skipped = plan.skipped.filter(x => x.code !== "off");
+    return { ...value, provenance: { ...value.provenance, sourceId: used, sourceName: sourceDisplayName(used), attempts, skipped, sourceOrder } };
+  }
+  // The frequency the first usable history source in the list gives for a window (or
+  // null when none can be asked), so a tool can hold every series of a run to it.
+  function expectedHistoryFrequency(range) {
+    const id = priority.order.find(x => priority.enabled[x] && capabilities(x, platform).includes("history") && sourceState(x).available);
+    return id ? historyFrequency(id, range) : null;
+  }
+
+  // Latest price and one window of history for one symbol, both from the SAME source
+  // (the first in the list that can give both). Returns { quote, history, provenance,
+  // freshness, sourceId }.
+  async function snapshotBySources(symbol, range, { signal } = {}) {
+    await ready();
+    const identity = resolvedOrThrow(symbol);
+    const plan = route(identity, "history", { require: id => (capabilities(id, platform).includes("quote") ? null : "has no latest prices") });
+    const { value, attempts, used } = await trySources(identity, "history", plan, async c => {
+      if (c.id === KEYLESS_ID) {
+        const q = await keylessQuote(symbol, { signal, identity });
+        const h = await keylessHistory(symbol, range, { signal, identity });
+        return { quote: q.quote, quoteProvenance: q.provenance, freshness: q.freshness, history: h.history, provenance: h.provenance };
+      }
+      const q = await quote(symbol, { signal });
+      const h = await history(symbol, range, { signal, identity });
+      return { quote: q.quote, quoteProvenance: q.provenance, freshness: q.freshness, history: h.history, provenance: h.provenance };
+    }, "a snapshot (latest price and history)");
+    const skipped = plan.skipped.filter(x => x.code !== "off");
+    return { ...value, sourceId: used, sourceName: sourceDisplayName(used), attempts, skipped };
+  }
+
   // What this browser has sent with a provider's key, against the plan's limits.
   function budget(id) {
+    // Yahoo Finance has no personal allowance: the gateway limits requests per visitor
+    // and shares one budget among everyone.
+    if (id === KEYLESS_ID) return { shared: true, sentToday: null, sentMonth: null, planId: "free", planLabel: "Yahoo Finance (no key; shared and rate-limited)", remaining: null, period: null, limitRecord: null };
     const s = session(id);
     const plan = planFor(id);
     const sentToday = s?.usage.count ?? 0;
@@ -653,22 +919,42 @@ export function createMarketData({
       removeItem(sessionStore, name);
       delete keys[id];
     }
+    let note = null;
     if (trimmed !== previous) {
       retire(id);
       // Removing a key also removes its request counts and limit record.
       purgeKeyData(id, trimmed ? keyFingerprint(trimmed, id) : null, { counts: !trimmed });
+      // A new key switches the provider on where it stands in the list (never at the
+      // top); a removed key switches it off and keeps its place.
+      if (Boolean(trimmed) !== Boolean(previous)) {
+        const r = priorityKeyChanged(priority, id, { hasKey: Boolean(trimmed), isNew: !previous, configured: configured() });
+        priority = { order: r.priority.order, enabled: r.priority.enabled };
+        note = r.note;
+        savePriority();
+      }
     }
-    return { persistence, saved: persistence === "local" || persistence === "session" };
+    return { persistence, saved: persistence === "local" || persistence === "session", note };
   }
 
   function forgetAllKeys() {
+    const notes = [];
     for (const id of PROVIDER_IDS) {
       removeItem(local, `${KEY_PREFIX}${id}`);
       removeItem(sessionStore, `${KEY_PREFIX}${id}`);
-      if (keys[id]) { retire(id); delete keys[id]; }
+      if (keys[id]) {
+        retire(id);
+        delete keys[id];
+        const r = priorityKeyChanged(priority, id, { hasKey: false, configured: configured() });
+        priority = { order: r.priority.order, enabled: r.priority.enabled };
+      }
       purgeKeyData(id, null, { counts: true });
     }
-    removeWhere(k => k.startsWith("md.sched.v1."));
+    const fixed = normalizePriority(priority, { platform, configured: [] });
+    priority = { order: fixed.order, enabled: fixed.enabled };
+    notes.push(...fixed.notes);
+    savePriority();
+    removeWhere(k => k.startsWith("md.sched.v1.") && !k.startsWith("md.sched.v1.yahoo."));
+    return { notes };
   }
 
   function setPlan(id, planId, { limit = null, international = false } = {}) {
@@ -676,13 +962,6 @@ export function createMarketData({
     savePrefs();
     retire(id); // new pacing applies to the next request; caches stay
     return planFor(id);
-  }
-
-  function setRouting({ mode, fallback } = {}) {
-    if (mode !== undefined) prefs.routing = mode === "auto" || providerAvailable(mode, platform) ? mode : "auto";
-    if (fallback !== undefined) prefs.fallback = Boolean(fallback);
-    savePrefs();
-    return { mode: prefs.routing, fallback: prefs.fallback };
   }
 
   function providerStatus(id) {
@@ -707,11 +986,39 @@ export function createMarketData({
     providerStatus,
     providers: () => PROVIDER_IDS.map(providerStatus),
     configuredProviders: configured,
+    hasPriceSource,
+    // ---- the ordered source list
+    sources: {
+      list: listSources,
+      order: () => [...priority.order],
+      describeOrder,
+      enabledOrder: () => priority.order.filter(id => priority.enabled[id]),
+      move: moveTo,
+      setEnabled,
+      state: sourceState,
+      notes: () => { const n = priorityNotes; priorityNotes = []; return n; },
+      offered: () => offeredSources(platform),
+    },
+    historyBySources,
+    snapshotBySources,
+    expectedHistoryFrequency,
+    historyFrequency,
+    // ---- Yahoo Finance through the site's gateway
+    keyless: {
+      check: options => keyless.check(options),
+      status: () => keyless.status(),
+      enabled: () => keyless.enabled(),
+      configured: () => keyless.configured(),
+      availability: () => keyless.availability(),
+      pauseState: () => keyless.pauseState(),
+      host: () => { try { return new URL(keyless.base()).host; } catch (_) { return null; } },
+      requestsSent: () => keyless.requestsSent(),
+    },
+    keylessHistory,
+    keylessQuote,
     setKey,
     forgetAllKeys,
     setPlan,
-    setRouting,
-    get routing() { return { mode: prefs.routing, fallback: prefs.fallback }; },
     catalogVersion: CATALOG_VERSION,
     // ---- Alpha Vantage compatibility API (Stock Comparison tool)
     quote,
@@ -728,7 +1035,7 @@ export function createMarketData({
     setApiKey: (key, { remember = true } = {}) => setKey("alphavantage", key, { remember }),
     // Removes saved responses for every key (and saved exchange rates). Request counts
     // and limit records are kept so the provider's answers stay honoured.
-    clearCache() { return PROVIDER_IDS.reduce((n, id) => n + purgeKeyData(id, null), 0) + fx.clear(); },
-    cacheSize() { return Object.values(sessions).reduce((n, s) => n + s.quotes.size() + s.history.size(), 0); },
+    clearCache() { return PROVIDER_IDS.reduce((n, id) => n + purgeKeyData(id, null), 0) + fx.clear() + keyless.clearCache(); },
+    cacheSize() { return Object.values(sessions).reduce((n, s) => n + s.quotes.size() + s.history.size(), 0) + keyless.cacheSize(); },
   };
 }

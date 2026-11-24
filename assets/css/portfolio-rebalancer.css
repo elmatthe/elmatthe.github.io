@@ -35,6 +35,11 @@
 .rb-provider .rb-planrow { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr)); gap: .5rem; margin: .4rem 0; }
 .rb-limit { border-left: 4px solid var(--pj-warn); padding: .35rem .6rem; margin: .4rem 0; background: rgba(242, 193, 78, .08); border-radius: 6px; font-size: .875rem; }
 .rb-limit blockquote { margin: .3rem 0 0; font-style: italic; color: var(--pj-muted); }
+/* Free (keyless) source status: always shown, with the reason when unavailable. */
+.rb-free { border: 1px solid var(--pj-border); border-left: 4px solid var(--pj-muted); border-radius: 8px; padding: .45rem .7rem; margin: .3rem 0 .6rem; font-size: .9rem; overflow-wrap: anywhere; }
+.rb-free p { margin: .2rem 0; }
+.rb-free[data-state="enabled"] { border-left-color: var(--pj-ok); }
+.rb-free[data-state="disabled"], .rb-free[data-state="unreachable"] { border-left-color: var(--pj-warn); }
 
 /* ---- Exchange rates ---- */
 .rb-fx-list { list-style: none; padding: 0; margin: .3rem 0; display: grid; gap: .45rem; }
