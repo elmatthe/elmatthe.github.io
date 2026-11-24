@@ -407,4 +407,6 @@ function checker() {
   return { check, done };
 }
 
-module.exports = { SITE_URL, TEST_KEY, MS_KEY, FH_KEY, CPI_KEY, CPI_GATEWAY, MD_GATEWAY, SITE_GATEWAY, GATEWAY_ROUTE, launch, mockMarketData, mockCpiSources, blockExternal, watchNetwork, checker, disallowedRequests };
+module.exports = { SITE_URL, TEST_KEY, MS_KEY, FH_KEY, CPI_KEY, CPI_GATEWAY, MD_GATEWAY, SITE_GATEWAY, GATEWAY_ROUTE, launch, mockMarketData, mockCpiSources, blockExternal, watchNetwork, checker, disallowedRequests,
+  // The CPI fixture answers, so a test can recompute what a recorded request was sent.
+  statcanBody, gatewayObservations };

@@ -20,7 +20,7 @@ const path = require("path");
 const fs = require("fs");
 const os = require("os");
 const { execFileSync } = require("child_process");
-const { SITE_URL, CPI_KEY, CPI_GATEWAY, launch, mockMarketData, mockCpiSources, blockExternal, watchNetwork, checker } = require("./harness");
+const { SITE_URL, CPI_KEY, CPI_GATEWAY, launch, mockMarketData, mockCpiSources, blockExternal, watchNetwork, checker, statcanBody, gatewayObservations } = require("./harness");
 
 const OUT = fs.mkdtempSync(path.join(os.tmpdir(), "exports-test-"));
 const PY = process.env.PYTHON || "python3";
@@ -324,7 +324,9 @@ async function monteCarloExports(browser, check) {
     await page.fill("#mc-seed", seed);
     await page.fill("#mc-simulations", sims);
     await page.click("#mcRun");
-    await page.waitForFunction(() => !document.querySelector("#mcRun").disabled && /simulations complete/.test(document.querySelector("#mcStatus").textContent), null, { timeout: 60000 });
+    // This run's own seed in the run line: the previous run's "complete" status never counts.
+    await page.waitForFunction(s => !document.querySelector("#mcRun").disabled && /simulations complete/.test(document.querySelector("#mcStatus").textContent)
+      && new RegExp(`seed ${s}\\b`).test(document.querySelector("#mcMeta").textContent), seed, { timeout: 60000 });
     const csv = await download(page, "#mcExportCsv", `mc-${basis}.csv`);
     const rows = parseCsv(csv.text);
     const desktop = py("mc", csv.target);
@@ -353,18 +355,9 @@ const FRED_COLUMNS = { "Headline CPI - Unadjusted US": "CPIAUCNS", "Headline CPI
 
 async function cpiExports(browser, check) {
   const context = await browser.newContext({ acceptDownloads: true, viewport: { width: 1280, height: 900 } });
-  await mockCpiSources(context, {});
+  const calls = await mockCpiSources(context, {});
   const page = await context.newPage();
   const net = watchNetwork(page);
-  const statcan = {};
-  const fred = {};
-  const reading = [];
-  page.on("response", r => reading.push((async () => {
-    const body = await r.json().catch(() => null);
-    if (!body) return;
-    if (/statcan\.gc\.ca/.test(r.url())) for (const v of body) for (const p of v.object.vectorDataPoint) (statcan[v.object.vectorId] ||= {})[p.refPer.slice(0, 7)] = p.value;
-    if (/\/v1\/observations$/.test(r.url())) for (const o of body.observations) if (o.value !== ".") (fred[body.series_id] ||= {})[o.date.slice(0, 7)] = Number(o.value);
-  })()));
   await page.goto(`${SITE_URL}/projects/cpi-webscraper/?gateway=${encodeURIComponent(CPI_GATEWAY)}`, { waitUntil: "networkidle" });
   await page.waitForSelector('#cpi-app[data-ready="true"]');
   await page.fill("#cpiKey", CPI_KEY);
@@ -374,7 +367,18 @@ async function cpiExports(browser, check) {
   await page.click("#cpiFetch");
   await page.waitForFunction(() => document.querySelector("#cpi-app").getAttribute("aria-busy") === "false" && !/^Fetching/.test(document.querySelector("#cpiStatus").textContent), null, { timeout: 60000 });
   const csv = await download(page, "#cpiCsv", "cpi.csv");
-  await Promise.all(reading); // every source answer is read before comparing
+  // What each source sent: the fixture answer to every request the page actually made.
+  const statcan = {};
+  const fred = {};
+  for (const search of calls.statcan) {
+    for (const v of JSON.parse(statcanBody(new URL(`https://www150.statcan.gc.ca/x${search}`)))) {
+      for (const p of v.object.vectorDataPoint) (statcan[v.object.vectorId] ||= {})[p.refPer.slice(0, 7)] = p.value;
+    }
+  }
+  for (const c of calls.gateway.filter(x => x.path === "/v1/observations")) {
+    const body = gatewayObservations(c.body);
+    for (const o of body.observations) if (o.value !== ".") (fred[body.series_id] ||= {})[o.date.slice(0, 7)] = Number(o.value);
+  }
   const rows = parseCsv(csv.text);
   const header = rows[0];
   const data = rows.slice(1).filter(r => r.length > 1);
