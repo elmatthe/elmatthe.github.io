@@ -5,16 +5,21 @@ Snapshot: Claude Code on HOME-PC, branch `claude/loving-brown-48hctl`, starting 
 
 - M1 implemented: the coordinator enforces its own deployment's activation at entry and before
   admission (unit + real workerd regressions; both checks mutation-verified).
-- M3: transition procedure in the gateway README ("First deployment of 1.3.0"). Owner GO given
-  2026-11-24. Step 2 done: 1.1.0 source off at 02:35:54 UTC (version `c065d022`, 10/10 health
-  samples off, data `source_disabled`); drain until at least 03:05:54 UTC.
+- M3: transition procedure in the gateway README ("First deployment of 1.3.0"), executed with
+  the owner's GO on 2026-11-24 from `6678c95` (CI 7/7): 1.1.0 off 02:35:54 UTC, 1.3.0 off
+  02:49:48 (class created), on 03:06:51 (version `81fb581e`). Health ok; capped smoke 4 Yahoo
+  requests, all correct. Source-off fallback: `npx wrangler@4 deploy --env=""` (README).
 - CPI gateway deployed (`https://cpi-data-gateway.elmatthe.workers.dev`, version `a9d5162e`),
   verified with a made-up key (`key_rejected`); configured in `_data/tool_projects.yml`. A
   valid-key test is the owner's (on the live page).
 - Unchanged and not release defects: M2, Q1, L1, L3a.
 
-Next action: CI on this commit, then README steps 4-5 (1.3.0 source off, then on), capped smoke,
-release verification, merge, Pages verification.
+- Release gate on `6678c95` (`-NoOsInput`): all steps PASS; tracked browser suites 781/0 rerun
+  on a free port (a stale server on 4110 had served an old build). Real mouse/keyboard desktop
+  step not rerun: no desktop code changed since its last PASS at `d46b74e`. macOS not exercised.
+
+Next action: merge PR 46 into main, verify GitHub Pages, the four public pages and ZIPs. Then
+the separate UI/UX project.
 
 ---
 

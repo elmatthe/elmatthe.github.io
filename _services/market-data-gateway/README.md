@@ -11,15 +11,19 @@ separate service. It shares no code or settings with `../cpi-data-gateway/`.
 
 ## Deployment status
 
-**Deployed and active since 2026-11-04.** The owner deployed `[env.production]` from their
-own computer (`npx wrangler@4 deploy --env production`, Workers Free; both rate-limit
-bindings accepted):
+**1.3.0 deployed and active since 2026-11-24**, with the owner's GO, by the transition in
+"Deploy" (M3), from commit `6678c95` (Workers Free; the coordinator class and the rate-limit
+binding accepted):
 
 | | |
 |---|---|
 | Address | <https://market-data-gateway.elmatthe.workers.dev> (`workers.dev` subdomain; no custom domain, DNS record or route) |
-| Version | `76998e2b-205d-4645-8f85-7a6fdf0dbad7` (gateway code 1.1.0). **The code in this folder is 1.3.0 and is not deployed**: the coordinator and the rules below marked 1.3.0 take effect only when the owner deploys it, which also creates a Durable Object class and cannot be undone by `wrangler rollback` (see "Deploy" and "Roll back") |
-| Health | `keyless.enabled: true`, `source: yahoo-chart`, `activation: owner_attestation`, `upstream.state: ok`; caches 600 s (quotes) / 43,200 s (history) |
+| Version | `81fb581e-a4a9-4bba-99ca-35f1a6c8dd73` (gateway code 1.3.0, `[env.production]`). `wrangler rollback` cannot return to 1.1.0; the tested source-off version is `4aa14727-6b6f-440a-8025-a781d8e87dba` (1.3.0, top-level settings) |
+| Transition (UTC) | 02:35:54 1.1.0 source off (`c065d022`, 10/10 health reads off, data `source_disabled`); 02:49:48 1.3.0 source off, class created (`4aa14727`, verified off); 03:06:51 source on (`81fb581e`), after the 1,800 s drain. No `UPSTREAM_REACTIVATION_ID` existed (no secrets; not among the 1.1.0 variables) |
+| Health | `version` 1.3.0, `status: ok`, `keyless.enabled: true`, `activation: owner_attestation`, `upstream.state: ok` (six reads over 45 s, and after the smoke test) |
+| Live smoke | refusals and CORS as below (no Yahoo request); 3 quotes 5 s apart: AAPL 349.08 USD (NMS, no `Origin`), VEQT.TO 59.21 CAD (TOR), VOD.L 102.85 GBp = 1.0285 GBP (LSE); VEQT.TO 1mo history, 22 daily rows; a repeat served from cache. Four Yahoo requests in all, none refused |
+
+The 2026-11-04 record of 1.1.0 (version `76998e2b`) follows.
 
 The website reads the address from `_data/market_data.yml`; the desktop apps from
 `DEFAULT_GATEWAY_URL` in `_tools/shared_py/market_data/gateway.py` (kept equal by

@@ -5,8 +5,8 @@
 #
 # Set only to the address of a deployed Worker whose /v1/health was checked and whose
 # capped live smoke test passed (README.md in that folder, "Deploy" and "Verify").
-# Current value: the owner's production Worker, deployed 2026-11-04 (version
-# 76998e2b-205d-4645-8f85-7a6fdf0dbad7) and verified the same day (Handoff.md).
+# Current value: the owner's production Worker, 1.3.0 since 2026-11-24 (version
+# 81fb581e-a4a9-4bba-99ca-35f1a6c8dd73), verified live the same day (gateway README).
 # Set it to "" to switch Yahoo Finance off on both pages: they then say it is not
 # available and send it nothing; the visitor's own-key providers keep working.
 #
